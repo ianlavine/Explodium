@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Explodium Playtest</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="bg-orb orb-1"></div>
+    <div class="bg-orb orb-2"></div>
+    <div class="bg-grid"></div>
+
+    <main class="shell">
+      <header class="brand">
+        <div class="brand-mark">X</div>
+        <div>
+          <p class="brand-title">Explodium</p>
+          <p class="brand-subtitle">Rapid board game playtesting</p>
+        </div>
+      </header>
+
+      <section id="screen-home" class="screen screen-active">
+        <h1>Make a quick lobby. Start a quick game.</h1>
+        <p class="lead">
+          This is the barebones flow. Press play, get paired, then pass the
+          turn. That's it.
+        </p>
+        <button id="play-button" class="primary-btn">Play</button>
+      </section>
+
+      <section id="screen-lobby" class="screen">
+        <h2>Lobby</h2>
+        <p class="lead" id="lobby-status">Waiting for another player...</p>
+        <div class="panel">
+          <div class="panel-row">
+            <span>Your status</span>
+            <strong id="player-status">Queued</strong>
+          </div>
+          <div class="panel-row">
+            <span>Players needed</span>
+            <strong id="players-needed">1</strong>
+          </div>
+        </div>
+        <button id="cancel-button" class="ghost-btn">Cancel</button>
+      </section>
+
+      <section id="screen-game" class="screen">
+        <h2>Game Placeholder</h2>
+        <p class="lead" id="turn-status">Waiting for match...</p>
+        <div class="game-board" id="game-board">
+          <button id="turn-button" class="primary-btn">Take Turn</button>
+        </div>
+        <button id="exit-button" class="ghost-btn">Leave Game</button>
+      </section>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/client.js"></script>
+  </body>
+</html>
