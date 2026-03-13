@@ -6,10 +6,8 @@ const screens = {
   game: document.getElementById("screen-game")
 };
 
-const gameList = document.getElementById("game-list");
 const cancelButton = document.getElementById("cancel-button");
 const exitButton = document.getElementById("exit-button");
-const turnButton = document.getElementById("turn-button");
 
 const lobbyStatus = document.getElementById("lobby-status");
 const lobbyGameName = document.getElementById("lobby-game-name");
@@ -19,26 +17,22 @@ const playersNeeded = document.getElementById("players-needed");
 const gameTitle = document.getElementById("game-title");
 const turnStatus = document.getElementById("turn-status");
 const gameBoard = document.getElementById("game-board");
+const handEl = document.getElementById("hand");
+const gameList = document.getElementById("game-list");
 
 let roomId = null;
 let myId = null;
 let currentGame = null;
+let myPlayerIndex = null;
+let selectedTileType = 0;
+let boardState = [];
+let handState = [];
 
 const games = [
   {
     id: "explodium",
     name: "Explodium",
-    description: "Core test deck and quick turn flow."
-  },
-  {
-    id: "midnight-market",
-    name: "Midnight Market",
-    description: "Trading, bluffing, and rapid rounds."
-  },
-  {
-    id: "orbit-run",
-    name: "Orbit Run",
-    description: "Race prototype with tight turn swaps."
+    description: ""
   }
 ];
 
@@ -50,16 +44,15 @@ function setScreen(name) {
 function updateTurn(turnId) {
   const isMyTurn = turnId === myId;
   turnStatus.textContent = isMyTurn ? "Your turn" : "Opponent's turn";
-  gameBoard.classList.toggle("dimmed", !isMyTurn);
-  turnButton.disabled = !isMyTurn;
 }
 
 socket.on("connect", () => {
   myId = socket.id;
 });
 
-socket.on("match_found", ({ roomId: newRoomId, turn, gameId }) => {
+socket.on("match_found", ({ roomId: newRoomId, turn, gameId, playerIndex }) => {
   roomId = newRoomId;
+  myPlayerIndex = playerIndex ?? 0;
   if (gameId) {
     const matched = games.find((game) => game.id === gameId);
     if (matched) {
@@ -81,23 +74,30 @@ socket.on("turn_update", ({ turn }) => {
   updateTurn(turn);
 });
 
+socket.on("state_update", ({ board, hands, turn }) => {
+  boardState = board;
+  handState = hands[myPlayerIndex] || [0, 0, 0, 0, 0];
+  renderBoard();
+  renderHand();
+  updateTurn(turn);
+});
+
 socket.on("opponent_left", () => {
   roomId = null;
+  boardState = [];
+  handState = [];
   turnStatus.textContent = "Opponent left. Back to home.";
-  gameBoard.classList.add("dimmed");
   setTimeout(() => setScreen("home"), 900);
 });
 
 function renderGames() {
   gameList.innerHTML = "";
   games.forEach((game) => {
-    const card = document.createElement("div");
+    const card = document.createElement("button");
     card.className = "game-card";
-    card.innerHTML = `
-      <h3>${game.name}</h3>
-      <p>${game.description}</p>
-      <button class="primary-btn" data-game-id="${game.id}">Play</button>
-    `;
+    card.type = "button";
+    card.dataset.gameId = game.id;
+    card.textContent = game.name;
     gameList.appendChild(card);
   });
 }
@@ -105,9 +105,10 @@ function renderGames() {
 gameList.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
-  if (!target.dataset.gameId) return;
+  const card = target.closest(".game-card");
+  if (!card || !card.dataset.gameId) return;
 
-  const selected = games.find((game) => game.id === target.dataset.gameId);
+  const selected = games.find((game) => game.id === card.dataset.gameId);
   if (!selected) return;
 
   currentGame = selected;
@@ -134,12 +135,76 @@ exitButton.addEventListener("click", () => {
     socket.emit("leave_queue", { gameId: currentGame.id });
   }
   roomId = null;
+  myPlayerIndex = null;
+  boardState = [];
+  handState = [];
   setScreen("home");
 });
 
-turnButton.addEventListener("click", () => {
+function renderHand() {
+  handEl.innerHTML = "";
+  const tileNames = ["A", "B", "C", "D", "E"];
+  handState.forEach((count, index) => {
+    const card = document.createElement("div");
+    card.className = `tile-card${index === selectedTileType ? " selected" : ""}`;
+    card.dataset.type = String(index);
+    card.innerHTML = `
+      <span class="tile-count">${count}</span>
+      <div class="tile-icon type-${index}">${tileNames[index]}</div>
+      <div>Type ${tileNames[index]}</div>
+    `;
+    handEl.appendChild(card);
+  });
+}
+
+function renderBoard() {
+  if (!Array.isArray(boardState) || boardState.length === 0) return;
+  gameBoard.innerHTML = "";
+  for (let row = 0; row < boardState.length; row += 1) {
+    for (let col = 0; col < boardState[row].length; col += 1) {
+      const cell = document.createElement("div");
+      cell.className = "board-cell";
+      cell.dataset.row = String(row);
+      cell.dataset.col = String(col);
+      const tile = boardState[row][col];
+      if (tile) {
+        cell.classList.add("occupied");
+        const tileEl = document.createElement("div");
+        tileEl.className = `tile player-${tile.player} type-${tile.type}`;
+        tileEl.textContent = ["A", "B", "C", "D", "E"][tile.type] ?? "";
+        cell.appendChild(tileEl);
+      }
+      gameBoard.appendChild(cell);
+    }
+  }
+}
+
+handEl.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const tileCard = target.closest(".tile-card");
+  if (!tileCard) return;
+  const type = Number(tileCard.dataset.type);
+  if (Number.isNaN(type)) return;
+  selectedTileType = type;
+  renderHand();
+});
+
+gameBoard.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const cell = target.closest(".board-cell");
+  if (!cell) return;
   if (!roomId) return;
-  socket.emit("take_turn", { roomId });
+  const row = Number(cell.dataset.row);
+  const col = Number(cell.dataset.col);
+  if (Number.isNaN(row) || Number.isNaN(col)) return;
+  socket.emit("place_tile", {
+    roomId,
+    row,
+    col,
+    type: selectedTileType
+  });
 });
 
 renderGames();

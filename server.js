@@ -28,7 +28,10 @@ app.get("*", (req, res) => {
 });
 
 const queueByGame = new Map(); // gameId -> [socketId]
-const rooms = new Map(); // roomId -> { gameId, players: [socketId], turn: socketId }
+const rooms = new Map(); // roomId -> { gameId, players, turn, board, hands }
+const BOARD_SIZE = 14;
+const TILE_TYPES = 5;
+const TILES_PER_TYPE = 4;
 
 function getQueue(gameId) {
   if (!queueByGame.has(gameId)) {
@@ -39,7 +42,19 @@ function getQueue(gameId) {
 
 function createRoom(gameId, playerA, playerB) {
   const roomId = `room-${gameId}-${playerA}-${playerB}`;
-  rooms.set(roomId, { gameId, players: [playerA, playerB], turn: playerA });
+  const board = Array.from({ length: BOARD_SIZE }, () =>
+    Array.from({ length: BOARD_SIZE }, () => null)
+  );
+  const hands = Array.from({ length: 2 }, () =>
+    Array.from({ length: TILE_TYPES }, () => TILES_PER_TYPE)
+  );
+  rooms.set(roomId, {
+    gameId,
+    players: [playerA, playerB],
+    turn: playerA,
+    board,
+    hands
+  });
   return roomId;
 }
 
@@ -78,11 +93,25 @@ io.on("connection", (socket) => {
       io.sockets.sockets.get(playerA)?.join(roomId);
       io.sockets.sockets.get(playerB)?.join(roomId);
 
-      io.to(roomId).emit("match_found", {
+      const room = rooms.get(roomId);
+      io.to(playerA).emit("match_found", {
         roomId,
         gameId,
         players: [playerA, playerB],
-        turn: rooms.get(roomId).turn
+        turn: room.turn,
+        playerIndex: 0
+      });
+      io.to(playerB).emit("match_found", {
+        roomId,
+        gameId,
+        players: [playerA, playerB],
+        turn: room.turn,
+        playerIndex: 1
+      });
+      io.to(roomId).emit("state_update", {
+        board: room.board,
+        hands: room.hands,
+        turn: room.turn
       });
     }
   });
@@ -105,13 +134,28 @@ io.on("connection", (socket) => {
     rooms.delete(roomId);
   });
 
-  socket.on("take_turn", ({ roomId }) => {
+  socket.on("place_tile", ({ roomId, row, col, type }) => {
     const room = rooms.get(roomId);
     if (!room) return;
     if (room.turn !== socket.id) return;
+    if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return;
+    if (type < 0 || type >= TILE_TYPES) return;
+
+    const playerIndex = room.players.indexOf(socket.id);
+    if (playerIndex === -1) return;
+    if (room.hands[playerIndex][type] <= 0) return;
+    if (room.board[row][col]) return;
+
+    room.board[row][col] = { player: playerIndex, type };
+    room.hands[playerIndex][type] -= 1;
 
     const [a, b] = room.players;
     room.turn = socket.id === a ? b : a;
+    io.to(roomId).emit("state_update", {
+      board: room.board,
+      hands: room.hands,
+      turn: room.turn
+    });
     io.to(roomId).emit("turn_update", { turn: room.turn });
   });
 

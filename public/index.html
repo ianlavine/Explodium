@@ -18,20 +18,8 @@
     <div class="bg-grid"></div>
 
     <main class="shell">
-      <header class="brand">
-        <div class="brand-mark">X</div>
-        <div>
-          <p class="brand-title">Explodium</p>
-          <p class="brand-subtitle">Rapid board game playtesting</p>
-        </div>
-      </header>
-
       <section id="screen-home" class="screen screen-active">
-        <h1>Make a quick lobby. Start a quick game.</h1>
-        <p class="lead">
-          Pick a game to playtest. You will be matched with one other player.
-        </p>
-        <div id="game-list" class="game-list" aria-live="polite"></div>
+        <div id="game-list" class="game-list single" aria-live="polite"></div>
       </section>
 
       <section id="screen-lobby" class="screen">
@@ -52,11 +40,10 @@
       </section>
 
       <section id="screen-game" class="screen">
-        <h2 id="game-title">Game Placeholder</h2>
+        <h2 id="game-title">Explodium</h2>
         <p class="lead" id="turn-status">Waiting for match...</p>
-        <div class="game-board" id="game-board">
-          <button id="turn-button" class="primary-btn">Take Turn</button>
-        </div>
+        <div class="hand" id="hand"></div>
+        <div class="board" id="game-board" role="grid" aria-label="Game board"></div>
         <button id="exit-button" class="ghost-btn">Leave Game</button>
       </section>
     </main>
