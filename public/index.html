@@ -29,14 +29,14 @@
       <section id="screen-home" class="screen screen-active">
         <h1>Make a quick lobby. Start a quick game.</h1>
         <p class="lead">
-          This is the barebones flow. Press play, get paired, then pass the
-          turn. That's it.
+          Pick a game to playtest. You will be matched with one other player.
         </p>
-        <button id="play-button" class="primary-btn">Play</button>
+        <div id="game-list" class="game-list" aria-live="polite"></div>
       </section>
 
       <section id="screen-lobby" class="screen">
         <h2>Lobby</h2>
+        <p class="lead" id="lobby-game">Game: <strong id="lobby-game-name">-</strong></p>
         <p class="lead" id="lobby-status">Waiting for another player...</p>
         <div class="panel">
           <div class="panel-row">
@@ -52,7 +52,7 @@
       </section>
 
       <section id="screen-game" class="screen">
-        <h2>Game Placeholder</h2>
+        <h2 id="game-title">Game Placeholder</h2>
         <p class="lead" id="turn-status">Waiting for match...</p>
         <div class="game-board" id="game-board">
           <button id="turn-button" class="primary-btn">Take Turn</button>

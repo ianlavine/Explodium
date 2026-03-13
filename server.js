@@ -27,19 +27,28 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-const queue = [];
-const rooms = new Map(); // roomId -> { players: [socketId], turn: socketId }
+const queueByGame = new Map(); // gameId -> [socketId]
+const rooms = new Map(); // roomId -> { gameId, players: [socketId], turn: socketId }
 
-function createRoom(playerA, playerB) {
-  const roomId = `room-${playerA}-${playerB}`;
-  rooms.set(roomId, { players: [playerA, playerB], turn: playerA });
+function getQueue(gameId) {
+  if (!queueByGame.has(gameId)) {
+    queueByGame.set(gameId, []);
+  }
+  return queueByGame.get(gameId);
+}
+
+function createRoom(gameId, playerA, playerB) {
+  const roomId = `room-${gameId}-${playerA}-${playerB}`;
+  rooms.set(roomId, { gameId, players: [playerA, playerB], turn: playerA });
   return roomId;
 }
 
 function cleanupSocket(socketId) {
-  const queueIndex = queue.indexOf(socketId);
-  if (queueIndex !== -1) {
-    queue.splice(queueIndex, 1);
+  for (const queue of queueByGame.values()) {
+    const queueIndex = queue.indexOf(socketId);
+    if (queueIndex !== -1) {
+      queue.splice(queueIndex, 1);
+    }
   }
 
   for (const [roomId, room] of rooms.entries()) {
@@ -56,29 +65,44 @@ function cleanupSocket(socketId) {
 }
 
 io.on("connection", (socket) => {
-  socket.on("join_queue", () => {
+  socket.on("join_queue", ({ gameId = "default" } = {}) => {
+    const queue = getQueue(gameId);
     if (queue.includes(socket.id)) return;
     queue.push(socket.id);
 
     if (queue.length >= 2) {
       const playerA = queue.shift();
       const playerB = queue.shift();
-      const roomId = createRoom(playerA, playerB);
+      const roomId = createRoom(gameId, playerA, playerB);
 
       io.sockets.sockets.get(playerA)?.join(roomId);
       io.sockets.sockets.get(playerB)?.join(roomId);
 
       io.to(roomId).emit("match_found", {
         roomId,
+        gameId,
         players: [playerA, playerB],
         turn: rooms.get(roomId).turn
       });
     }
   });
 
-  socket.on("leave_queue", () => {
+  socket.on("leave_queue", ({ gameId = "default" } = {}) => {
+    const queue = getQueue(gameId);
     const index = queue.indexOf(socket.id);
     if (index !== -1) queue.splice(index, 1);
+  });
+
+  socket.on("leave_room", ({ roomId } = {}) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    if (!room.players.includes(socket.id)) return;
+    room.players.forEach((id) => {
+      if (id !== socket.id) {
+        io.to(id).emit("opponent_left");
+      }
+    });
+    rooms.delete(roomId);
   });
 
   socket.on("take_turn", ({ roomId }) => {
