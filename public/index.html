@@ -40,11 +40,15 @@
       </section>
 
       <section id="screen-game" class="screen">
-        <h2 id="game-title">Explodium</h2>
-        <p class="lead" id="turn-status">Waiting for match...</p>
-        <div class="hand" id="hand"></div>
+        <div class="game-header">
+          <h2 id="game-title">Explodium</h2>
+          <span id="turn-status" class="turn-status">Waiting for match...</span>
+        </div>
         <div class="board" id="game-board" role="grid" aria-label="Game board"></div>
-        <button id="exit-button" class="ghost-btn">Leave Game</button>
+        <div class="hand" id="hand"></div>
+        <div class="game-footer">
+          <button id="exit-button" class="ghost-btn">Leave Game</button>
+        </div>
       </section>
     </main>
 

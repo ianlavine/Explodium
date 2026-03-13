@@ -143,6 +143,10 @@ exitButton.addEventListener("click", () => {
 
 function renderHand() {
   handEl.innerHTML = "";
+  handEl.classList.remove("player-0", "player-1");
+  if (myPlayerIndex !== null) {
+    handEl.classList.add(`player-${myPlayerIndex}`);
+  }
   const tileNames = ["A", "B", "C", "D", "E"];
   handState.forEach((count, index) => {
     const card = document.createElement("div");
@@ -151,7 +155,6 @@ function renderHand() {
     card.innerHTML = `
       <span class="tile-count">${count}</span>
       <div class="tile-icon type-${index}">${tileNames[index]}</div>
-      <div>Type ${tileNames[index]}</div>
     `;
     handEl.appendChild(card);
   });
@@ -159,6 +162,10 @@ function renderHand() {
 
 function renderBoard() {
   if (!Array.isArray(boardState) || boardState.length === 0) return;
+  gameBoard.classList.remove("player-0", "player-1");
+  if (myPlayerIndex !== null) {
+    gameBoard.classList.add(`player-${myPlayerIndex}`);
+  }
   gameBoard.innerHTML = "";
   for (let row = 0; row < boardState.length; row += 1) {
     for (let col = 0; col < boardState[row].length; col += 1) {
