@@ -28,6 +28,39 @@ let selectedTileType = 0;
 let boardState = [];
 let handState = [];
 
+const tileSvgs = [
+  `<svg viewBox="0 0 100 100" aria-hidden="true">
+     <path d="M50 6 L70 30 L94 50 L70 70 L50 94 L30 70 L6 50 L30 30 Z" fill="none" stroke="currentColor" stroke-width="10" stroke-linejoin="round"/>
+     <path d="M50 12 L65 32 L88 50 L65 68 L50 88 L35 68 L12 50 L35 32 Z" fill="currentColor" opacity="0.35"/>
+     <text x="50" y="58" text-anchor="middle" font-size="34" font-weight="700" fill="rgba(255,255,255,0.9)" font-family="'Space Grotesk', sans-serif">3</text>
+   </svg>`,
+  `<svg viewBox="0 0 100 100" aria-hidden="true">
+     <rect x="12" y="12" width="76" height="76" rx="8" fill="currentColor"/>
+     <rect x="20" y="20" width="60" height="60" rx="6" fill="none" stroke="rgba(255,255,255,0.65)" stroke-width="6"/>
+     <text x="50" y="58" text-anchor="middle" font-size="34" font-weight="700" fill="rgba(255,255,255,0.9)" font-family="'Space Grotesk', sans-serif">3</text>
+   </svg>`,
+  `<svg viewBox="0 0 100 100" aria-hidden="true">
+     <path d="M20 50
+              C20 26 34 12 50 12
+              C66 12 80 26 80 50
+              C80 74 66 88 50 88
+              C34 88 20 74 20 50
+              Z" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-dasharray="8 6"/>
+   </svg>`,
+  `<svg viewBox="0 0 100 100" aria-hidden="true">
+     <path d="M30 20 H70 V34 H46 V44 H66 V58 H46 V66 H70 V80 H30 Z" fill="currentColor"/>
+   </svg>`,
+  `<svg viewBox="0 0 100 100" aria-hidden="true">
+     <path d="M30 18 H58
+              C70 18 80 28 80 40
+              C80 52 70 62 58 62 H30
+              V18 Z
+              M30 62 H56
+              C70 62 82 72 82 84
+              C82 96 70 100 56 100 H30 Z" fill="currentColor" transform="translate(0,-6)"/>
+   </svg>`
+];
+
 const games = [
   {
     id: "explodium",
@@ -92,25 +125,51 @@ socket.on("opponent_left", () => {
 
 function renderGames() {
   gameList.innerHTML = "";
+  gameList.classList.add("single");
   games.forEach((game) => {
+    const row = document.createElement("div");
+    row.className = "game-row";
+
     const card = document.createElement("button");
     card.className = "game-card";
     card.type = "button";
     card.dataset.gameId = game.id;
     card.textContent = game.name;
-    gameList.appendChild(card);
+
+    const solo = document.createElement("button");
+    solo.className = "solo-btn";
+    solo.type = "button";
+    solo.dataset.gameId = game.id;
+    solo.textContent = "Solo";
+
+    row.appendChild(card);
+    row.appendChild(solo);
+    gameList.appendChild(row);
   });
 }
 
 gameList.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
+  const soloButton = target.closest(".solo-btn");
+  if (soloButton) {
+    const selected = games.find((game) => game.id === soloButton.dataset.gameId);
+    if (!selected) return;
+    currentGame = selected;
+    lobbyGameName.textContent = selected.name;
+    gameTitle.textContent = selected.name;
+    setScreen("lobby");
+    lobbyStatus.textContent = "Starting solo game...";
+    playerStatus.textContent = "Solo";
+    playersNeeded.textContent = "0";
+    socket.emit("start_solo", { gameId: selected.id });
+    return;
+  }
+
   const card = target.closest(".game-card");
   if (!card || !card.dataset.gameId) return;
-
   const selected = games.find((game) => game.id === card.dataset.gameId);
   if (!selected) return;
-
   currentGame = selected;
   lobbyGameName.textContent = selected.name;
   gameTitle.textContent = selected.name;
@@ -154,7 +213,7 @@ function renderHand() {
     card.dataset.type = String(index);
     card.innerHTML = `
       <span class="tile-count">${count}</span>
-      <div class="tile-icon type-${index}">${tileNames[index]}</div>
+      <div class="tile-icon type-${index}">${tileSvgs[index]}</div>
     `;
     handEl.appendChild(card);
   });
@@ -173,12 +232,27 @@ function renderBoard() {
       cell.className = "board-cell";
       cell.dataset.row = String(row);
       cell.dataset.col = String(col);
-      const tile = boardState[row][col];
+      const cellState = boardState[row][col];
+      const tile =
+        cellState && typeof cellState === "object" && "player" in cellState && "type" in cellState
+          ? cellState
+          : cellState?.tile ?? null;
+      const markers = Array.isArray(cellState?.markers) ? cellState.markers : [];
+      if (markers.length && !tile) {
+        const markerWrap = document.createElement("div");
+        markerWrap.className = "path-markers";
+        markers.forEach((markerPlayer) => {
+          const marker = document.createElement("span");
+          marker.className = `path-marker player-${markerPlayer}`;
+          markerWrap.appendChild(marker);
+        });
+        cell.appendChild(markerWrap);
+      }
       if (tile) {
         cell.classList.add("occupied");
         const tileEl = document.createElement("div");
         tileEl.className = `tile player-${tile.player} type-${tile.type}`;
-        tileEl.textContent = ["A", "B", "C", "D", "E"][tile.type] ?? "";
+        tileEl.innerHTML = tileSvgs[tile.type] || "";
         cell.appendChild(tileEl);
       }
       gameBoard.appendChild(cell);

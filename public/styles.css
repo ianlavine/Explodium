@@ -190,6 +190,31 @@ h2 {
   width: 100%;
 }
 
+.game-row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+  max-width: 520px;
+}
+
+.solo-btn {
+  background: transparent;
+  border-radius: 16px;
+  padding: 18px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--text);
+  min-width: 96px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.solo-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.3);
+}
+
 .game-card {
   background: #202734;
   border-radius: 16px;
@@ -249,12 +274,17 @@ h2 {
   border-radius: 10px;
   display: grid;
   place-items: center;
-  color: #0b0e13;
+  color: rgba(8, 10, 14, 0.85);
   font-weight: 700;
   font-size: 14px;
   background-color: var(--tile-base, #2b3340);
   background-blend-mode: multiply;
   background-size: 10px 10px;
+}
+
+.tile-icon svg {
+  width: 26px;
+  height: 26px;
 }
 
 .hand.player-0 .tile-icon {
@@ -309,6 +339,35 @@ h2 {
   cursor: pointer;
 }
 
+.path-markers {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.path-marker {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  background: rgba(8, 10, 14, 0.3);
+}
+
+.path-marker.player-0 {
+  color: #ff9a9a;
+  box-shadow: 0 0 6px rgba(255, 154, 154, 0.6);
+}
+
+.path-marker.player-1 {
+  color: #9ec5ff;
+  box-shadow: 0 0 6px rgba(158, 197, 255, 0.6);
+}
+
 .board.player-0 .board-cell:not(.occupied):hover {
   background: rgba(227, 75, 75, 0.18);
   border-color: rgba(255, 154, 154, 0.4);
@@ -329,12 +388,16 @@ h2 {
   border-radius: 5px;
   display: grid;
   place-items: center;
-  font-size: 10px;
-  font-weight: 700;
-  color: #0b0e13;
+  color: rgba(8, 10, 14, 0.85);
   background-color: var(--tile-base);
   background-blend-mode: multiply;
   background-size: 10px 10px;
+  z-index: 2;
+}
+
+.board-cell .tile svg {
+  width: 20px;
+  height: 20px;
 }
 
 .tile.player-0 {
