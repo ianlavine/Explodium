@@ -184,29 +184,35 @@ h2 {
 
 .game-list {
   width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 220px));
+  gap: 18px;
+  align-items: start;
 }
 
-.game-list.single .game-card {
-  width: 100%;
+.game-list.single {
+  grid-template-columns: 220px;
 }
 
 .game-row {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
-  max-width: 520px;
+  width: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 10px;
 }
 
 .solo-btn {
   background: transparent;
-  border-radius: 16px;
-  padding: 18px 22px;
+  border-radius: 10px;
+  padding: 10px 14px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   font-size: 16px;
   font-weight: 700;
   cursor: pointer;
   color: var(--text);
-  min-width: 96px;
+  width: 100%;
+  min-width: 0;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -217,17 +223,19 @@ h2 {
 
 .game-card {
   background: #202734;
-  border-radius: 16px;
+  border-radius: 12px;
   padding: 18px 22px;
   border: none;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
+  text-align: center;
   font-size: 26px;
   font-weight: 700;
   cursor: pointer;
   color: var(--text);
-  max-width: 360px;
+  width: 100%;
+  max-width: none;
   box-shadow: 0 10px 18px rgba(0, 0, 0, 0.3);
 }
 
@@ -459,6 +467,248 @@ h2 {
   background-size: 10px 10px;
 }
 
+.board.toy-battle-board {
+  position: relative;
+  display: block;
+  width: min(820px, calc(100vw - 64px));
+  height: min(560px, calc(100vh - 230px));
+  min-height: 420px;
+  margin: 14px 0 132px;
+  overflow: visible;
+}
+
+.board.flip-triples-board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(58px, 86px));
+  gap: 12px;
+  width: fit-content;
+  max-width: calc(100vw - 64px);
+  margin: 22px 0 110px;
+  overflow: visible;
+}
+
+.flip-piece {
+  width: clamp(58px, 12vw, 86px);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  border: 2px solid rgba(17, 21, 28, 0.86);
+  background: #f7f8fb;
+  color: #11151c;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.26);
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.flip-piece:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-2);
+}
+
+.flip-piece.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(255, 138, 0, 0.22), 0 14px 24px rgba(0, 0, 0, 0.32);
+}
+
+.flip-piece.opportunity {
+  box-shadow: 0 0 0 4px rgba(170, 96, 255, 0.84), 0 10px 18px rgba(0, 0, 0, 0.26);
+}
+
+.flip-piece.opportunity.selected {
+  box-shadow: 0 0 0 4px rgba(170, 96, 255, 0.84), 0 0 0 8px rgba(255, 138, 0, 0.22),
+    0 14px 24px rgba(0, 0, 0, 0.32);
+}
+
+.flip-piece.flipped {
+  background: #05070a;
+  border-color: rgba(255, 255, 255, 0.2);
+  cursor: default;
+}
+
+.flip-piece:disabled {
+  transform: none;
+}
+
+.flip-symbol {
+  display: block;
+}
+
+.flip-symbol.red-x {
+  color: #df2424;
+  font-size: clamp(40px, 8vw, 64px);
+  font-weight: 700;
+  line-height: 0.82;
+  transform: translateY(-2px);
+}
+
+.flip-symbol.blue-o {
+  width: 54%;
+  aspect-ratio: 1;
+  border: clamp(5px, 1vw, 8px) solid #2268e8;
+  border-radius: 999px;
+}
+
+.flip-score {
+  position: fixed;
+  top: 140px;
+  right: 24px;
+  min-width: 170px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  z-index: 4;
+}
+
+.flip-score-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.flip-score-row strong {
+  color: var(--text);
+  font-size: 22px;
+}
+
+.flip-score-note {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.flip-score-detail {
+  display: grid;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.toy-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.toy-edges line {
+  stroke: rgba(255, 255, 255, 0.84);
+  stroke-width: 0.75;
+  stroke-linecap: round;
+}
+
+.toy-node {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  border-radius: 4px;
+  background: #f5f7fb;
+  color: #11151c;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+  z-index: 2;
+  box-shadow: 0 0 18px rgba(255, 255, 255, 0.14);
+}
+
+.toy-node:hover {
+  transform: translate(-50%, -50%) scale(1.12);
+}
+
+.toy-node.base-red {
+  background: #e34b4b;
+  border-color: #ffb1b1;
+}
+
+.toy-node.base-blue {
+  background: #3b82f6;
+  border-color: #b7d4ff;
+}
+
+.toy-node.occupied {
+  width: 48px;
+  height: 48px;
+  background: #10151d;
+  color: var(--text);
+  border-color: var(--accent-2);
+}
+
+.toy-rack {
+  position: fixed;
+  left: 24px;
+  right: 24px;
+  bottom: 24px;
+  top: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 86px;
+  padding: 14px;
+  margin: 0;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  overflow-x: auto;
+  z-index: 4;
+}
+
+.toy-rack + .game-footer {
+  bottom: 124px;
+}
+
+.toy-piece,
+.draw-pieces {
+  flex: 0 0 auto;
+  min-width: 112px;
+  height: 56px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: #202734;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.toy-piece.selected {
+  outline: 2px solid var(--accent);
+  border-color: transparent;
+}
+
+.draw-pieces {
+  margin-left: auto;
+  background: var(--accent);
+  color: #1b1203;
+}
+
+.draw-pieces:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -477,5 +727,34 @@ h2 {
 
   body {
     padding: 16px;
+  }
+
+  .board.toy-battle-board {
+    width: calc(100vw - 48px);
+    min-height: 380px;
+  }
+
+  .toy-rack {
+    left: 16px;
+    right: 16px;
+  }
+
+  .board.flip-triples-board {
+    grid-template-columns: repeat(5, minmax(44px, 1fr));
+    gap: 8px;
+    width: 100%;
+    max-width: calc(100vw - 48px);
+    margin-bottom: 160px;
+  }
+
+  .flip-piece {
+    width: 100%;
+  }
+
+  .flip-score {
+    left: 16px;
+    right: 16px;
+    top: auto;
+    bottom: 24px;
   }
 }

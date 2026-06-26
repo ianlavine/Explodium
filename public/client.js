@@ -27,6 +27,10 @@ let myPlayerIndex = null;
 let selectedTileType = 0;
 let boardState = [];
 let handState = [];
+let toyBattleState = null;
+let selectedToyPieceId = null;
+let flipTriplesState = null;
+let selectedFlipPiece = null;
 
 const tileSvgs = {
   0: `<svg viewBox="0 0 100 100" aria-hidden="true" class="icon-diamond">
@@ -82,6 +86,16 @@ const games = [
     id: "explodium",
     name: "Explodium",
     description: ""
+  },
+  {
+    id: "toy-battle",
+    name: "Toy Battle",
+    description: ""
+  },
+  {
+    id: "flip-triples",
+    name: "Flip Triples",
+    description: ""
   }
 ];
 
@@ -93,6 +107,14 @@ function setScreen(name) {
 function updateTurn(turnId) {
   const isMyTurn = turnId === myId;
   turnStatus.textContent = isMyTurn ? "Your turn" : "Opponent's turn";
+}
+
+function isToyBattle() {
+  return currentGame?.id === "toy-battle";
+}
+
+function isFlipTriples() {
+  return currentGame?.id === "flip-triples";
 }
 
 socket.on("connect", () => {
@@ -120,10 +142,50 @@ socket.on("match_found", ({ roomId: newRoomId, turn, gameId, playerIndex }) => {
 });
 
 socket.on("turn_update", ({ turn }) => {
+  if (flipTriplesState?.gameOver) return;
+  if (isFlipTriples() && flipTriplesState) {
+    updateFlipTriplesTurn(turn);
+    return;
+  }
   updateTurn(turn);
 });
 
-socket.on("state_update", ({ board, hands, turn }) => {
+socket.on("state_update", ({ board, hands, turn, toyBattle, flipTriples }) => {
+  if (toyBattle) {
+    toyBattleState = toyBattle;
+    flipTriplesState = null;
+    boardState = [];
+    handState = toyBattle.rack || [];
+    if (!handState.some((piece) => piece.id === selectedToyPieceId)) {
+      selectedToyPieceId = handState[0]?.id ?? null;
+    }
+    renderToyBattleBoard();
+    renderToyBattleRack();
+    updateTurn(turn);
+    return;
+  }
+
+  if (flipTriples) {
+    flipTriplesState = flipTriples;
+    toyBattleState = null;
+    boardState = [];
+    handState = [];
+    selectedFlipPiece =
+      selectedFlipPiece && isSelectableFlipPiece(getFlipPiece(selectedFlipPiece.row, selectedFlipPiece.col))
+        ? selectedFlipPiece
+        : null;
+    renderFlipTriplesBoard();
+    renderFlipTriplesScore();
+    if (flipTriples.gameOver) {
+      turnStatus.textContent = `Game over: Red X ${flipTriples.scores.red}, Blue O ${flipTriples.scores.blue}`;
+    } else {
+      updateFlipTriplesTurn(turn);
+    }
+    return;
+  }
+
+  toyBattleState = null;
+  flipTriplesState = null;
   boardState = board;
   handState = hands[myPlayerIndex] || [0, 0, 0, 0, 0];
   renderBoard();
@@ -141,7 +203,7 @@ socket.on("opponent_left", () => {
 
 function renderGames() {
   gameList.innerHTML = "";
-  gameList.classList.add("single");
+  gameList.classList.toggle("single", games.length === 1);
   games.forEach((game) => {
     const row = document.createElement("div");
     row.className = "game-row";
@@ -213,12 +275,25 @@ exitButton.addEventListener("click", () => {
   myPlayerIndex = null;
   boardState = [];
   handState = [];
+  toyBattleState = null;
+  selectedToyPieceId = null;
+  flipTriplesState = null;
+  selectedFlipPiece = null;
   setScreen("home");
 });
 
 function renderHand() {
+  if (isToyBattle()) {
+    renderToyBattleRack();
+    return;
+  }
+  if (isFlipTriples()) {
+    renderFlipTriplesScore();
+    return;
+  }
+
   handEl.innerHTML = "";
-  handEl.classList.remove("player-0", "player-1");
+  handEl.classList.remove("player-0", "player-1", "toy-rack", "flip-score");
   if (myPlayerIndex !== null) {
     handEl.classList.add(`player-${myPlayerIndex}`);
   }
@@ -236,8 +311,17 @@ function renderHand() {
 }
 
 function renderBoard() {
+  if (isToyBattle()) {
+    renderToyBattleBoard();
+    return;
+  }
+  if (isFlipTriples()) {
+    renderFlipTriplesBoard();
+    return;
+  }
+
   if (!Array.isArray(boardState) || boardState.length === 0) return;
-  gameBoard.classList.remove("player-0", "player-1");
+  gameBoard.classList.remove("player-0", "player-1", "toy-battle-board", "flip-triples-board");
   if (myPlayerIndex !== null) {
     gameBoard.classList.add(`player-${myPlayerIndex}`);
   }
@@ -281,9 +365,187 @@ function renderBoard() {
   }
 }
 
+function getFlipPiece(row, col) {
+  return flipTriplesState?.board?.[row]?.[col] ?? null;
+}
+
+function getFlipShape(piece) {
+  if (!piece || piece.shape === "neutral") return "";
+  if (piece.shape === "red-x") {
+    return `<span class="flip-symbol red-x" aria-hidden="true">×</span>`;
+  }
+  return `<span class="flip-symbol blue-o" aria-hidden="true"></span>`;
+}
+
+function isSelectableFlipPiece(piece) {
+  if (!piece || flipTriplesState?.gameOver) return false;
+  return flipTriplesState?.phase === 2 ? piece.flipped : !piece.flipped;
+}
+
+function getFlipPhaseName() {
+  return flipTriplesState?.phase === 2 ? "Phase 2: Black pieces" : "Phase 1: White pieces";
+}
+
+function updateFlipTriplesTurn(turn) {
+  const isMyTurn = turn === myId;
+  turnStatus.textContent = `${getFlipPhaseName()} - ${isMyTurn ? "Your turn" : "Opponent's turn"}`;
+}
+
+function renderFlipTriplesBoard() {
+  if (!flipTriplesState) return;
+  gameBoard.innerHTML = "";
+  gameBoard.classList.remove("player-0", "player-1", "toy-battle-board");
+  gameBoard.classList.add("flip-triples-board");
+
+  flipTriplesState.board.forEach((row, rowIndex) => {
+    row.forEach((piece, colIndex) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `flip-piece${piece.flipped ? " flipped" : ""}${
+        piece.opportunity ? " opportunity" : ""
+      }`;
+      if (selectedFlipPiece?.row === rowIndex && selectedFlipPiece?.col === colIndex) {
+        button.classList.add("selected");
+      }
+      button.dataset.row = String(rowIndex);
+      button.dataset.col = String(colIndex);
+      button.disabled = !isSelectableFlipPiece(piece);
+      button.innerHTML = getFlipShape(piece);
+      gameBoard.appendChild(button);
+    });
+  });
+}
+
+function renderFlipTriplesScore() {
+  handEl.innerHTML = "";
+  handEl.classList.remove("player-0", "player-1", "toy-rack");
+  handEl.classList.add("flip-score");
+
+  const scores = flipTriplesState?.scores ?? { red: 0, blue: 0 };
+  const phaseScores = flipTriplesState?.phaseScores ?? {
+    phase1: { red: 0, blue: 0 },
+    phase2: { red: 0, blue: 0 },
+    bonus: { red: 0, blue: 0 }
+  };
+  const rows = [
+    ["Red X", scores.red],
+    ["Blue O", scores.blue]
+  ];
+  rows.forEach(([label, score]) => {
+    const row = document.createElement("div");
+    row.className = "flip-score-row";
+    row.innerHTML = `<span>${label}</span><strong>${score}</strong>`;
+    handEl.appendChild(row);
+  });
+
+  const note = document.createElement("div");
+  note.className = "flip-score-note";
+  note.textContent = flipTriplesState?.gameOver ? "Final score" : getFlipPhaseName();
+  handEl.appendChild(note);
+
+  const detail = document.createElement("div");
+  detail.className = "flip-score-detail";
+  detail.innerHTML = `
+    <span>Phase 1 ${phaseScores.phase1.red}-${phaseScores.phase1.blue}</span>
+    <span>Phase 2 ${phaseScores.phase2.red}-${phaseScores.phase2.blue}</span>
+    <span>Bonus ${phaseScores.bonus.red}-${phaseScores.bonus.blue}</span>
+  `;
+  handEl.appendChild(detail);
+}
+
+function areTouching(a, b) {
+  return Math.max(Math.abs(a.row - b.row), Math.abs(a.col - b.col)) === 1;
+}
+
+function getToyNodePosition(node) {
+  return {
+    x: 8 + node.col * 10.5,
+    y: 6 + node.row * 14.666
+  };
+}
+
+function renderToyBattleBoard() {
+  if (!toyBattleState) return;
+  gameBoard.innerHTML = "";
+  gameBoard.classList.remove("player-0", "player-1", "flip-triples-board");
+  gameBoard.classList.add("toy-battle-board");
+
+  const nodesById = new Map(toyBattleState.nodes.map((node) => [node.id, node]));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "toy-edges");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("aria-hidden", "true");
+
+  toyBattleState.edges.forEach((edge) => {
+    const from = nodesById.get(edge.from);
+    const to = nodesById.get(edge.to);
+    if (!from || !to) return;
+    const start = getToyNodePosition(from);
+    const end = getToyNodePosition(to);
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(start.x));
+    line.setAttribute("y1", String(start.y));
+    line.setAttribute("x2", String(end.x));
+    line.setAttribute("y2", String(end.y));
+    svg.appendChild(line);
+  });
+  gameBoard.appendChild(svg);
+
+  toyBattleState.nodes.forEach((node) => {
+    const position = getToyNodePosition(node);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toy-node";
+    button.dataset.nodeId = node.id;
+    button.style.left = `${position.x}%`;
+    button.style.top = `${position.y}%`;
+    if (node.base) button.classList.add(`base-${node.base}`);
+    if (node.piece) button.classList.add("occupied");
+    button.textContent = node.piece?.name || "";
+    gameBoard.appendChild(button);
+  });
+}
+
+function renderToyBattleRack() {
+  handEl.innerHTML = "";
+  handEl.classList.remove("player-0", "player-1", "flip-score");
+  handEl.classList.add("toy-rack");
+
+  handState.forEach((piece) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `toy-piece${piece.id === selectedToyPieceId ? " selected" : ""}`;
+    button.dataset.pieceId = piece.id;
+    button.textContent = piece.name;
+    handEl.appendChild(button);
+  });
+
+  const drawButton = document.createElement("button");
+  drawButton.type = "button";
+  drawButton.className = "draw-pieces";
+  drawButton.textContent = `Draw 2 (${toyBattleState?.deckCount ?? 0})`;
+  drawButton.disabled = !toyBattleState || toyBattleState.deckCount <= 0;
+  handEl.appendChild(drawButton);
+}
+
 handEl.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  if (isToyBattle()) {
+    const drawButton = target.closest(".draw-pieces");
+    if (drawButton) {
+      if (roomId) socket.emit("toy_battle_draw", { roomId });
+      return;
+    }
+
+    const pieceButton = target.closest(".toy-piece");
+    if (!pieceButton) return;
+    selectedToyPieceId = pieceButton.dataset.pieceId || null;
+    renderToyBattleRack();
+    return;
+  }
+  if (isFlipTriples()) return;
+
   const tileCard = target.closest(".tile-card");
   if (!tileCard) return;
   const type = Number(tileCard.dataset.type);
@@ -295,6 +557,51 @@ handEl.addEventListener("click", (event) => {
 gameBoard.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  if (isToyBattle()) {
+    const node = target.closest(".toy-node");
+    if (!node || !roomId || !selectedToyPieceId) return;
+    socket.emit("toy_battle_place", {
+      roomId,
+      nodeId: node.dataset.nodeId,
+      pieceId: selectedToyPieceId
+    });
+    return;
+  }
+  if (isFlipTriples()) {
+    const pieceButton = target.closest(".flip-piece");
+    if (!pieceButton || !roomId || flipTriplesState?.gameOver) return;
+    const row = Number(pieceButton.dataset.row);
+    const col = Number(pieceButton.dataset.col);
+    if (Number.isNaN(row) || Number.isNaN(col)) return;
+    const piece = getFlipPiece(row, col);
+    if (!isSelectableFlipPiece(piece)) return;
+
+    if (!selectedFlipPiece) {
+      selectedFlipPiece = { row, col };
+      renderFlipTriplesBoard();
+      return;
+    }
+
+    const first = selectedFlipPiece;
+    selectedFlipPiece = null;
+    if (first.row === row && first.col === col) {
+      renderFlipTriplesBoard();
+      return;
+    }
+    if (!areTouching(first, { row, col })) {
+      selectedFlipPiece = { row, col };
+      renderFlipTriplesBoard();
+      return;
+    }
+
+    socket.emit("flip_triples_swap", {
+      roomId,
+      from: first,
+      to: { row, col }
+    });
+    return;
+  }
+
   const cell = target.closest(".board-cell");
   if (!cell) return;
   if (!roomId) return;

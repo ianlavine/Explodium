@@ -40,6 +40,13 @@ const destroyType = 4;
 const maxRangeSquare = 3;
 const maxRangeDiamond = 3;
 const maxRangeCircle = 2;
+const TOY_BATTLE_TYPES = ["Kwak", "Skully", "Cap'n", "Jumbo", "Hook", "XB-42", "Star", "Roxy"];
+const FLIP_TRIPLES_SIZE = 5;
+const FLIP_TRIPLES_SHAPES = [
+  ...Array.from({ length: 8 }, () => "red-x"),
+  ...Array.from({ length: 8 }, () => "blue-o"),
+  ...Array.from({ length: 9 }, () => "neutral")
+];
 
 function getTile(cell) {
   if (!cell || typeof cell !== "object") return null;
@@ -265,8 +272,259 @@ function getQueue(gameId) {
   return queueByGame.get(gameId);
 }
 
+function shuffle(items) {
+  const shuffled = [...items];
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function createToyBattleDeck() {
+  return shuffle(
+    TOY_BATTLE_TYPES.flatMap((name) =>
+      Array.from({ length: 3 }, (_, copy) => ({
+        id: `${name.toLowerCase().replace(/[^a-z0-9]/g, "")}-${copy}`,
+        name
+      }))
+    )
+  );
+}
+
+function createToyBattleBoard() {
+  const nodes = [];
+  const nodeByPosition = new Map();
+  const addNode = (row, col, base = null) => {
+    const key = `${row}-${col}`;
+    if (nodeByPosition.has(key)) return nodeByPosition.get(key);
+    const node = {
+      id: `n-${row}-${col}`,
+      row,
+      col,
+      base,
+      piece: null
+    };
+    nodes.push(node);
+    nodeByPosition.set(key, node);
+    return node;
+  };
+
+  addNode(0, 4, "blue");
+  addNode(6, 4, "red");
+  for (let row = 1; row <= 5; row += 1) {
+    addNode(row, 4);
+    for (let col = 0; col <= 8; col += 1) {
+      if (col === 4) continue;
+      if (Math.random() < 0.42) addNode(row, col);
+    }
+  }
+
+  const edges = [];
+  const edgeKeys = new Set();
+  const addEdge = (a, b) => {
+    if (!a || !b || a.id === b.id) return;
+    const key = [a.id, b.id].sort().join(":");
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push({ from: a.id, to: b.id });
+  };
+
+  for (let row = 0; row < 6; row += 1) {
+    addEdge(nodeByPosition.get(`${row}-4`), nodeByPosition.get(`${row + 1}-4`));
+  }
+
+  nodes.forEach((node) => {
+    nodes.forEach((other) => {
+      const rowGap = Math.abs(node.row - other.row);
+      const colGap = Math.abs(node.col - other.col);
+      if (rowGap + colGap === 0) return;
+      if (rowGap <= 1 && colGap <= 2 && rowGap + colGap <= 2 && Math.random() < 0.5) {
+        addEdge(node, other);
+      }
+    });
+  });
+
+  return { nodes, edges };
+}
+
+function createToyBattleState() {
+  const deck = createToyBattleDeck();
+  return {
+    ...createToyBattleBoard(),
+    deck,
+    rack: deck.splice(0, 3)
+  };
+}
+
+function createFlipTriplesState() {
+  const pieces = shuffle(FLIP_TRIPLES_SHAPES).map((shape, index) => ({
+    id: `flip-${index}`,
+    shape,
+    flipped: false,
+    opportunity: false
+  }));
+  const board = [];
+  for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
+    board.push(pieces.slice(row * FLIP_TRIPLES_SIZE, (row + 1) * FLIP_TRIPLES_SIZE));
+  }
+  return {
+    board,
+    phase: 1,
+    phaseScores: {
+      phase1: { red: 0, blue: 0 },
+      phase2: { red: 0, blue: 0 },
+      bonus: { red: 0, blue: 0 }
+    },
+    scores: { red: 0, blue: 0 },
+    gameOver: false
+  };
+}
+
+function hasFlipTriplesMove(board, phase) {
+  for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
+    for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
+      if (!isSelectableFlipPiece(board[row][col], phase)) continue;
+      for (let dr = -1; dr <= 1; dr += 1) {
+        for (let dc = -1; dc <= 1; dc += 1) {
+          if (dr === 0 && dc === 0) continue;
+          const nextRow = row + dr;
+          const nextCol = col + dc;
+          if (nextRow < 0 || nextRow >= FLIP_TRIPLES_SIZE) continue;
+          if (nextCol < 0 || nextCol >= FLIP_TRIPLES_SIZE) continue;
+          if (isSelectableFlipPiece(board[nextRow][nextCol], phase)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function isSelectableFlipPiece(piece, phase) {
+  return phase === 1 ? !piece.flipped : piece.flipped;
+}
+
+function getFlipTriples(board, shape) {
+  const directions = [
+    [0, 1],
+    [1, 0],
+    [1, 1],
+    [1, -1]
+  ];
+  const triples = [];
+  for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
+    for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
+      directions.forEach(([dr, dc]) => {
+        const cells = [0, 1, 2].map((offset) => [row + dr * offset, col + dc * offset]);
+        const inBounds = cells.every(
+          ([r, c]) => r >= 0 && r < FLIP_TRIPLES_SIZE && c >= 0 && c < FLIP_TRIPLES_SIZE
+        );
+        if (!inBounds) return;
+        if (cells.every(([r, c]) => board[r][c].shape === shape)) triples.push(cells);
+      });
+    }
+  }
+  return triples;
+}
+
+function countFlipTriples(board, shape) {
+  return getFlipTriples(board, shape).length;
+}
+
+function getFlipTriplesScores(board) {
+  return {
+    red: countFlipTriples(board, "red-x"),
+    blue: countFlipTriples(board, "blue-o")
+  };
+}
+
+function markFlipTriplesOpportunities(board) {
+  board.forEach((row) => {
+    row.forEach((piece) => {
+      piece.opportunity = !piece.flipped && piece.shape !== "neutral";
+    });
+  });
+}
+
+function countFlipTriplesOpportunityBonus(board, shape) {
+  const usedOpportunityIds = new Set();
+  getFlipTriples(board, shape).forEach((triple) => {
+    triple.forEach(([row, col]) => {
+      const piece = board[row][col];
+      if (piece.opportunity) usedOpportunityIds.add(piece.id);
+    });
+  });
+  return usedOpportunityIds.size;
+}
+
+function refreshFlipTriplesTotals(state) {
+  state.scores = {
+    red: state.phaseScores.phase1.red + state.phaseScores.phase2.red + state.phaseScores.bonus.red,
+    blue: state.phaseScores.phase1.blue + state.phaseScores.phase2.blue + state.phaseScores.bonus.blue
+  };
+}
+
+function advanceFlipTriplesIfNeeded(room) {
+  const state = room.flipTriples;
+  if (hasFlipTriplesMove(state.board, state.phase)) return;
+
+  if (state.phase === 1) {
+    state.phaseScores.phase1 = getFlipTriplesScores(state.board);
+    markFlipTriplesOpportunities(state.board);
+    refreshFlipTriplesTotals(state);
+    state.phase = 2;
+    if (hasFlipTriplesMove(state.board, state.phase)) return;
+  }
+
+  state.phaseScores.phase2 = getFlipTriplesScores(state.board);
+  state.phaseScores.bonus = {
+    red: countFlipTriplesOpportunityBonus(state.board, "red-x"),
+    blue: countFlipTriplesOpportunityBonus(state.board, "blue-o")
+  };
+  refreshFlipTriplesTotals(state);
+  state.gameOver = true;
+}
+
+function emitToyBattleState(roomId, room) {
+  io.to(roomId).emit("state_update", {
+    toyBattle: {
+      nodes: room.toyBattle.nodes,
+      edges: room.toyBattle.edges,
+      rack: room.toyBattle.rack,
+      deckCount: room.toyBattle.deck.length
+    },
+    turn: room.turn
+  });
+}
+
+function emitFlipTriplesState(roomId, room) {
+  io.to(roomId).emit("state_update", {
+    flipTriples: room.flipTriples,
+    turn: room.turn
+  });
+}
+
 function createRoom(gameId, playerA, playerB) {
   const roomId = `room-${gameId}-${playerA}-${playerB}`;
+  if (gameId === "toy-battle") {
+    rooms.set(roomId, {
+      gameId,
+      players: [playerA, playerB],
+      turn: playerA,
+      toyBattle: createToyBattleState()
+    });
+    return roomId;
+  }
+  if (gameId === "flip-triples") {
+    rooms.set(roomId, {
+      gameId,
+      players: [playerA, playerB],
+      turn: playerA,
+      flipTriples: createFlipTriplesState()
+    });
+    return roomId;
+  }
+
   const board = Array.from({ length: BOARD_SIZE }, () =>
     Array.from({ length: BOARD_SIZE }, () => ({ tile: null, markers: [] }))
   );
@@ -317,11 +575,17 @@ io.on("connection", (socket) => {
       turn: room.turn,
       playerIndex: 0
     });
-    io.to(roomId).emit("state_update", {
-      board: room.board,
-      hands: room.hands,
-      turn: room.turn
-    });
+    if (room.gameId === "toy-battle") {
+      emitToyBattleState(roomId, room);
+    } else if (room.gameId === "flip-triples") {
+      emitFlipTriplesState(roomId, room);
+    } else {
+      io.to(roomId).emit("state_update", {
+        board: room.board,
+        hands: room.hands,
+        turn: room.turn
+      });
+    }
   });
 
   socket.on("join_queue", ({ gameId = "default" } = {}) => {
@@ -352,11 +616,17 @@ io.on("connection", (socket) => {
         turn: room.turn,
         playerIndex: 1
       });
-      io.to(roomId).emit("state_update", {
-        board: room.board,
-        hands: room.hands,
-        turn: room.turn
-      });
+      if (room.gameId === "toy-battle") {
+        emitToyBattleState(roomId, room);
+      } else if (room.gameId === "flip-triples") {
+        emitFlipTriplesState(roomId, room);
+      } else {
+        io.to(roomId).emit("state_update", {
+          board: room.board,
+          hands: room.hands,
+          turn: room.turn
+        });
+      }
     }
   });
 
@@ -381,6 +651,7 @@ io.on("connection", (socket) => {
   socket.on("place_tile", ({ roomId, row, col, type }) => {
     const room = rooms.get(roomId);
     if (!room) return;
+    if (room.gameId === "toy-battle" || room.gameId === "flip-triples") return;
     if (room.turn !== socket.id) return;
     if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return;
     if (type < 0 || type >= TILE_TYPES) return;
@@ -412,6 +683,72 @@ io.on("connection", (socket) => {
       turn: room.turn
     });
     io.to(roomId).emit("turn_update", { turn: room.turn });
+  });
+
+  socket.on("toy_battle_place", ({ roomId, nodeId, pieceId } = {}) => {
+    const room = rooms.get(roomId);
+    if (!room || room.gameId !== "toy-battle") return;
+    if (room.turn !== socket.id) return;
+    const node = room.toyBattle.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node || node.base || node.piece) return;
+    const pieceIndex = room.toyBattle.rack.findIndex((piece) => piece.id === pieceId);
+    if (pieceIndex === -1) return;
+    const [piece] = room.toyBattle.rack.splice(pieceIndex, 1);
+    node.piece = { ...piece, player: 0 };
+    emitToyBattleState(roomId, room);
+  });
+
+  socket.on("toy_battle_draw", ({ roomId } = {}) => {
+    const room = rooms.get(roomId);
+    if (!room || room.gameId !== "toy-battle") return;
+    if (room.turn !== socket.id) return;
+    const drawn = room.toyBattle.deck.splice(0, 2);
+    room.toyBattle.rack.push(...drawn);
+    emitToyBattleState(roomId, room);
+  });
+
+  socket.on("flip_triples_swap", ({ roomId, from, to } = {}) => {
+    const room = rooms.get(roomId);
+    if (!room || room.gameId !== "flip-triples") return;
+    if (room.turn !== socket.id || room.flipTriples.gameOver) return;
+    const isCoordinate = (point) =>
+      point &&
+      Number.isInteger(point.row) &&
+      Number.isInteger(point.col) &&
+      point.row >= 0 &&
+      point.row < FLIP_TRIPLES_SIZE &&
+      point.col >= 0 &&
+      point.col < FLIP_TRIPLES_SIZE;
+    if (!isCoordinate(from) || !isCoordinate(to)) return;
+    const rowGap = Math.abs(from.row - to.row);
+    const colGap = Math.abs(from.col - to.col);
+    if (rowGap === 0 && colGap === 0) return;
+    if (Math.max(rowGap, colGap) !== 1) return;
+
+    const board = room.flipTriples.board;
+    const first = board[from.row][from.col];
+    const second = board[to.row][to.col];
+    if (
+      !first ||
+      !second ||
+      !isSelectableFlipPiece(first, room.flipTriples.phase) ||
+      !isSelectableFlipPiece(second, room.flipTriples.phase)
+    ) {
+      return;
+    }
+
+    board[to.row][to.col] = { ...first, flipped: room.flipTriples.phase === 1 };
+    board[from.row][from.col] = second;
+    advanceFlipTriplesIfNeeded(room);
+
+    if (!room.flipTriples.gameOver) {
+      const [a, b] = room.players;
+      room.turn = socket.id === a ? b : a;
+    }
+    emitFlipTriplesState(roomId, room);
+    if (!room.flipTriples.gameOver) {
+      io.to(roomId).emit("turn_update", { turn: room.turn });
+    }
   });
 
   socket.on("disconnect", () => {
