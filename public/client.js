@@ -19,10 +19,12 @@ const turnStatus = document.getElementById("turn-status");
 const gameBoard = document.getElementById("game-board");
 const handEl = document.getElementById("hand");
 const gameList = document.getElementById("game-list");
+const flipPhaseIndicator = document.getElementById("flip-phase-indicator");
 
 let roomId = null;
 let myId = null;
 let currentGame = null;
+let activeGameOptions = {};
 let myPlayerIndex = null;
 let selectedTileType = 0;
 let boardState = [];
@@ -99,6 +101,28 @@ const games = [
   }
 ];
 
+const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 8;
+const FLIP_TRIPLES_MAX_PLAYER_PIECES = 12;
+
+function getFlipTriplesPlayerPieces() {
+  const input = gameList.querySelector('[data-option-for="flip-triples"][name="playerPieces"]');
+  const value = Number(input?.value);
+  if (!Number.isInteger(value)) return FLIP_TRIPLES_DEFAULT_PLAYER_PIECES;
+  return Math.min(Math.max(value, 0), FLIP_TRIPLES_MAX_PLAYER_PIECES);
+}
+
+function getGameOptions(gameId) {
+  if (gameId === "flip-triples") {
+    return { playerPieces: getFlipTriplesPlayerPieces() };
+  }
+  return {};
+}
+
+function resetGameUi() {
+  flipPhaseIndicator.classList.add("hidden");
+  flipPhaseIndicator.classList.remove("white-phase", "black-phase");
+}
+
 function setScreen(name) {
   Object.values(screens).forEach((screen) => screen.classList.remove("screen-active"));
   screens[name].classList.add("screen-active");
@@ -152,6 +176,7 @@ socket.on("turn_update", ({ turn }) => {
 
 socket.on("state_update", ({ board, hands, turn, toyBattle, flipTriples }) => {
   if (toyBattle) {
+    resetGameUi();
     toyBattleState = toyBattle;
     flipTriplesState = null;
     boardState = [];
@@ -186,6 +211,7 @@ socket.on("state_update", ({ board, hands, turn, toyBattle, flipTriples }) => {
 
   toyBattleState = null;
   flipTriplesState = null;
+  resetGameUi();
   boardState = board;
   handState = hands[myPlayerIndex] || [0, 0, 0, 0, 0];
   renderBoard();
@@ -197,6 +223,7 @@ socket.on("opponent_left", () => {
   roomId = null;
   boardState = [];
   handState = [];
+  resetGameUi();
   turnStatus.textContent = "Opponent left. Back to home.";
   setTimeout(() => setScreen("home"), 900);
 });
@@ -221,6 +248,22 @@ function renderGames() {
     solo.textContent = "Solo";
 
     row.appendChild(card);
+    if (game.id === "flip-triples") {
+      const options = document.createElement("label");
+      options.className = "game-option";
+      options.innerHTML = `
+        <span>Player pieces</span>
+        <input
+          type="number"
+          name="playerPieces"
+          data-option-for="flip-triples"
+          min="0"
+          max="${FLIP_TRIPLES_MAX_PLAYER_PIECES}"
+          value="${FLIP_TRIPLES_DEFAULT_PLAYER_PIECES}"
+        />
+      `;
+      row.appendChild(options);
+    }
     row.appendChild(solo);
     gameList.appendChild(row);
   });
@@ -234,13 +277,15 @@ gameList.addEventListener("click", (event) => {
     const selected = games.find((game) => game.id === soloButton.dataset.gameId);
     if (!selected) return;
     currentGame = selected;
+    activeGameOptions = getGameOptions(selected.id);
     lobbyGameName.textContent = selected.name;
     gameTitle.textContent = selected.name;
+    resetGameUi();
     setScreen("lobby");
     lobbyStatus.textContent = "Starting solo game...";
     playerStatus.textContent = "Solo";
     playersNeeded.textContent = "0";
-    socket.emit("start_solo", { gameId: selected.id });
+    socket.emit("start_solo", { gameId: selected.id, options: activeGameOptions });
     return;
   }
 
@@ -249,19 +294,23 @@ gameList.addEventListener("click", (event) => {
   const selected = games.find((game) => game.id === card.dataset.gameId);
   if (!selected) return;
   currentGame = selected;
+  activeGameOptions = getGameOptions(selected.id);
   lobbyGameName.textContent = selected.name;
   gameTitle.textContent = selected.name;
+  resetGameUi();
   setScreen("lobby");
   lobbyStatus.textContent = "Waiting for another player...";
   playerStatus.textContent = "Queued";
   playersNeeded.textContent = "1";
-  socket.emit("join_queue", { gameId: selected.id });
+  socket.emit("join_queue", { gameId: selected.id, options: activeGameOptions });
 });
 
 cancelButton.addEventListener("click", () => {
   if (currentGame) {
-    socket.emit("leave_queue", { gameId: currentGame.id });
+    socket.emit("leave_queue", { gameId: currentGame.id, options: activeGameOptions });
   }
+  activeGameOptions = {};
+  resetGameUi();
   setScreen("home");
 });
 
@@ -269,7 +318,7 @@ exitButton.addEventListener("click", () => {
   if (roomId) {
     socket.emit("leave_room", { roomId });
   } else if (currentGame) {
-    socket.emit("leave_queue", { gameId: currentGame.id });
+    socket.emit("leave_queue", { gameId: currentGame.id, options: activeGameOptions });
   }
   roomId = null;
   myPlayerIndex = null;
@@ -279,6 +328,8 @@ exitButton.addEventListener("click", () => {
   selectedToyPieceId = null;
   flipTriplesState = null;
   selectedFlipPiece = null;
+  activeGameOptions = {};
+  resetGameUi();
   setScreen("home");
 });
 
@@ -383,7 +434,7 @@ function isSelectableFlipPiece(piece) {
 }
 
 function getFlipPhaseName() {
-  return flipTriplesState?.phase === 2 ? "Phase 2: Black pieces" : "Phase 1: White pieces";
+  return flipTriplesState?.phase === 2 ? "Black phase" : "White phase";
 }
 
 function updateFlipTriplesTurn(turn) {
@@ -393,6 +444,7 @@ function updateFlipTriplesTurn(turn) {
 
 function renderFlipTriplesBoard() {
   if (!flipTriplesState) return;
+  renderFlipPhaseIndicator();
   gameBoard.innerHTML = "";
   gameBoard.classList.remove("player-0", "player-1", "toy-battle-board");
   gameBoard.classList.add("flip-triples-board");
@@ -414,6 +466,17 @@ function renderFlipTriplesBoard() {
       gameBoard.appendChild(button);
     });
   });
+}
+
+function renderFlipPhaseIndicator() {
+  if (!flipTriplesState) {
+    resetGameUi();
+    return;
+  }
+  const isBlackPhase = flipTriplesState.phase === 2;
+  flipPhaseIndicator.classList.remove("hidden", "white-phase", "black-phase");
+  flipPhaseIndicator.classList.add(isBlackPhase ? "black-phase" : "white-phase");
+  flipPhaseIndicator.textContent = getFlipPhaseName();
 }
 
 function renderFlipTriplesScore() {
@@ -445,10 +508,16 @@ function renderFlipTriplesScore() {
 
   const detail = document.createElement("div");
   detail.className = "flip-score-detail";
+  const settings = flipTriplesState?.settings;
   detail.innerHTML = `
     <span>Phase 1 ${phaseScores.phase1.red}-${phaseScores.phase1.blue}</span>
     <span>Phase 2 ${phaseScores.phase2.red}-${phaseScores.phase2.blue}</span>
     <span>Bonus ${phaseScores.bonus.red}-${phaseScores.bonus.blue}</span>
+    ${
+      settings
+        ? `<span>Pieces ${settings.playerPieces}-${settings.playerPieces}, Neutral ${settings.neutralPieces}</span>`
+        : ""
+    }
   `;
   handEl.appendChild(detail);
 }

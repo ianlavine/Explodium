@@ -27,7 +27,7 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-const queueByGame = new Map(); // gameId -> [socketId]
+const queueByGame = new Map(); // queueKey -> [socketId]
 const rooms = new Map(); // roomId -> { gameId, players, turn, board, hands }
 const BOARD_SIZE = 14;
 const TILE_TYPES = 5;
@@ -42,11 +42,8 @@ const maxRangeDiamond = 3;
 const maxRangeCircle = 2;
 const TOY_BATTLE_TYPES = ["Kwak", "Skully", "Cap'n", "Jumbo", "Hook", "XB-42", "Star", "Roxy"];
 const FLIP_TRIPLES_SIZE = 5;
-const FLIP_TRIPLES_SHAPES = [
-  ...Array.from({ length: 8 }, () => "red-x"),
-  ...Array.from({ length: 8 }, () => "blue-o"),
-  ...Array.from({ length: 9 }, () => "neutral")
-];
+const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 8;
+const FLIP_TRIPLES_MAX_PLAYER_PIECES = Math.floor((FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE) / 2);
 
 function getTile(cell) {
   if (!cell || typeof cell !== "object") return null;
@@ -265,11 +262,32 @@ function recomputeMarkers(room) {
   }
 }
 
-function getQueue(gameId) {
-  if (!queueByGame.has(gameId)) {
-    queueByGame.set(gameId, []);
+function normalizeFlipTriplesOptions(options = {}) {
+  const rawCount = Number(options.playerPieces);
+  const playerPieces = Number.isInteger(rawCount) ? rawCount : FLIP_TRIPLES_DEFAULT_PLAYER_PIECES;
+  return {
+    playerPieces: Math.min(Math.max(playerPieces, 0), FLIP_TRIPLES_MAX_PLAYER_PIECES)
+  };
+}
+
+function normalizeGameOptions(gameId, options = {}) {
+  if (gameId === "flip-triples") return normalizeFlipTriplesOptions(options);
+  return {};
+}
+
+function getQueueKey(gameId, options = {}) {
+  if (gameId === "flip-triples") {
+    return `${gameId}:${normalizeFlipTriplesOptions(options).playerPieces}`;
   }
-  return queueByGame.get(gameId);
+  return gameId;
+}
+
+function getQueue(gameId, options = {}) {
+  const queueKey = getQueueKey(gameId, options);
+  if (!queueByGame.has(queueKey)) {
+    queueByGame.set(queueKey, []);
+  }
+  return queueByGame.get(queueKey);
 }
 
 function shuffle(items) {
@@ -357,8 +375,18 @@ function createToyBattleState() {
   };
 }
 
-function createFlipTriplesState() {
-  const pieces = shuffle(FLIP_TRIPLES_SHAPES).map((shape, index) => ({
+function createFlipTriplesShapes(playerPieces) {
+  const neutralPieces = FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE - playerPieces * 2;
+  return [
+    ...Array.from({ length: playerPieces }, () => "red-x"),
+    ...Array.from({ length: playerPieces }, () => "blue-o"),
+    ...Array.from({ length: neutralPieces }, () => "neutral")
+  ];
+}
+
+function createFlipTriplesState(options = {}) {
+  const settings = normalizeFlipTriplesOptions(options);
+  const pieces = shuffle(createFlipTriplesShapes(settings.playerPieces)).map((shape, index) => ({
     id: `flip-${index}`,
     shape,
     flipped: false,
@@ -369,6 +397,10 @@ function createFlipTriplesState() {
     board.push(pieces.slice(row * FLIP_TRIPLES_SIZE, (row + 1) * FLIP_TRIPLES_SIZE));
   }
   return {
+    settings: {
+      playerPieces: settings.playerPieces,
+      neutralPieces: FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE - settings.playerPieces * 2
+    },
     board,
     phase: 1,
     phaseScores: {
@@ -504,8 +536,9 @@ function emitFlipTriplesState(roomId, room) {
   });
 }
 
-function createRoom(gameId, playerA, playerB) {
+function createRoom(gameId, playerA, playerB, options = {}) {
   const roomId = `room-${gameId}-${playerA}-${playerB}`;
+  const gameOptions = normalizeGameOptions(gameId, options);
   if (gameId === "toy-battle") {
     rooms.set(roomId, {
       gameId,
@@ -520,7 +553,7 @@ function createRoom(gameId, playerA, playerB) {
       gameId,
       players: [playerA, playerB],
       turn: playerA,
-      flipTriples: createFlipTriplesState()
+      flipTriples: createFlipTriplesState(gameOptions)
     });
     return roomId;
   }
@@ -564,8 +597,8 @@ function cleanupSocket(socketId) {
 }
 
 io.on("connection", (socket) => {
-  socket.on("start_solo", ({ gameId = "default" } = {}) => {
-    const roomId = createRoom(gameId, socket.id, socket.id);
+  socket.on("start_solo", ({ gameId = "default", options = {} } = {}) => {
+    const roomId = createRoom(gameId, socket.id, socket.id, options);
     io.sockets.sockets.get(socket.id)?.join(roomId);
     const room = rooms.get(roomId);
     io.to(socket.id).emit("match_found", {
@@ -588,15 +621,16 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("join_queue", ({ gameId = "default" } = {}) => {
-    const queue = getQueue(gameId);
+  socket.on("join_queue", ({ gameId = "default", options = {} } = {}) => {
+    const gameOptions = normalizeGameOptions(gameId, options);
+    const queue = getQueue(gameId, gameOptions);
     if (queue.includes(socket.id)) return;
     queue.push(socket.id);
 
     if (queue.length >= 2) {
       const playerA = queue.shift();
       const playerB = queue.shift();
-      const roomId = createRoom(gameId, playerA, playerB);
+      const roomId = createRoom(gameId, playerA, playerB, gameOptions);
 
       io.sockets.sockets.get(playerA)?.join(roomId);
       io.sockets.sockets.get(playerB)?.join(roomId);
@@ -630,8 +664,8 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("leave_queue", ({ gameId = "default" } = {}) => {
-    const queue = getQueue(gameId);
+  socket.on("leave_queue", ({ gameId = "default", options = {} } = {}) => {
+    const queue = getQueue(gameId, options);
     const index = queue.indexOf(socket.id);
     if (index !== -1) queue.splice(index, 1);
   });
