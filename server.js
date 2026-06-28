@@ -42,8 +42,20 @@ const maxRangeDiamond = 3;
 const maxRangeCircle = 2;
 const TOY_BATTLE_TYPES = ["Kwak", "Skully", "Cap'n", "Jumbo", "Hook", "XB-42", "Star", "Roxy"];
 const FLIP_TRIPLES_SIZE = 5;
-const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 8;
-const FLIP_TRIPLES_MAX_PLAYER_PIECES = Math.floor((FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE) / 2);
+const FLIP_TRIPLES_CELLS = FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE;
+const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 9;
+const FLIP_TRIPLES_MAX_PLAYER_PIECES = Math.floor(FLIP_TRIPLES_CELLS / 2);
+const FLIP_SCORING_SHAPES = ["red-x", "blue-o", "purple"];
+const FLIP_DIRECTIONS = [
+  [-1, -1],
+  [-1, 0],
+  [-1, 1],
+  [0, -1],
+  [0, 1],
+  [1, -1],
+  [1, 0],
+  [1, 1]
+];
 
 function getTile(cell) {
   if (!cell || typeof cell !== "object") return null;
@@ -262,28 +274,16 @@ function recomputeMarkers(room) {
   }
 }
 
-function normalizeFlipTriplesOptions(options = {}) {
-  const rawCount = Number(options.playerPieces);
-  const playerPieces = Number.isInteger(rawCount) ? rawCount : FLIP_TRIPLES_DEFAULT_PLAYER_PIECES;
-  return {
-    playerPieces: Math.min(Math.max(playerPieces, 0), FLIP_TRIPLES_MAX_PLAYER_PIECES)
-  };
-}
-
 function normalizeGameOptions(gameId, options = {}) {
-  if (gameId === "flip-triples") return normalizeFlipTriplesOptions(options);
   return {};
 }
 
-function getQueueKey(gameId, options = {}) {
-  if (gameId === "flip-triples") {
-    return `${gameId}:${normalizeFlipTriplesOptions(options).playerPieces}`;
-  }
+function getQueueKey(gameId) {
   return gameId;
 }
 
-function getQueue(gameId, options = {}) {
-  const queueKey = getQueueKey(gameId, options);
+function getQueue(gameId) {
+  const queueKey = getQueueKey(gameId);
   if (!queueByGame.has(queueKey)) {
     queueByGame.set(queueKey, []);
   }
@@ -375,56 +375,149 @@ function createToyBattleState() {
   };
 }
 
-function createFlipTriplesShapes(playerPieces) {
-  const neutralPieces = FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE - playerPieces * 2;
-  return [
-    ...Array.from({ length: playerPieces }, () => "red-x"),
-    ...Array.from({ length: playerPieces }, () => "blue-o"),
-    ...Array.from({ length: neutralPieces }, () => "neutral")
-  ];
+function clampInt(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isInteger(number)) return fallback;
+  return Math.min(Math.max(number, min), max);
 }
 
-function createFlipTriplesState(options = {}) {
-  const settings = normalizeFlipTriplesOptions(options);
-  const pieces = shuffle(createFlipTriplesShapes(settings.playerPieces)).map((shape, index) => ({
+function normalizeFlipSettings(options = {}) {
+  let playerPieces = clampInt(
+    options.playerPieces,
+    0,
+    FLIP_TRIPLES_MAX_PLAYER_PIECES,
+    FLIP_TRIPLES_DEFAULT_PLAYER_PIECES
+  );
+  let purple = clampInt(options.purple, 0, FLIP_TRIPLES_CELLS, 0);
+  let hopper = clampInt(options.hopper, 0, FLIP_TRIPLES_CELLS, 0);
+  let blocker = clampInt(options.blocker, 0, FLIP_TRIPLES_CELLS, 0);
+  blocker -= blocker % 2; // blockers come in equal pairs per player
+
+  // Trim until everything fits on the board, leaving room for at least 0 neutrals.
+  const total = () => playerPieces * 2 + purple + hopper + blocker;
+  while (total() > FLIP_TRIPLES_CELLS) {
+    if (playerPieces > 0) playerPieces -= 1;
+    else if (purple > 0) purple -= 1;
+    else if (hopper > 0) hopper -= 1;
+    else if (blocker >= 2) blocker -= 2;
+    else break;
+  }
+
+  const neutralPieces = FLIP_TRIPLES_CELLS - total();
+  const mode = options.mode === "extended" ? "extended" : "basic";
+  const extendedRule = ["none", "ring", "swap"].includes(options.extendedRule)
+    ? options.extendedRule
+    : "none";
+
+  return {
+    playerPieces,
+    purple,
+    hopper,
+    blocker,
+    neutralPieces,
+    mode,
+    extendedRule: mode === "extended" ? extendedRule : "none"
+  };
+}
+
+function defaultFlipSettings() {
+  return normalizeFlipSettings({});
+}
+
+function makeFlipPiece(index, shape, owner = null) {
+  return {
     id: `flip-${index}`,
     shape,
     flipped: false,
-    opportunity: false
-  }));
+    opportunity: false,
+    swapped: false,
+    protected: shape === "purple" || shape === "hopper",
+    owner: shape === "blocker" ? owner : null
+  };
+}
+
+function createFlipTriplesBoard(settings) {
+  const pieces = [];
+  let index = 0;
+  for (let i = 0; i < settings.playerPieces; i += 1) {
+    pieces.push(makeFlipPiece(index++, "red-x"));
+    pieces.push(makeFlipPiece(index++, "blue-o"));
+  }
+  for (let i = 0; i < settings.purple; i += 1) {
+    pieces.push(makeFlipPiece(index++, "purple"));
+  }
+  for (let i = 0; i < settings.hopper; i += 1) {
+    pieces.push(makeFlipPiece(index++, "hopper"));
+  }
+  for (let i = 0; i < settings.blocker; i += 1) {
+    pieces.push(makeFlipPiece(index++, "blocker", i < settings.blocker / 2 ? 0 : 1));
+  }
+  for (let i = 0; i < settings.neutralPieces; i += 1) {
+    pieces.push(makeFlipPiece(index++, "neutral"));
+  }
+  const shuffled = shuffle(pieces);
   const board = [];
   for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
-    board.push(pieces.slice(row * FLIP_TRIPLES_SIZE, (row + 1) * FLIP_TRIPLES_SIZE));
+    board.push(shuffled.slice(row * FLIP_TRIPLES_SIZE, (row + 1) * FLIP_TRIPLES_SIZE));
   }
+  return board;
+}
+
+function createFlipTriplesState() {
   return {
-    settings: {
-      playerPieces: settings.playerPieces,
-      neutralPieces: FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE - settings.playerPieces * 2
-    },
-    board,
+    setup: true,
+    settings: defaultFlipSettings(),
+    board: [],
     phase: 1,
+    pendingPhase2: false,
     phaseScores: {
       phase1: { red: 0, blue: 0 },
       phase2: { red: 0, blue: 0 },
       bonus: { red: 0, blue: 0 }
     },
     scores: { red: 0, blue: 0 },
-    gameOver: false
+    gameOver: false,
+    lastMove: null,
+    moveId: 0,
+    transitionId: 0
   };
 }
 
-function hasFlipTriplesMove(board, phase) {
+function isSelectableFlipPiece(piece, phase) {
+  if (!piece) return false;
+  return phase === 1 ? !piece.flipped : piece.flipped;
+}
+
+function flipPieceMatchesShape(piece, shape) {
+  if (!piece) return false;
+  if (piece.shape === "purple") return shape === "red-x" || shape === "blue-o";
+  return piece.shape === shape;
+}
+
+// Players able to perform a swap of (first -> flips, second -> slides), before geometry.
+function flipMoveActors(first, second) {
+  let actors = [0, 1];
+  if (first.shape === "blocker") actors = actors.filter((p) => p === first.owner);
+  if (second.shape === "blocker") actors = actors.filter((p) => p === second.owner);
+  return actors;
+}
+
+function flipMoveExists(board, phase, allowedPlayers) {
   for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
     for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
-      if (!isSelectableFlipPiece(board[row][col], phase)) continue;
-      for (let dr = -1; dr <= 1; dr += 1) {
-        for (let dc = -1; dc <= 1; dc += 1) {
-          if (dr === 0 && dc === 0) continue;
-          const nextRow = row + dr;
-          const nextCol = col + dc;
-          if (nextRow < 0 || nextRow >= FLIP_TRIPLES_SIZE) continue;
-          if (nextCol < 0 || nextCol >= FLIP_TRIPLES_SIZE) continue;
-          if (isSelectableFlipPiece(board[nextRow][nextCol], phase)) return true;
+      const first = board[row][col];
+      if (!isSelectableFlipPiece(first, phase)) continue;
+      if (first.protected) continue; // protected pieces can never be the first (flipping) piece
+      for (const [dr, dc] of FLIP_DIRECTIONS) {
+        for (let dist = 1; dist <= 2; dist += 1) {
+          const nr = row + dr * dist;
+          const nc = col + dc * dist;
+          if (nr < 0 || nr >= FLIP_TRIPLES_SIZE || nc < 0 || nc >= FLIP_TRIPLES_SIZE) continue;
+          const second = board[nr][nc];
+          if (!isSelectableFlipPiece(second, phase)) continue;
+          if (dist === 2 && second.shape !== "hopper") continue; // only hoppers reach two spaces
+          const actors = flipMoveActors(first, second);
+          if (actors.some((p) => allowedPlayers.includes(p))) return true;
         }
       }
     }
@@ -432,8 +525,12 @@ function hasFlipTriplesMove(board, phase) {
   return false;
 }
 
-function isSelectableFlipPiece(piece, phase) {
-  return phase === 1 ? !piece.flipped : piece.flipped;
+function anyFlipMove(state) {
+  return flipMoveExists(state.board, state.phase, [0, 1]);
+}
+
+function playerHasFlipMove(state, playerIndex) {
+  return flipMoveExists(state.board, state.phase, [playerIndex]);
 }
 
 function getFlipTriples(board, shape) {
@@ -452,7 +549,7 @@ function getFlipTriples(board, shape) {
           ([r, c]) => r >= 0 && r < FLIP_TRIPLES_SIZE && c >= 0 && c < FLIP_TRIPLES_SIZE
         );
         if (!inBounds) return;
-        if (cells.every(([r, c]) => board[r][c].shape === shape)) triples.push(cells);
+        if (cells.every(([r, c]) => flipPieceMatchesShape(board[r][c], shape))) triples.push(cells);
       });
     }
   }
@@ -473,7 +570,19 @@ function getFlipTriplesScores(board) {
 function markFlipTriplesOpportunities(board) {
   board.forEach((row) => {
     row.forEach((piece) => {
-      piece.opportunity = !piece.flipped && piece.shape !== "neutral";
+      piece.opportunity = !piece.flipped && FLIP_SCORING_SHAPES.includes(piece.shape);
+    });
+  });
+}
+
+function applyFlipSwapTransition(board) {
+  board.forEach((row) => {
+    row.forEach((piece) => {
+      if (piece.flipped) return;
+      if (piece.shape === "red-x" || piece.shape === "blue-o") {
+        piece.shape = piece.shape === "red-x" ? "blue-o" : "red-x";
+        piece.swapped = true;
+      }
     });
   });
 }
@@ -496,25 +605,108 @@ function refreshFlipTriplesTotals(state) {
   };
 }
 
-function advanceFlipTriplesIfNeeded(room) {
+function finalizeFlipTriples(room) {
   const state = room.flipTriples;
-  if (hasFlipTriplesMove(state.board, state.phase)) return;
-
-  if (state.phase === 1) {
-    state.phaseScores.phase1 = getFlipTriplesScores(state.board);
-    markFlipTriplesOpportunities(state.board);
-    refreshFlipTriplesTotals(state);
-    state.phase = 2;
-    if (hasFlipTriplesMove(state.board, state.phase)) return;
+  if (state.phase === 2) {
+    state.phaseScores.phase2 = getFlipTriplesScores(state.board);
+    if (state.settings.extendedRule === "ring") {
+      state.phaseScores.bonus = {
+        red: countFlipTriplesOpportunityBonus(state.board, "red-x"),
+        blue: countFlipTriplesOpportunityBonus(state.board, "blue-o")
+      };
+    }
   }
-
-  state.phaseScores.phase2 = getFlipTriplesScores(state.board);
-  state.phaseScores.bonus = {
-    red: countFlipTriplesOpportunityBonus(state.board, "red-x"),
-    blue: countFlipTriplesOpportunityBonus(state.board, "blue-o")
-  };
   refreshFlipTriplesTotals(state);
   state.gameOver = true;
+}
+
+// Called when the active phase has no remaining moves for either player.
+function advanceFlipPhaseOrEnd(room) {
+  const state = room.flipTriples;
+  if (state.phase === 1) {
+    state.phaseScores.phase1 = getFlipTriplesScores(state.board);
+    refreshFlipTriplesTotals(state);
+    if (state.settings.mode === "basic") {
+      finalizeFlipTriples(room);
+      return;
+    }
+    state.pendingPhase2 = true;
+    room.phase2Ready = new Set();
+    return;
+  }
+  finalizeFlipTriples(room);
+}
+
+function setInitialFlipTurn(room) {
+  const state = room.flipTriples;
+  const players = room.players;
+  if (players[0] === players[1]) {
+    room.turn = players[0];
+    return;
+  }
+  if (playerHasFlipMove(state, 0)) room.turn = players[0];
+  else if (playerHasFlipMove(state, 1)) room.turn = players[1];
+  else room.turn = players[0];
+}
+
+// After a move, advance phase if stuck, otherwise pick the next mover (skipping a
+// player who has no available move so the other can keep going).
+function settleFlipTurn(room, actingSocketId) {
+  const state = room.flipTriples;
+  if (!anyFlipMove(state)) {
+    advanceFlipPhaseOrEnd(room);
+    return;
+  }
+  const players = room.players;
+  if (players[0] === players[1]) {
+    room.turn = players[0];
+    return;
+  }
+  const actorIndex = players.indexOf(actingSocketId);
+  const otherIndex = 1 - actorIndex;
+  room.turn = playerHasFlipMove(state, otherIndex) ? players[otherIndex] : players[actorIndex];
+}
+
+function startFlipPhase2(room) {
+  const state = room.flipTriples;
+  if (state.settings.extendedRule === "ring") {
+    markFlipTriplesOpportunities(state.board);
+  } else if (state.settings.extendedRule === "swap") {
+    applyFlipSwapTransition(state.board);
+  }
+  state.pendingPhase2 = false;
+  room.phase2Ready = new Set();
+  state.phase = 2;
+  state.lastMove = null;
+  state.transitionId += 1;
+  if (!anyFlipMove(state)) {
+    finalizeFlipTriples(room);
+    return;
+  }
+  setInitialFlipTurn(room);
+}
+
+function startFlipTriplesGame(room, options) {
+  const settings = normalizeFlipSettings(options);
+  const state = room.flipTriples;
+  state.setup = false;
+  state.settings = settings;
+  state.board = createFlipTriplesBoard(settings);
+  state.phase = 1;
+  state.pendingPhase2 = false;
+  state.phaseScores = {
+    phase1: { red: 0, blue: 0 },
+    phase2: { red: 0, blue: 0 },
+    bonus: { red: 0, blue: 0 }
+  };
+  state.scores = { red: 0, blue: 0 };
+  state.gameOver = false;
+  state.lastMove = null;
+  state.moveId = 0;
+  state.transitionId = 0;
+  room.phase2Ready = new Set();
+  setInitialFlipTurn(room);
+  if (!anyFlipMove(state)) advanceFlipPhaseOrEnd(room);
 }
 
 function emitToyBattleState(roomId, room) {
@@ -530,8 +722,14 @@ function emitToyBattleState(roomId, room) {
 }
 
 function emitFlipTriplesState(roomId, room) {
+  const playerCount = new Set(room.players).size;
+  const readyCount = room.phase2Ready ? room.phase2Ready.size : 0;
   io.to(roomId).emit("state_update", {
-    flipTriples: room.flipTriples,
+    flipTriples: {
+      ...room.flipTriples,
+      phase2ReadyCount: readyCount,
+      playerCount
+    },
     turn: room.turn
   });
 }
@@ -553,7 +751,8 @@ function createRoom(gameId, playerA, playerB, options = {}) {
       gameId,
       players: [playerA, playerB],
       turn: playerA,
-      flipTriples: createFlipTriplesState(gameOptions)
+      flipTriples: createFlipTriplesState(),
+      phase2Ready: new Set()
     });
     return roomId;
   }
@@ -741,10 +940,43 @@ io.on("connection", (socket) => {
     emitToyBattleState(roomId, room);
   });
 
+  socket.on("flip_triples_start", ({ roomId, options } = {}) => {
+    const room = rooms.get(roomId);
+    if (!room || room.gameId !== "flip-triples") return;
+    if (!room.flipTriples.setup) return;
+    // Only the host (player 0) configures and starts the match.
+    if (room.players.indexOf(socket.id) !== 0) return;
+    startFlipTriplesGame(room, options || {});
+    emitFlipTriplesState(roomId, room);
+    if (!room.flipTriples.gameOver && !room.flipTriples.pendingPhase2) {
+      io.to(roomId).emit("turn_update", { turn: room.turn });
+    }
+  });
+
+  socket.on("flip_triples_ready", ({ roomId } = {}) => {
+    const room = rooms.get(roomId);
+    if (!room || room.gameId !== "flip-triples") return;
+    const state = room.flipTriples;
+    if (!state.pendingPhase2) return;
+    if (!room.players.includes(socket.id)) return;
+    if (!room.phase2Ready) room.phase2Ready = new Set();
+    room.phase2Ready.add(socket.id);
+    const uniquePlayers = new Set(room.players).size;
+    if (room.phase2Ready.size >= uniquePlayers) {
+      startFlipPhase2(room);
+    }
+    emitFlipTriplesState(roomId, room);
+    if (!state.pendingPhase2 && !state.gameOver) {
+      io.to(roomId).emit("turn_update", { turn: room.turn });
+    }
+  });
+
   socket.on("flip_triples_swap", ({ roomId, from, to } = {}) => {
     const room = rooms.get(roomId);
     if (!room || room.gameId !== "flip-triples") return;
-    if (room.turn !== socket.id || room.flipTriples.gameOver) return;
+    const state = room.flipTriples;
+    if (state.setup || state.pendingPhase2 || state.gameOver) return;
+    if (room.turn !== socket.id) return;
     const isCoordinate = (point) =>
       point &&
       Number.isInteger(point.row) &&
@@ -754,33 +986,47 @@ io.on("connection", (socket) => {
       point.col >= 0 &&
       point.col < FLIP_TRIPLES_SIZE;
     if (!isCoordinate(from) || !isCoordinate(to)) return;
+
+    const board = state.board;
+    const first = board[from.row][from.col]; // the piece that flips
+    const second = board[to.row][to.col]; // the slider
+    if (!first || !second) return;
+    if (!isSelectableFlipPiece(first, state.phase)) return;
+    if (!isSelectableFlipPiece(second, state.phase)) return;
+    if (first.protected) return; // protected pieces must be selected second
+
     const rowGap = Math.abs(from.row - to.row);
     const colGap = Math.abs(from.col - to.col);
-    if (rowGap === 0 && colGap === 0) return;
-    if (Math.max(rowGap, colGap) !== 1) return;
-
-    const board = room.flipTriples.board;
-    const first = board[from.row][from.col];
-    const second = board[to.row][to.col];
-    if (
-      !first ||
-      !second ||
-      !isSelectableFlipPiece(first, room.flipTriples.phase) ||
-      !isSelectableFlipPiece(second, room.flipTriples.phase)
-    ) {
+    const dist = Math.max(rowGap, colGap);
+    const straight = rowGap === 0 || colGap === 0 || rowGap === colGap;
+    if (dist === 0 || !straight) return;
+    if (dist === 1) {
+      // standard adjacent swap
+    } else if (dist === 2) {
+      if (second.shape !== "hopper") return; // only a hopper can move two spaces
+    } else {
       return;
     }
 
-    board[to.row][to.col] = { ...first, flipped: room.flipTriples.phase === 1 };
-    board[from.row][from.col] = second;
-    advanceFlipTriplesIfNeeded(room);
+    // Blocker ownership: a swap touching a blocker is only available to its owner.
+    const isSolo = room.players[0] === room.players[1];
+    const allowed = isSolo ? [0, 1] : [room.players.indexOf(socket.id)];
+    const actors = flipMoveActors(first, second);
+    if (!actors.some((p) => allowed.includes(p))) return;
 
-    if (!room.flipTriples.gameOver) {
-      const [a, b] = room.players;
-      room.turn = socket.id === a ? b : a;
-    }
+    const prevFlipped = first.flipped;
+    board[to.row][to.col] = { ...first, flipped: state.phase === 1 };
+    board[from.row][from.col] = second;
+    state.lastMove = {
+      from: { row: from.row, col: from.col },
+      to: { row: to.row, col: to.col },
+      prevFlipped
+    };
+    state.moveId += 1;
+    settleFlipTurn(room, socket.id);
+
     emitFlipTriplesState(roomId, room);
-    if (!room.flipTriples.gameOver) {
+    if (!state.gameOver && !state.pendingPhase2) {
       io.to(roomId).emit("turn_update", { turn: room.turn });
     }
   });

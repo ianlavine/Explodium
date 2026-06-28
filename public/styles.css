@@ -504,7 +504,7 @@ h2 {
   gap: 12px;
   width: fit-content;
   max-width: calc(100vw - 64px);
-  margin: 22px 0 110px;
+  margin: 22px 0 48px;
   overflow: visible;
 }
 
@@ -552,6 +552,26 @@ h2 {
   transform: none;
 }
 
+.flip-piece.swapping {
+  z-index: 6;
+  box-shadow: 0 18px 30px rgba(0, 0, 0, 0.45);
+}
+
+.flip-piece.recoloring {
+  z-index: 5;
+  backface-visibility: hidden;
+}
+
+.flip-piece.show-prev-color:not(.flipped) {
+  background: #05070a;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.flip-piece.show-prev-color.flipped {
+  background: #f7f8fb;
+  border-color: rgba(17, 21, 28, 0.86);
+}
+
 .flip-symbol {
   display: block;
 }
@@ -571,33 +591,127 @@ h2 {
   border-radius: 999px;
 }
 
+.flip-symbol.purple {
+  position: relative;
+  width: 60%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+
+.flip-symbol.purple .purple-ring {
+  position: absolute;
+  inset: 0;
+  border: clamp(5px, 1vw, 8px) solid #9b4dff;
+  border-radius: 999px;
+}
+
+.flip-symbol.purple .purple-x {
+  color: #9b4dff;
+  font-size: clamp(26px, 5.4vw, 44px);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.flip-symbol.hopper {
+  color: #11151c;
+  font-size: clamp(30px, 6vw, 48px);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.flip-piece.flipped .flip-symbol.hopper {
+  color: #f2f4f8;
+}
+
+/* Protected pieces (purple, hopper) can only ever be selected second. */
+.flip-piece.protected {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16), 0 10px 18px rgba(0, 0, 0, 0.26);
+}
+
+.flip-piece.protected::after {
+  content: "";
+  position: absolute;
+  inset: 6%;
+  border-radius: 999px;
+  border: 2px dashed rgba(17, 21, 28, 0.3);
+  pointer-events: none;
+}
+
+.flip-piece {
+  position: relative;
+}
+
+/* Blockers: neutral pieces only their owning player can move. */
+.flip-piece.blocker.owner-0 {
+  border-color: #df2424;
+  box-shadow: inset 0 0 0 4px rgba(223, 36, 36, 0.45), 0 10px 18px rgba(0, 0, 0, 0.26);
+}
+
+.flip-piece.blocker.owner-1 {
+  border-color: #2268e8;
+  box-shadow: inset 0 0 0 4px rgba(34, 104, 232, 0.45), 0 10px 18px rgba(0, 0, 0, 0.26);
+}
+
+.flip-piece.blocker::after {
+  content: "";
+  position: absolute;
+  width: 34%;
+  height: 34%;
+  border-radius: 5px;
+  border: 3px solid currentColor;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.flip-piece.blocker.owner-0::after {
+  color: #df2424;
+}
+
+.flip-piece.blocker.owner-1::after {
+  color: #2268e8;
+}
+
+.play-area {
+  display: flex;
+  align-items: center;
+  gap: clamp(24px, 5vw, 72px);
+}
+
 .flip-score {
   position: fixed;
-  top: 140px;
-  right: 24px;
-  min-width: 170px;
+  top: 132px;
+  right: 28px;
+  width: 268px;
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 14px;
+  padding: 22px;
   background: rgba(16, 21, 29, 0.96);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  border-radius: 20px;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5);
   z-index: 4;
 }
 
+.flip-score-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  text-align: center;
+}
+
 .flip-phase-indicator {
-  position: fixed;
-  top: 330px;
-  right: 42px;
-  width: 156px;
+  flex: 0 0 auto;
+  width: clamp(120px, 18vw, 188px);
   aspect-ratio: 1;
   border-radius: 999px;
   display: grid;
   place-items: center;
   padding: 18px;
   text-align: center;
-  font-size: 24px;
+  font-size: clamp(20px, 2.4vw, 28px);
   font-weight: 700;
   line-height: 1.05;
   z-index: 4;
@@ -624,14 +738,66 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  color: var(--muted);
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  border: 2px solid transparent;
   font-weight: 700;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+}
+
+.flip-score-row .flip-score-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.flip-score-row .flip-score-mark {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.flip-score-row.red {
+  background: rgba(223, 36, 36, 0.16);
+  border-color: rgba(223, 36, 36, 0.55);
+  color: #ff9a9a;
+}
+
+.flip-score-row.red .flip-score-mark {
+  color: #df2424;
+}
+
+.flip-score-row.blue {
+  background: rgba(34, 104, 232, 0.16);
+  border-color: rgba(34, 104, 232, 0.55);
+  color: #9ec5ff;
+}
+
+.flip-score-row.blue .flip-score-mark {
+  color: #2268e8;
+}
+
+.flip-score-row .flip-score-mark .ring {
+  width: 18px;
+  height: 18px;
+  border: 4px solid currentColor;
+  border-radius: 999px;
+}
+
+.flip-score-row.leading {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 0 22px rgba(255, 255, 255, 0.08);
 }
 
 .flip-score-row strong {
-  color: var(--text);
-  font-size: 22px;
+  color: #fff;
+  font-size: 34px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .flip-score-note {
@@ -640,6 +806,7 @@ h2 {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  text-align: center;
 }
 
 .flip-score-detail {
@@ -650,6 +817,153 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.flip-setup {
+  margin: 8px 0 24px;
+}
+
+.flip-setup.hidden {
+  display: none;
+}
+
+.flip-setup-card {
+  display: grid;
+  gap: 18px;
+  max-width: 580px;
+  padding: 24px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5);
+}
+
+.flip-setup-card h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.flip-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.flip-field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.flip-field input {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: #10151d;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  padding: 0 12px;
+}
+
+.flip-setup-modes {
+  display: grid;
+  gap: 10px;
+}
+
+.flip-mode-toggle,
+.flip-rule-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.flip-mode-btn,
+.flip-rule-btn {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.flip-mode-btn.active,
+.flip-rule-btn.active {
+  background: var(--accent);
+  color: #1b1203;
+  border-color: transparent;
+}
+
+.flip-rule-toggle.disabled {
+  opacity: 0.4;
+}
+
+.flip-rule-btn:disabled {
+  cursor: default;
+}
+
+.flip-setup-summary {
+  margin: 0;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.flip-setup-summary.error {
+  color: var(--danger);
+}
+
+.flip-setup-wait {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.flip-start-btn {
+  justify-self: start;
+}
+
+.flip-phase2-banner.hidden {
+  display: none;
+}
+
+.flip-phase2-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  max-width: 600px;
+  margin: 4px 0 14px;
+  padding: 16px 20px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.flip-phase2-card strong {
+  font-size: 18px;
+}
+
+.flip-phase2-card span {
+  flex: 1;
+  min-width: 150px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.flip-ready-btn {
+  white-space: nowrap;
+}
+
+.flip-ready-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .toy-edges {
@@ -799,26 +1113,42 @@ h2 {
     gap: 8px;
     width: 100%;
     max-width: calc(100vw - 48px);
-    margin-bottom: 160px;
+    margin-bottom: 16px;
   }
 
   .flip-piece {
     width: 100%;
   }
 
+  .play-area {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    padding-bottom: 180px;
+  }
+
   .flip-score {
     left: 16px;
     right: 16px;
+    width: auto;
     top: auto;
-    bottom: 24px;
+    bottom: 16px;
   }
 
   .flip-phase-indicator {
-    top: auto;
-    right: 16px;
-    bottom: 190px;
-    width: 104px;
-    font-size: 17px;
+    width: clamp(96px, 30vw, 128px);
+    font-size: 16px;
     padding: 12px;
+    align-self: center;
+  }
+
+  .flip-setup-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1080px) and (min-width: 601px) {
+  .play-area {
+    flex-wrap: wrap;
   }
 }
