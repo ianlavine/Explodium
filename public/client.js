@@ -22,6 +22,7 @@ const gameList = document.getElementById("game-list");
 const flipPhaseIndicator = document.getElementById("flip-phase-indicator");
 const flipSetup = document.getElementById("flip-setup");
 const flipPhase2Banner = document.getElementById("flip-phase2-banner");
+const flipUndoBtn = document.getElementById("flip-undo-btn");
 
 let roomId = null;
 let myId = null;
@@ -130,6 +131,7 @@ function resetGameUi() {
   flipSetup.innerHTML = "";
   flipPhase2Banner.classList.add("hidden");
   flipPhase2Banner.innerHTML = "";
+  flipUndoBtn.classList.add("hidden");
 }
 
 function setScreen(name) {
@@ -219,6 +221,7 @@ socket.on("state_update", ({ board, hands, turn, toyBattle, flipTriples }) => {
       gameBoard.innerHTML = "";
       flipPhaseIndicator.classList.add("hidden");
       flipPhase2Banner.classList.add("hidden");
+      flipUndoBtn.classList.add("hidden");
       handEl.innerHTML = "";
       handEl.classList.remove("player-0", "player-1", "toy-rack", "flip-score");
       renderFlipSetup();
@@ -237,8 +240,12 @@ socket.on("state_update", ({ board, hands, turn, toyBattle, flipTriples }) => {
     const move = flipTriples.lastMove;
     const moveId = typeof flipTriples.moveId === "number" ? flipTriples.moveId : 0;
     if (moveId === 0) lastAnimatedMoveId = 0;
+    if (moveId < lastAnimatedMoveId) lastAnimatedMoveId = moveId; // an undo rewound the move count
     const shouldAnimateMove = move && moveId > lastAnimatedMoveId;
     if (shouldAnimateMove) lastAnimatedMoveId = moveId;
+
+    const canUndo = !!flipTriples.undoBy && flipTriples.undoBy === myId;
+    flipUndoBtn.classList.toggle("hidden", !canUndo);
 
     const transitionId = flipTriples.transitionId || 0;
     if (transitionId === 0) lastTransitionId = 0;
@@ -255,13 +262,7 @@ socket.on("state_update", ({ board, hands, turn, toyBattle, flipTriples }) => {
     if (shouldAnimateTransition) animateFlipTransition();
 
     if (flipTriples.gameOver) {
-      const winner =
-        flipTriples.scores.red === flipTriples.scores.blue
-          ? "Tie"
-          : flipTriples.scores.red > flipTriples.scores.blue
-          ? "Red X wins"
-          : "Blue O wins";
-      turnStatus.textContent = `Game over - ${winner} (${flipTriples.scores.red}-${flipTriples.scores.blue})`;
+      turnStatus.textContent = `Game over - ${getFlipWinnerText()} (${flipTriples.scores.red}-${flipTriples.scores.blue})`;
     } else if (flipTriples.pendingPhase2) {
       turnStatus.textContent = "Phase 1 complete";
     } else {
@@ -364,6 +365,11 @@ cancelButton.addEventListener("click", () => {
   activeGameOptions = {};
   resetGameUi();
   setScreen("home");
+});
+
+flipUndoBtn.addEventListener("click", () => {
+  if (!roomId || !isFlipTriples()) return;
+  socket.emit("flip_triples_undo", { roomId });
 });
 
 exitButton.addEventListener("click", () => {
@@ -520,14 +526,10 @@ function canSwapFlip(firstPos, secondPos) {
   const second = getFlipPiece(secondPos.row, secondPos.col);
   if (!isSelectableFlipPiece(second)) return false;
   if (!canControlBlocker(second)) return false;
-  const rowGap = Math.abs(firstPos.row - secondPos.row);
-  const colGap = Math.abs(firstPos.col - secondPos.col);
-  const dist = Math.max(rowGap, colGap);
-  const straight = rowGap === 0 || colGap === 0 || rowGap === colGap;
-  if (dist === 0 || !straight) return false;
-  if (dist === 1) return true;
-  if (dist === 2) return second.shape === "hopper";
-  return false;
+  const dist = Math.max(Math.abs(firstPos.row - secondPos.row), Math.abs(firstPos.col - secondPos.col));
+  if (dist === 0) return false;
+  if (second.shape === "hopper") return true; // a hopper can swap with any swappable piece
+  return dist === 1;
 }
 
 function getFlipPhaseLabel() {
@@ -671,6 +673,12 @@ function renderFlipPhaseIndicator() {
     resetGameUi();
     return;
   }
+  // The phase circle is only meaningful in the extended (two-phase) game.
+  if (flipTriplesState.settings?.mode !== "extended") {
+    flipPhaseIndicator.classList.add("hidden");
+    flipPhaseIndicator.classList.remove("white-phase", "black-phase");
+    return;
+  }
   const isBlackPhase = flipTriplesState.phase === 2;
   flipPhaseIndicator.classList.remove("hidden", "white-phase", "black-phase");
   flipPhaseIndicator.classList.add(isBlackPhase ? "black-phase" : "white-phase");
@@ -683,16 +691,6 @@ function renderFlipTriplesScore() {
   handEl.classList.add("flip-score");
 
   const scores = flipTriplesState?.scores ?? { red: 0, blue: 0 };
-  const phaseScores = flipTriplesState?.phaseScores ?? {
-    phase1: { red: 0, blue: 0 },
-    phase2: { red: 0, blue: 0 },
-    bonus: { red: 0, blue: 0 }
-  };
-  const title = document.createElement("div");
-  title.className = "flip-score-title";
-  title.textContent = "Triples";
-  handEl.appendChild(title);
-
   const rows = [
     { side: "red", label: "Red X", mark: "×", score: scores.red },
     { side: "blue", label: "Blue O", mark: '<span class="ring"></span>', score: scores.blue }
@@ -711,33 +709,26 @@ function renderFlipTriplesScore() {
     handEl.appendChild(row);
   });
 
-  const note = document.createElement("div");
-  note.className = "flip-score-note";
-  note.textContent = flipTriplesState?.gameOver ? "Final score" : getFlipPhaseName();
-  handEl.appendChild(note);
+  if (flipTriplesState?.gameOver) {
+    const winnerEl = document.createElement("div");
+    const winner = flipTriplesState.winner;
+    winnerEl.className = `flip-winner${winner === "red" ? " red" : winner === "blue" ? " blue" : ""}`;
+    winnerEl.textContent = getFlipWinnerText();
+    handEl.appendChild(winnerEl);
+  }
+}
 
-  const detail = document.createElement("div");
-  detail.className = "flip-score-detail";
-  const settings = flipTriplesState?.settings;
-  const extended = settings?.mode === "extended";
-  const modeLabel = extended ? `Extended (${settings.extendedRule})` : "Basic";
-  const extras = [];
-  if (settings?.purple) extras.push(`Purple ${settings.purple}`);
-  if (settings?.hopper) extras.push(`Hopper ${settings.hopper}`);
-  if (settings?.blocker) extras.push(`Blocker ${settings.blocker}`);
-  detail.innerHTML = `
-    <span>Phase 1 ${phaseScores.phase1.red}-${phaseScores.phase1.blue}</span>
-    ${
-      extended
-        ? `<span>Phase 2 ${phaseScores.phase2.red}-${phaseScores.phase2.blue}</span>
-           <span>Bonus ${phaseScores.bonus.red}-${phaseScores.bonus.blue}</span>`
-        : ""
-    }
-    <span>${modeLabel}</span>
-    ${settings ? `<span>Pieces ${settings.playerPieces} each, Neutral ${settings.neutralPieces}</span>` : ""}
-    ${extras.length ? `<span>${extras.join(" · ")}</span>` : ""}
-  `;
-  handEl.appendChild(detail);
+function getFlipWinnerText() {
+  const winner =
+    flipTriplesState?.winner ??
+    (flipTriplesState?.scores?.red === flipTriplesState?.scores?.blue
+      ? "tie"
+      : flipTriplesState?.scores?.red > flipTriplesState?.scores?.blue
+      ? "red"
+      : "blue");
+  if (winner === "red") return "Red X wins!";
+  if (winner === "blue") return "Blue O wins!";
+  return "Tie!";
 }
 
 function renderFlipSetup() {
@@ -755,18 +746,7 @@ function renderFlipSetup() {
         }
       : defaultFlipSetupDraft();
   }
-  const isHost = isSoloGame || myPlayerIndex === 0;
   flipSetup.classList.remove("hidden");
-
-  if (!isHost) {
-    flipSetup.innerHTML = `
-      <div class="flip-setup-card">
-        <h3>Game setup</h3>
-        <p class="flip-setup-wait">Waiting for the host to configure the match…</p>
-      </div>
-    `;
-    return;
-  }
 
   const draft = flipSetupDraft;
   const used = draft.playerPieces * 2 + draft.purple + draft.hopper + draft.blocker;
@@ -782,15 +762,15 @@ function renderFlipSetup() {
           <input type="number" data-setting="playerPieces" min="0" max="${FLIP_TRIPLES_MAX_PLAYER_PIECES}" value="${draft.playerPieces}" />
         </label>
         <label class="flip-field">
-          <span>Purple (double-scoring, protected)</span>
+          <span>Purple</span>
           <input type="number" data-setting="purple" min="0" max="${FLIP_TRIPLES_CELLS}" value="${draft.purple}" />
         </label>
         <label class="flip-field">
-          <span>Hopper (jumps 2, protected)</span>
+          <span>Hopper</span>
           <input type="number" data-setting="hopper" min="0" max="${FLIP_TRIPLES_CELLS}" value="${draft.hopper}" />
         </label>
         <label class="flip-field">
-          <span>Blockers (split per player, even)</span>
+          <span>Blockers</span>
           <input type="number" data-setting="blocker" min="0" max="${FLIP_TRIPLES_CELLS}" step="2" value="${draft.blocker}" />
         </label>
       </div>

@@ -502,20 +502,26 @@ function flipMoveActors(first, second) {
   return actors;
 }
 
+// Distance rule: a swap is allowed if the two pieces are adjacent, or if the
+// second (slider) piece is a hopper, which can swap with any swappable piece.
+function flipSwapReachable(first, second, fromRow, fromCol, toRow, toCol) {
+  if (second.shape === "hopper") return true;
+  const dist = Math.max(Math.abs(fromRow - toRow), Math.abs(fromCol - toCol));
+  return dist === 1;
+}
+
 function flipMoveExists(board, phase, allowedPlayers) {
   for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
     for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
       const first = board[row][col];
       if (!isSelectableFlipPiece(first, phase)) continue;
       if (first.protected) continue; // protected pieces can never be the first (flipping) piece
-      for (const [dr, dc] of FLIP_DIRECTIONS) {
-        for (let dist = 1; dist <= 2; dist += 1) {
-          const nr = row + dr * dist;
-          const nc = col + dc * dist;
-          if (nr < 0 || nr >= FLIP_TRIPLES_SIZE || nc < 0 || nc >= FLIP_TRIPLES_SIZE) continue;
-          const second = board[nr][nc];
+      for (let r2 = 0; r2 < FLIP_TRIPLES_SIZE; r2 += 1) {
+        for (let c2 = 0; c2 < FLIP_TRIPLES_SIZE; c2 += 1) {
+          if (r2 === row && c2 === col) continue;
+          const second = board[r2][c2];
           if (!isSelectableFlipPiece(second, phase)) continue;
-          if (dist === 2 && second.shape !== "hopper") continue; // only hoppers reach two spaces
+          if (!flipSwapReachable(first, second, row, col, r2, c2)) continue;
           const actors = flipMoveActors(first, second);
           if (actors.some((p) => allowedPlayers.includes(p))) return true;
         }
@@ -605,6 +611,25 @@ function refreshFlipTriplesTotals(state) {
   };
 }
 
+// Tie-breaker: if triple counts are equal, the player whose piece sits on the
+// center cell loses; a neutral center leaves it a tie.
+function computeFlipWinner(state) {
+  const { red, blue } = state.scores;
+  if (red > blue) return "red";
+  if (blue > red) return "blue";
+  const mid = Math.floor(FLIP_TRIPLES_SIZE / 2);
+  const center = state.board?.[mid]?.[mid];
+  let controller = null;
+  if (center) {
+    if (center.shape === "red-x") controller = "red";
+    else if (center.shape === "blue-o") controller = "blue";
+    else if (center.shape === "blocker") controller = center.owner === 0 ? "red" : "blue";
+  }
+  if (controller === "red") return "blue";
+  if (controller === "blue") return "red";
+  return "tie";
+}
+
 function finalizeFlipTriples(room) {
   const state = room.flipTriples;
   if (state.phase === 2) {
@@ -617,6 +642,7 @@ function finalizeFlipTriples(room) {
     }
   }
   refreshFlipTriplesTotals(state);
+  state.winner = computeFlipWinner(state);
   state.gameOver = true;
 }
 
@@ -676,6 +702,7 @@ function startFlipPhase2(room) {
   }
   state.pendingPhase2 = false;
   room.phase2Ready = new Set();
+  room.flipUndo = null;
   state.phase = 2;
   state.lastMove = null;
   state.transitionId += 1;
@@ -704,7 +731,9 @@ function startFlipTriplesGame(room, options) {
   state.lastMove = null;
   state.moveId = 0;
   state.transitionId = 0;
+  state.winner = null;
   room.phase2Ready = new Set();
+  room.flipUndo = null;
   setInitialFlipTurn(room);
   if (!anyFlipMove(state)) advanceFlipPhaseOrEnd(room);
 }
@@ -728,7 +757,8 @@ function emitFlipTriplesState(roomId, room) {
     flipTriples: {
       ...room.flipTriples,
       phase2ReadyCount: readyCount,
-      playerCount
+      playerCount,
+      undoBy: room.flipUndo ? room.flipUndo.by : null
     },
     turn: room.turn
   });
@@ -752,7 +782,8 @@ function createRoom(gameId, playerA, playerB, options = {}) {
       players: [playerA, playerB],
       turn: playerA,
       flipTriples: createFlipTriplesState(),
-      phase2Ready: new Set()
+      phase2Ready: new Set(),
+      flipUndo: null
     });
     return roomId;
   }
@@ -944,9 +975,23 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomId);
     if (!room || room.gameId !== "flip-triples") return;
     if (!room.flipTriples.setup) return;
-    // Only the host (player 0) configures and starts the match.
-    if (room.players.indexOf(socket.id) !== 0) return;
+    if (!room.players.includes(socket.id)) return;
+    // Either player may start; whoever presses first locks in their chosen settings.
     startFlipTriplesGame(room, options || {});
+    emitFlipTriplesState(roomId, room);
+    if (!room.flipTriples.gameOver && !room.flipTriples.pendingPhase2) {
+      io.to(roomId).emit("turn_update", { turn: room.turn });
+    }
+  });
+
+  socket.on("flip_triples_undo", ({ roomId } = {}) => {
+    const room = rooms.get(roomId);
+    if (!room || room.gameId !== "flip-triples") return;
+    if (!room.flipUndo || room.flipUndo.by !== socket.id) return;
+    room.flipTriples = room.flipUndo.snapshot;
+    room.turn = room.flipUndo.turn;
+    room.flipUndo = null;
+    room.phase2Ready = new Set();
     emitFlipTriplesState(roomId, room);
     if (!room.flipTriples.gameOver && !room.flipTriples.pendingPhase2) {
       io.to(roomId).emit("turn_update", { turn: room.turn });
@@ -995,24 +1040,24 @@ io.on("connection", (socket) => {
     if (!isSelectableFlipPiece(second, state.phase)) return;
     if (first.protected) return; // protected pieces must be selected second
 
-    const rowGap = Math.abs(from.row - to.row);
-    const colGap = Math.abs(from.col - to.col);
-    const dist = Math.max(rowGap, colGap);
-    const straight = rowGap === 0 || colGap === 0 || rowGap === colGap;
-    if (dist === 0 || !straight) return;
-    if (dist === 1) {
-      // standard adjacent swap
-    } else if (dist === 2) {
-      if (second.shape !== "hopper") return; // only a hopper can move two spaces
-    } else {
-      return;
-    }
+    const dist = Math.max(Math.abs(from.row - to.row), Math.abs(from.col - to.col));
+    if (dist === 0) return;
+    // Adjacent swaps are always allowed; a hopper (second) can swap with any piece.
+    if (dist !== 1 && second.shape !== "hopper") return;
 
     // Blocker ownership: a swap touching a blocker is only available to its owner.
     const isSolo = room.players[0] === room.players[1];
     const allowed = isSolo ? [0, 1] : [room.players.indexOf(socket.id)];
     const actors = flipMoveActors(first, second);
     if (!actors.some((p) => allowed.includes(p))) return;
+
+    // Snapshot the pre-move state so this move can be undone until the other
+    // player moves (which replaces the snapshot with their own).
+    room.flipUndo = {
+      by: socket.id,
+      turn: room.turn,
+      snapshot: JSON.parse(JSON.stringify(state))
+    };
 
     const prevFlipped = first.flipped;
     board[to.row][to.col] = { ...first, flipped: state.phase === 1 };
