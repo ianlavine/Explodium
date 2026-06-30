@@ -23,6 +23,10 @@ const flipPhaseIndicator = document.getElementById("flip-phase-indicator");
 const flipSetup = document.getElementById("flip-setup");
 const flipPhase2Banner = document.getElementById("flip-phase2-banner");
 const flipUndoBtn = document.getElementById("flip-undo-btn");
+const soloPicker = document.getElementById("solo-picker");
+const soloPickerTitle = document.getElementById("solo-picker-title");
+
+let soloPickerGame = null;
 
 let roomId = null;
 let myId = null;
@@ -120,7 +124,8 @@ function defaultFlipSetupDraft() {
     hopper: 0,
     blocker: 0,
     mode: "basic",
-    extendedRule: "none"
+    extendedRule: "none",
+    uniqueSwap: false
   };
 }
 
@@ -316,56 +321,87 @@ function renderGames() {
 
     row.appendChild(card);
     row.appendChild(solo);
-
-    if (game.id === "flip-triples") {
-      const bot = document.createElement("button");
-      bot.className = "solo-btn bot-btn";
-      bot.type = "button";
-      bot.dataset.gameId = game.id;
-      bot.textContent = "Bot";
-      row.appendChild(bot);
-    }
-
     gameList.appendChild(row);
   });
 }
 
+// Games that offer AI opponents when playing solo.
+function gameHasBots(game) {
+  return game?.id === "flip-triples";
+}
+
+function startSoloGame(selected) {
+  currentGame = selected;
+  activeGameOptions = {};
+  isSoloGame = true;
+  lobbyGameName.textContent = selected.name;
+  gameTitle.textContent = selected.name;
+  resetGameUi();
+  setScreen("lobby");
+  lobbyStatus.textContent = "Starting solo game...";
+  playerStatus.textContent = "Solo";
+  playersNeeded.textContent = "0";
+  socket.emit("start_solo", { gameId: selected.id, options: activeGameOptions });
+}
+
+function startBotGame(selected, botType) {
+  currentGame = selected;
+  activeGameOptions = {};
+  isSoloGame = false;
+  lobbyGameName.textContent = selected.name;
+  gameTitle.textContent = selected.name;
+  resetGameUi();
+  setScreen("lobby");
+  const label = botType === "aggressive" ? "Aggressive" : "Defensive";
+  lobbyStatus.textContent = `Starting game vs ${label} bot...`;
+  playerStatus.textContent = `Vs ${label}`;
+  playersNeeded.textContent = "0";
+  socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions, botType });
+}
+
+function openSoloPicker(selected) {
+  soloPickerGame = selected;
+  if (soloPickerTitle) soloPickerTitle.textContent = `${selected.name} — Solo`;
+  soloPicker.classList.remove("hidden");
+}
+
+function closeSoloPicker() {
+  soloPickerGame = null;
+  soloPicker.classList.add("hidden");
+}
+
+soloPicker.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (target === soloPicker || target.closest(".solo-picker-cancel")) {
+    closeSoloPicker();
+    return;
+  }
+  const option = target.closest(".solo-opt");
+  if (!option || !soloPickerGame) return;
+  const selected = soloPickerGame;
+  const bot = option.dataset.bot;
+  closeSoloPicker();
+  if (bot === "defensive" || bot === "aggressive") {
+    startBotGame(selected, bot);
+  } else {
+    startSoloGame(selected);
+  }
+});
+
 gameList.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
-  const botButton = target.closest(".bot-btn");
-  if (botButton) {
-    const selected = games.find((game) => game.id === botButton.dataset.gameId);
-    if (!selected) return;
-    currentGame = selected;
-    activeGameOptions = {};
-    isSoloGame = false;
-    lobbyGameName.textContent = selected.name;
-    gameTitle.textContent = selected.name;
-    resetGameUi();
-    setScreen("lobby");
-    lobbyStatus.textContent = "Starting game vs Bot...";
-    playerStatus.textContent = "Vs Bot";
-    playersNeeded.textContent = "0";
-    socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions });
-    return;
-  }
 
   const soloButton = target.closest(".solo-btn");
   if (soloButton) {
     const selected = games.find((game) => game.id === soloButton.dataset.gameId);
     if (!selected) return;
-    currentGame = selected;
-    activeGameOptions = {};
-    isSoloGame = true;
-    lobbyGameName.textContent = selected.name;
-    gameTitle.textContent = selected.name;
-    resetGameUi();
-    setScreen("lobby");
-    lobbyStatus.textContent = "Starting solo game...";
-    playerStatus.textContent = "Solo";
-    playersNeeded.textContent = "0";
-    socket.emit("start_solo", { gameId: selected.id, options: activeGameOptions });
+    if (gameHasBots(selected)) {
+      openSoloPicker(selected);
+    } else {
+      startSoloGame(selected);
+    }
     return;
   }
 
@@ -551,9 +587,12 @@ function canSelectFirstPiece(piece) {
 }
 
 function canSwapFlip(firstPos, secondPos) {
+  const first = getFlipPiece(firstPos.row, firstPos.col);
   const second = getFlipPiece(secondPos.row, secondPos.col);
   if (!isSelectableFlipPiece(second)) return false;
   if (!canControlBlocker(second)) return false;
+  // Unique Swap: the two pieces must be different shapes.
+  if (flipTriplesState?.settings?.uniqueSwap && first && first.shape === second.shape) return false;
   const dist = Math.max(Math.abs(firstPos.row - secondPos.row), Math.abs(firstPos.col - secondPos.col));
   if (dist === 0) return false;
   if (second.shape === "hopper") return true; // a hopper can swap with any swappable piece
@@ -770,7 +809,8 @@ function renderFlipSetup() {
           hopper: flipTriplesState.settings.hopper ?? 0,
           blocker: flipTriplesState.settings.blocker ?? 0,
           mode: flipTriplesState.settings.mode ?? "basic",
-          extendedRule: flipTriplesState.settings.extendedRule ?? "none"
+          extendedRule: flipTriplesState.settings.extendedRule ?? "none",
+          uniqueSwap: flipTriplesState.settings.uniqueSwap ?? false
         }
       : defaultFlipSetupDraft();
   }
@@ -819,6 +859,17 @@ function renderFlipSetup() {
                 }</button>`
             )
             .join("")}
+        </div>
+      </div>
+
+      <div class="flip-unique-swap" role="group" aria-label="Unique swap">
+        <div class="flip-unique-swap-label">
+          <span>Unique Swap</span>
+          <small>Swapped pieces must be different shapes</small>
+        </div>
+        <div class="flip-toggle">
+          <button type="button" class="flip-toggle-btn${draft.uniqueSwap ? "" : " active"}" data-unique-swap="off">Off</button>
+          <button type="button" class="flip-toggle-btn${draft.uniqueSwap ? " active" : ""}" data-unique-swap="on">On</button>
         </div>
       </div>
 
@@ -1086,6 +1137,13 @@ flipSetup.addEventListener("click", (event) => {
   const ruleBtn = target.closest(".flip-rule-btn");
   if (ruleBtn && flipSetupDraft.mode === "extended") {
     flipSetupDraft.extendedRule = ruleBtn.dataset.rule || "none";
+    renderFlipSetup();
+    return;
+  }
+
+  const uniqueSwapBtn = target.closest(".flip-toggle-btn[data-unique-swap]");
+  if (uniqueSwapBtn) {
+    flipSetupDraft.uniqueSwap = uniqueSwapBtn.dataset.uniqueSwap === "on";
     renderFlipSetup();
     return;
   }

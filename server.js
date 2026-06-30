@@ -417,6 +417,7 @@ function normalizeFlipSettings(options = {}) {
   const extendedRule = ["none", "ring", "swap"].includes(options.extendedRule)
     ? options.extendedRule
     : "none";
+  const uniqueSwap = options.uniqueSwap === true;
 
   return {
     playerPieces,
@@ -425,7 +426,8 @@ function normalizeFlipSettings(options = {}) {
     blocker,
     neutralPieces,
     mode,
-    extendedRule: mode === "extended" ? extendedRule : "none"
+    extendedRule: mode === "extended" ? extendedRule : "none",
+    uniqueSwap
   };
 }
 
@@ -519,7 +521,14 @@ function flipSwapReachable(first, second, fromRow, fromCol, toRow, toCol) {
   return dist === 1;
 }
 
-function flipMoveExists(board, phase, allowedPlayers) {
+// In Unique Swap mode the two swapping pieces must have different shapes (no two
+// X's, two O's, two neutrals, etc.). Otherwise any pairing is allowed.
+function flipSwapShapesAllowed(first, second, uniqueSwap) {
+  if (!uniqueSwap) return true;
+  return first.shape !== second.shape;
+}
+
+function flipMoveExists(board, phase, allowedPlayers, uniqueSwap = false) {
   for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
     for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
       const first = board[row][col];
@@ -530,6 +539,7 @@ function flipMoveExists(board, phase, allowedPlayers) {
           if (r2 === row && c2 === col) continue;
           const second = board[r2][c2];
           if (!isSelectableFlipPiece(second, phase)) continue;
+          if (!flipSwapShapesAllowed(first, second, uniqueSwap)) continue;
           if (!flipSwapReachable(first, second, row, col, r2, c2)) continue;
           const actors = flipMoveActors(first, second);
           if (actors.some((p) => allowedPlayers.includes(p))) return true;
@@ -541,11 +551,11 @@ function flipMoveExists(board, phase, allowedPlayers) {
 }
 
 function anyFlipMove(state) {
-  return flipMoveExists(state.board, state.phase, [0, 1]);
+  return flipMoveExists(state.board, state.phase, [0, 1], state.settings?.uniqueSwap);
 }
 
 function playerHasFlipMove(state, playerIndex) {
-  return flipMoveExists(state.board, state.phase, [playerIndex]);
+  return flipMoveExists(state.board, state.phase, [playerIndex], state.settings?.uniqueSwap);
 }
 
 function getFlipTriples(board, shape) {
@@ -785,7 +795,7 @@ function flipBoardClone(board) {
 }
 
 // Every legal (first, second) swap available to a given player on a board.
-function flipLegalMovesFor(board, phase, playerIndex) {
+function flipLegalMovesFor(board, phase, playerIndex, uniqueSwap = false) {
   const moves = [];
   for (let fr = 0; fr < FLIP_TRIPLES_SIZE; fr += 1) {
     for (let fc = 0; fc < FLIP_TRIPLES_SIZE; fc += 1) {
@@ -797,6 +807,7 @@ function flipLegalMovesFor(board, phase, playerIndex) {
           if (fr === tr && fc === tc) continue;
           const second = board[tr][tc];
           if (!isSelectableFlipPiece(second, phase)) continue;
+          if (!flipSwapShapesAllowed(first, second, uniqueSwap)) continue;
           if (!flipSwapReachable(first, second, fr, fc, tr, tc)) continue;
           const actors = flipMoveActors(first, second);
           if (!actors.includes(playerIndex)) continue;
@@ -857,9 +868,9 @@ function flipLockedTripleCount(board, shape) {
 
 // True if `playerIndex` can, on their next turn, lock in a new permanent triple
 // of `shape`.
-function flipPlayerCanScore(board, phase, playerIndex, shape) {
+function flipPlayerCanScore(board, phase, playerIndex, shape, uniqueSwap = false) {
   const base = flipLockedTripleCount(board, shape);
-  const moves = flipLegalMovesFor(board, phase, playerIndex);
+  const moves = flipLegalMovesFor(board, phase, playerIndex, uniqueSwap);
   for (const move of moves) {
     const after = flipApplyMove(board, phase, move);
     if (flipLockedTripleCount(after, shape) > base) return true;
@@ -871,10 +882,10 @@ function flipPlayerCanScore(board, phase, playerIndex, shape) {
 // (i.e. the gaps the bot may want to block). In phase 1 the only way to add a
 // locked triple is via the flipping first piece, so the completing cell is the
 // move's `to`.
-function flipThreatCells(board, phase, playerIndex, shape) {
+function flipThreatCells(board, phase, playerIndex, shape, uniqueSwap = false) {
   const base = flipLockedTripleCount(board, shape);
   const cells = new Set();
-  for (const move of flipLegalMovesFor(board, phase, playerIndex)) {
+  for (const move of flipLegalMovesFor(board, phase, playerIndex, uniqueSwap)) {
     const after = flipApplyMove(board, phase, move);
     if (flipLockedTripleCount(after, shape) > base) {
       cells.add(`${move.to.row},${move.to.col}`);
@@ -941,94 +952,161 @@ function flipCenterMove(moves) {
   return null;
 }
 
-// Decide the bot's move following the requested heuristics, in order:
-//   0. On its very first turn, grab and lock the center if it can.
-//   1. Block an opponent permanent O-triple (neutral > X > relocate the O).
-//   2. Otherwise, complete a permanent X-triple if possible.
-//   3. Otherwise, lock an opponent O onto an edge away from its other locked O's.
-//   4. Otherwise, play any legal move.
-function chooseFlipBotMove(state, isFirstMove = false) {
+function flipBotContext(state) {
   const board = state.board;
   const phase = state.phase;
-  const moves = flipLegalMovesFor(board, phase, FLIP_BOT_INDEX);
-  if (moves.length === 0) return null;
-  if (phase !== 1) return flipChoosePhase2Move(board, phase, moves);
+  const uniqueSwap = state.settings?.uniqueSwap === true;
+  const moves = flipLegalMovesFor(board, phase, FLIP_BOT_INDEX, uniqueSwap);
+  return { board, phase, uniqueSwap, moves };
+}
 
-  // --- Heuristic 0: opening grab of the center. ---
+// Block an opponent permanent O-triple (neutral > X > relocate the O).
+function flipTryDefendMove(ctx) {
+  const { board, phase, uniqueSwap, moves } = ctx;
+  if (!flipPlayerCanScore(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap)) return null;
+  const threatCells = flipThreatCells(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap);
+  const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
+  let best = null;
+  for (const move of moves) {
+    const after = flipApplyMove(board, phase, move);
+    if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue;
+    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap)) continue;
+    const fillsThreat = threatCells.has(`${move.to.row},${move.to.col}`);
+    let category;
+    if (fillsThreat && move.firstShape === "neutral") category = 0;
+    else if (fillsThreat && move.firstShape === "red-x") category = 1;
+    else if (move.firstShape === "blue-o") category = 2;
+    else category = 3;
+    if (!best || category < best.category) best = { move, category };
+  }
+  return best?.move ?? null;
+}
+
+// Complete a permanent X-triple if possible.
+function flipTryScoreMove(ctx) {
+  const { board, phase, uniqueSwap, moves } = ctx;
+  const base = flipLockedTripleCount(board, FLIP_BOT_SHAPE);
+  const scoring = [];
+  for (const move of moves) {
+    const after = flipApplyMove(board, phase, move);
+    if (flipLockedTripleCount(after, FLIP_BOT_SHAPE) > base) {
+      const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap);
+      scoring.push({ move, givesOpp });
+    }
+  }
+  if (!scoring.length) return null;
+  const safe = scoring.filter((entry) => !entry.givesOpp);
+  const pool = safe.length ? safe : scoring;
+  return flipRandomChoice(pool).move;
+}
+
+// A "scoring location" is a cell where the bot could, on its next turn, lock an
+// X in to complete a permanent X-triple (which requires an available X next to
+// that cell). The count is the number of distinct such cells on the board.
+function flipScoringLocationCount(board, phase, uniqueSwap) {
+  return flipThreatCells(board, phase, FLIP_BOT_INDEX, FLIP_BOT_SHAPE, uniqueSwap).size;
+}
+
+// Set a trap: lock an X in such that it leaves at least TWO scoring locations
+// for next turn. Skips moves that would hand the opponent a permanent point.
+function flipTryTrapMove(ctx) {
+  const { board, phase, uniqueSwap, moves } = ctx;
+  let bestTraps = null;
+  let bestCount = 1;
+  for (const move of moves) {
+    if (move.firstShape !== FLIP_BOT_SHAPE) continue;
+    const after = flipApplyMove(board, phase, move);
+    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap)) continue;
+    const locations = flipScoringLocationCount(after, phase, uniqueSwap);
+    if (locations < 2) continue;
+    if (locations > bestCount) {
+      bestCount = locations;
+      bestTraps = [move];
+    } else if (locations === bestCount) {
+      bestTraps.push(move);
+    }
+  }
+  return bestTraps ? flipRandomChoice(bestTraps) : null;
+}
+
+// Lock an opponent O onto an edge, away from its other locked O's.
+function flipTryEdgeMove(ctx) {
+  const { board, phase, uniqueSwap, moves } = ctx;
+  const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
+  const candidates = [];
+  for (const move of moves) {
+    if (move.firstShape !== "blue-o") continue;
+    const after = flipApplyMove(board, phase, move);
+    if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue;
+    const { row, col } = move.to;
+    const edge = flipIsEdgeCell(row, col);
+    const touching = flipTouchesLockedShape(after, row, col, FLIP_OPP_SHAPE);
+    const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap);
+    let tier;
+    if (edge && !touching && !givesOpp) tier = 0;
+    else if (edge && !touching) tier = 1;
+    else if (edge) tier = 2;
+    else if (!touching) tier = 3;
+    else tier = 4;
+    candidates.push({ move, tier });
+  }
+  if (!candidates.length) return null;
+  const minTier = Math.min(...candidates.map((entry) => entry.tier));
+  const pool = candidates.filter((entry) => entry.tier === minTier);
+  return flipRandomChoice(pool).move;
+}
+
+function flipFirstAvailableMove(ctx, steps) {
+  for (const step of steps) {
+    const move = step(ctx);
+    if (move) return move;
+  }
+  return null;
+}
+
+// DEFENSIVE: defend -> score -> edge -> random
+// (Plus an opening center grab on the bot's very first turn.)
+function chooseFlipDefensiveMove(state, isFirstMove = false) {
+  const ctx = flipBotContext(state);
+  if (ctx.moves.length === 0) return null;
+  if (ctx.phase !== 1) return flipChoosePhase2Move(ctx.board, ctx.phase, ctx.moves);
+
   if (isFirstMove) {
-    const centerMove = flipCenterMove(moves);
+    const centerMove = flipCenterMove(ctx.moves);
     if (centerMove) return centerMove;
   }
 
-  // --- Heuristic 1: stop the opponent from scoring a permanent point. ---
-  if (flipPlayerCanScore(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE)) {
-    const threatCells = flipThreatCells(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE);
-    const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
-    let best = null;
-    for (const move of moves) {
-      const after = flipApplyMove(board, phase, move);
-      // Never complete an O triple ourselves while trying to block.
-      if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue;
-      if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE)) continue;
-      const fillsThreat = threatCells.has(`${move.to.row},${move.to.col}`);
-      let category;
-      if (fillsThreat && move.firstShape === "neutral") category = 0; // block with neutral
-      else if (fillsThreat && move.firstShape === "red-x") category = 1; // block with X
-      else if (move.firstShape === "blue-o") category = 2; // take the circle away, lock elsewhere
-      else category = 3; // any other neutralizing move
-      if (!best || category < best.category) best = { move, category };
-    }
-    if (best) return best.move;
-    // Can't fully neutralize the threat; fall through to the remaining options.
+  return (
+    flipFirstAvailableMove(ctx, [flipTryDefendMove, flipTryScoreMove, flipTryEdgeMove]) ??
+    flipRandomChoice(ctx.moves)
+  );
+}
+
+// AGGRESSIVE: score -> trap -> defend -> edge -> random
+// (Plus an opening center grab on the bot's very first turn.)
+function chooseFlipAggressiveMove(state, isFirstMove = false) {
+  const ctx = flipBotContext(state);
+  if (ctx.moves.length === 0) return null;
+  if (ctx.phase !== 1) return flipChoosePhase2Move(ctx.board, ctx.phase, ctx.moves);
+
+  if (isFirstMove) {
+    const centerMove = flipCenterMove(ctx.moves);
+    if (centerMove) return centerMove;
   }
 
-  // --- Heuristic 2: score a permanent X-triple. ---
-  {
-    const base = flipLockedTripleCount(board, FLIP_BOT_SHAPE);
-    const scoring = [];
-    for (const move of moves) {
-      const after = flipApplyMove(board, phase, move);
-      if (flipLockedTripleCount(after, FLIP_BOT_SHAPE) > base) {
-        const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE);
-        scoring.push({ move, givesOpp });
-      }
-    }
-    if (scoring.length) {
-      const safe = scoring.filter((entry) => !entry.givesOpp);
-      const pool = safe.length ? safe : scoring;
-      return flipRandomChoice(pool).move;
-    }
-  }
+  return (
+    flipFirstAvailableMove(ctx, [
+      flipTryScoreMove,
+      flipTryTrapMove,
+      flipTryDefendMove,
+      flipTryEdgeMove
+    ]) ?? flipRandomChoice(ctx.moves)
+  );
+}
 
-  // --- Heuristic 3: lock an opponent O on the edge, away from its locked O's. ---
-  {
-    const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
-    const candidates = [];
-    for (const move of moves) {
-      if (move.firstShape !== "blue-o") continue;
-      const after = flipApplyMove(board, phase, move);
-      if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue; // never hand O a triple
-      const { row, col } = move.to;
-      const edge = flipIsEdgeCell(row, col);
-      const touching = flipTouchesLockedShape(after, row, col, FLIP_OPP_SHAPE);
-      const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE);
-      let tier;
-      if (edge && !touching && !givesOpp) tier = 0;
-      else if (edge && !touching) tier = 1;
-      else if (edge) tier = 2;
-      else if (!touching) tier = 3;
-      else tier = 4;
-      candidates.push({ move, tier });
-    }
-    if (candidates.length) {
-      const minTier = Math.min(...candidates.map((entry) => entry.tier));
-      const pool = candidates.filter((entry) => entry.tier === minTier);
-      return flipRandomChoice(pool).move;
-    }
-  }
-
-  // --- Heuristic 4: any legal move. ---
-  return flipRandomChoice(moves);
+function chooseFlipBotMove(state, isFirstMove = false, botType = "defensive") {
+  if (botType === "aggressive") return chooseFlipAggressiveMove(state, isFirstMove);
+  return chooseFlipDefensiveMove(state, isFirstMove);
 }
 
 // Drives the bot: readies it for phase 2 automatically and plays its move(s)
@@ -1060,7 +1138,7 @@ function runFlipBot(roomId) {
 
   if (room.turn !== FLIP_BOT_ID) return;
   const isFirstMove = (room.botMoveCount || 0) === 0;
-  const move = chooseFlipBotMove(state, isFirstMove);
+  const move = chooseFlipBotMove(state, isFirstMove, room.botType);
   if (!move) return;
   room.botMoveCount = (room.botMoveCount || 0) + 1;
   performFlipSwap(room, FLIP_BOT_ID, move.from, move.to, false);
@@ -1190,13 +1268,14 @@ io.on("connection", (socket) => {
 
   // Single-player vs. the AI. Only Flip Triples ships a bot, so other games fall
   // back to a normal solo (the human controls both sides).
-  socket.on("start_bot", ({ gameId = "default", options = {} } = {}) => {
+  socket.on("start_bot", ({ gameId = "default", options = {}, botType = "defensive" } = {}) => {
     const botSupported = gameId === "flip-triples";
     const opponentId = botSupported ? FLIP_BOT_ID : socket.id;
     const roomId = createRoom(gameId, socket.id, opponentId, options);
     io.sockets.sockets.get(socket.id)?.join(roomId);
     const room = rooms.get(roomId);
     room.isBot = botSupported;
+    room.botType = botType === "aggressive" ? "aggressive" : "defensive";
     io.to(socket.id).emit("match_found", {
       roomId,
       gameId,
@@ -1412,6 +1491,7 @@ io.on("connection", (socket) => {
     if (!isSelectableFlipPiece(first, state.phase)) return;
     if (!isSelectableFlipPiece(second, state.phase)) return;
     if (first.protected) return; // protected pieces must be selected second
+    if (!flipSwapShapesAllowed(first, second, state.settings?.uniqueSwap)) return;
 
     const dist = Math.max(Math.abs(from.row - to.row), Math.abs(from.col - to.col));
     if (dist === 0) return;

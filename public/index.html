@@ -58,6 +58,28 @@
       </section>
     </main>
 
+    <div id="solo-picker" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Choose opponent">
+      <div class="modal-card">
+        <h3 id="solo-picker-title">Solo play</h3>
+        <p class="modal-sub">Choose your opponent</p>
+        <div class="solo-picker-options">
+          <button type="button" class="solo-opt" data-bot="none">
+            <strong>None</strong>
+            <small>Play against yourself</small>
+          </button>
+          <button type="button" class="solo-opt" data-bot="defensive">
+            <strong>Defensive bot</strong>
+            <small>Blocks your triples, then counters</small>
+          </button>
+          <button type="button" class="solo-opt" data-bot="aggressive">
+            <strong>Aggressive bot</strong>
+            <small>Builds scoring traps you can't all block</small>
+          </button>
+        </div>
+        <button type="button" class="ghost-btn solo-picker-cancel">Cancel</button>
+      </div>
+    </div>
+
     <script src="/socket.io/socket.io.js"></script>
     <script src="/client.js"></script>
   </body>

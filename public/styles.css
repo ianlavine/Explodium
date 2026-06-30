@@ -242,14 +242,6 @@ h2 {
   box-shadow: 0 12px 20px rgba(0, 0, 0, 0.3);
 }
 
-.bot-btn {
-  border-color: rgba(255, 138, 0, 0.55);
-  color: var(--accent-2);
-}
-
-.bot-btn:hover {
-  border-color: var(--accent);
-}
 
 .game-card {
   background: #202734;
@@ -932,6 +924,52 @@ h2 {
   cursor: default;
 }
 
+.flip-unique-swap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.flip-unique-swap-label {
+  display: grid;
+  gap: 2px;
+}
+
+.flip-unique-swap-label span {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.flip-unique-swap-label small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.flip-toggle {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.flip-toggle-btn {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.flip-toggle-btn.active {
+  background: var(--accent);
+  color: #1b1203;
+  border-color: transparent;
+}
+
 .flip-setup-summary {
   margin: 0;
   font-weight: 700;
@@ -1178,4 +1216,82 @@ h2 {
   .play-area {
     flex-wrap: wrap;
   }
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 10, 14, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.modal-overlay.hidden {
+  display: none;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius);
+  padding: 24px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  display: grid;
+  gap: 8px;
+}
+
+.modal-card h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.modal-sub {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.solo-picker-options {
+  display: grid;
+  gap: 12px;
+}
+
+.solo-opt {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.solo-opt strong {
+  font-size: 17px;
+}
+
+.solo-opt small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.solo-opt:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  box-shadow: 0 12px 22px rgba(0, 0, 0, 0.32);
+}
+
+.solo-picker-cancel {
+  margin-top: 8px;
+  justify-self: stretch;
 }
