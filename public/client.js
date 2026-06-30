@@ -316,6 +316,16 @@ function renderGames() {
 
     row.appendChild(card);
     row.appendChild(solo);
+
+    if (game.id === "flip-triples") {
+      const bot = document.createElement("button");
+      bot.className = "solo-btn bot-btn";
+      bot.type = "button";
+      bot.dataset.gameId = game.id;
+      bot.textContent = "Bot";
+      row.appendChild(bot);
+    }
+
     gameList.appendChild(row);
   });
 }
@@ -323,6 +333,24 @@ function renderGames() {
 gameList.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
+  const botButton = target.closest(".bot-btn");
+  if (botButton) {
+    const selected = games.find((game) => game.id === botButton.dataset.gameId);
+    if (!selected) return;
+    currentGame = selected;
+    activeGameOptions = {};
+    isSoloGame = false;
+    lobbyGameName.textContent = selected.name;
+    gameTitle.textContent = selected.name;
+    resetGameUi();
+    setScreen("lobby");
+    lobbyStatus.textContent = "Starting game vs Bot...";
+    playerStatus.textContent = "Vs Bot";
+    playersNeeded.textContent = "0";
+    socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions });
+    return;
+  }
+
   const soloButton = target.closest(".solo-btn");
   if (soloButton) {
     const selected = games.find((game) => game.id === soloButton.dataset.gameId);

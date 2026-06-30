@@ -242,6 +242,15 @@ h2 {
   box-shadow: 0 12px 20px rgba(0, 0, 0, 0.3);
 }
 
+.bot-btn {
+  border-color: rgba(255, 138, 0, 0.55);
+  color: var(--accent-2);
+}
+
+.bot-btn:hover {
+  border-color: var(--accent);
+}
+
 .game-card {
   background: #202734;
   border-radius: 12px;
