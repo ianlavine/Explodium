@@ -114,18 +114,25 @@ const games = [
   }
 ];
 
-const FLIP_TRIPLES_CELLS = 25;
-const FLIP_TRIPLES_MAX_PLAYER_PIECES = 12;
+const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2, label: "5×5" };
+const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null, label: "4×6" };
+
+function flipBoardPreset(boardSize) {
+  return boardSize === "4x6" ? FLIP_BOARD_4X6 : FLIP_BOARD_5X5;
+}
 
 function defaultFlipSetupDraft() {
   return {
+    boardSize: "5x5",
     playerPieces: 9,
     purple: 0,
     hopper: 0,
     blocker: 0,
     mode: "basic",
     extendedRule: "none",
-    uniqueSwap: false
+    uniqueSwap: false,
+    staticNeutrals: false,
+    protectedMiddle: false
   };
 }
 
@@ -586,13 +593,37 @@ function canSelectFirstPiece(piece) {
   return true;
 }
 
+function flipSwapPairAllowed(first, second, settings = {}, toRow = null, toCol = null) {
+  if (settings.uniqueSwap && first && first.shape === second.shape) return false;
+  if (settings.staticNeutrals && second.shape === "neutral") return false;
+  const preset = flipBoardPreset(settings.boardSize);
+  if (
+    settings.protectedMiddle &&
+    preset.centerRow != null &&
+    toRow === preset.centerRow &&
+    toCol === preset.centerCol
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function canSwapFlip(firstPos, secondPos) {
   const first = getFlipPiece(firstPos.row, firstPos.col);
   const second = getFlipPiece(secondPos.row, secondPos.col);
   if (!isSelectableFlipPiece(second)) return false;
   if (!canControlBlocker(second)) return false;
-  // Unique Swap: the two pieces must be different shapes.
-  if (flipTriplesState?.settings?.uniqueSwap && first && first.shape === second.shape) return false;
+  if (
+    !flipSwapPairAllowed(
+      first,
+      second,
+      flipTriplesState?.settings ?? {},
+      secondPos.row,
+      secondPos.col
+    )
+  ) {
+    return false;
+  }
   const dist = Math.max(Math.abs(firstPos.row - secondPos.row), Math.abs(firstPos.col - secondPos.col));
   if (dist === 0) return false;
   if (second.shape === "hopper") return true; // a hopper can swap with any swappable piece
@@ -619,6 +650,9 @@ function renderFlipTriplesBoard() {
   gameBoard.innerHTML = "";
   gameBoard.classList.remove("player-0", "player-1", "toy-battle-board");
   gameBoard.classList.add("flip-triples-board");
+  const preset = flipBoardPreset(flipTriplesState.settings?.boardSize);
+  gameBoard.style.setProperty("--flip-cols", String(preset.cols));
+  gameBoard.classList.toggle("flip-board-4x6", preset.boardSize === "4x6");
 
   flipTriplesState.board.forEach((row, rowIndex) => {
     row.forEach((piece, colIndex) => {
@@ -804,42 +838,52 @@ function renderFlipSetup() {
   if (!flipSetupDraft) {
     flipSetupDraft = flipTriplesState?.settings
       ? {
+          boardSize: flipTriplesState.settings.boardSize ?? "5x5",
           playerPieces: flipTriplesState.settings.playerPieces ?? 9,
           purple: flipTriplesState.settings.purple ?? 0,
           hopper: flipTriplesState.settings.hopper ?? 0,
           blocker: flipTriplesState.settings.blocker ?? 0,
           mode: flipTriplesState.settings.mode ?? "basic",
           extendedRule: flipTriplesState.settings.extendedRule ?? "none",
-          uniqueSwap: flipTriplesState.settings.uniqueSwap ?? false
+          uniqueSwap: flipTriplesState.settings.uniqueSwap ?? false,
+          staticNeutrals: flipTriplesState.settings.staticNeutrals ?? false,
+          protectedMiddle: flipTriplesState.settings.protectedMiddle ?? false
         }
       : defaultFlipSetupDraft();
   }
   flipSetup.classList.remove("hidden");
 
   const draft = flipSetupDraft;
+  const preset = flipBoardPreset(draft.boardSize);
+  const maxPlayerPieces = Math.floor(preset.cells / 2);
   const used = draft.playerPieces * 2 + draft.purple + draft.hopper + draft.blocker;
-  const neutral = FLIP_TRIPLES_CELLS - used;
+  const neutral = preset.cells - used;
   const overflow = neutral < 0;
+  const middleDisabled = draft.boardSize === "4x6";
 
   flipSetup.innerHTML = `
     <div class="flip-setup-card">
       <h3>Game setup</h3>
+      <div class="flip-board-size-toggle" role="group" aria-label="Board size">
+        <button type="button" class="flip-board-size-btn${draft.boardSize === "5x5" ? " active" : ""}" data-board-size="5x5">5×5</button>
+        <button type="button" class="flip-board-size-btn${draft.boardSize === "4x6" ? " active" : ""}" data-board-size="4x6">4×6</button>
+      </div>
       <div class="flip-setup-grid">
         <label class="flip-field">
           <span>Player pieces (each)</span>
-          <input type="number" data-setting="playerPieces" min="0" max="${FLIP_TRIPLES_MAX_PLAYER_PIECES}" value="${draft.playerPieces}" />
+          <input type="number" data-setting="playerPieces" min="0" max="${maxPlayerPieces}" value="${draft.playerPieces}" />
         </label>
         <label class="flip-field">
           <span>Purple</span>
-          <input type="number" data-setting="purple" min="0" max="${FLIP_TRIPLES_CELLS}" value="${draft.purple}" />
+          <input type="number" data-setting="purple" min="0" max="${preset.cells}" value="${draft.purple}" />
         </label>
         <label class="flip-field">
           <span>Hopper</span>
-          <input type="number" data-setting="hopper" min="0" max="${FLIP_TRIPLES_CELLS}" value="${draft.hopper}" />
+          <input type="number" data-setting="hopper" min="0" max="${preset.cells}" value="${draft.hopper}" />
         </label>
         <label class="flip-field">
           <span>Blockers</span>
-          <input type="number" data-setting="blocker" min="0" max="${FLIP_TRIPLES_CELLS}" step="2" value="${draft.blocker}" />
+          <input type="number" data-setting="blocker" min="0" max="${preset.cells}" step="2" value="${draft.blocker}" />
         </label>
       </div>
 
@@ -862,22 +906,30 @@ function renderFlipSetup() {
         </div>
       </div>
 
-      <div class="flip-unique-swap" role="group" aria-label="Unique swap">
-        <div class="flip-unique-swap-label">
-          <span>Unique Swap</span>
+      <div class="flip-option-toggles" role="group" aria-label="Optional rules">
+        <button type="button" class="flip-option-toggle${draft.uniqueSwap ? " active" : ""}" data-toggle="uniqueSwap">
+          <span class="flip-option-title">Unique Swap</span>
           <small>Swapped pieces must be different shapes</small>
-        </div>
-        <div class="flip-toggle">
-          <button type="button" class="flip-toggle-btn${draft.uniqueSwap ? "" : " active"}" data-unique-swap="off">Off</button>
-          <button type="button" class="flip-toggle-btn${draft.uniqueSwap ? " active" : ""}" data-unique-swap="on">On</button>
-        </div>
+        </button>
+        <button type="button" class="flip-option-toggle${draft.staticNeutrals ? " active" : ""}" data-toggle="staticNeutrals">
+          <span class="flip-option-title">Static Neutrals</span>
+          <small>Neutrals must flip; they never slide</small>
+        </button>
+        <button type="button" class="flip-option-toggle${draft.protectedMiddle ? " active" : ""}${middleDisabled ? " disabled" : ""}" data-toggle="protectedMiddle"${middleDisabled ? " disabled" : ""}>
+          <span class="flip-option-title">Protected Middle</span>
+          <small>${
+            middleDisabled
+              ? "Not available on 4×6 — there is no center square"
+              : "Nothing can flip into the center; select the middle first"
+          }</small>
+        </button>
       </div>
 
       <p class="flip-setup-summary${overflow ? " error" : ""}">
         ${
           overflow
-            ? "Too many pieces for the 5×5 board — reduce some."
-            : `Neutral pieces: ${neutral} (of ${FLIP_TRIPLES_CELLS})`
+            ? `Too many pieces for the ${preset.label} board — reduce some.`
+            : `Neutral pieces: ${neutral} (of ${preset.cells})`
         }
       </p>
       <button type="button" class="primary-btn flip-start-btn" ${overflow ? "disabled" : ""}>Start game</button>
@@ -1096,29 +1148,40 @@ gameBoard.addEventListener("click", (event) => {
 function updateFlipSetupSummary() {
   const draft = flipSetupDraft;
   if (!draft) return;
+  const preset = flipBoardPreset(draft.boardSize);
+  const maxPlayerPieces = Math.floor(preset.cells / 2);
   const used = draft.playerPieces * 2 + draft.purple + draft.hopper + draft.blocker;
-  const neutral = FLIP_TRIPLES_CELLS - used;
+  const neutral = preset.cells - used;
   const overflow = neutral < 0;
   const summary = flipSetup.querySelector(".flip-setup-summary");
   const startBtn = flipSetup.querySelector(".flip-start-btn");
   if (summary) {
     summary.classList.toggle("error", overflow);
     summary.textContent = overflow
-      ? "Too many pieces for the 5×5 board — reduce some."
-      : `Neutral pieces: ${neutral} (of ${FLIP_TRIPLES_CELLS})`;
+      ? `Too many pieces for the ${preset.label} board — reduce some.`
+      : `Neutral pieces: ${neutral} (of ${preset.cells})`;
   }
   if (startBtn) startBtn.disabled = overflow;
+
+  flipSetup.querySelectorAll("input[data-setting='playerPieces']").forEach((input) => {
+    input.max = String(maxPlayerPieces);
+  });
+  flipSetup.querySelectorAll("input[data-setting='purple'], input[data-setting='hopper'], input[data-setting='blocker']").forEach((input) => {
+    input.max = String(preset.cells);
+  });
 }
 
 flipSetup.addEventListener("input", (event) => {
   const input = event.target.closest("input[data-setting]");
   if (!input || !flipSetupDraft) return;
   const key = input.dataset.setting;
+  const preset = flipBoardPreset(flipSetupDraft.boardSize);
+  const maxPlayerPieces = Math.floor(preset.cells / 2);
   let value = parseInt(input.value, 10);
   if (!Number.isInteger(value) || value < 0) value = 0;
-  if (key === "playerPieces") value = Math.min(value, FLIP_TRIPLES_MAX_PLAYER_PIECES);
+  if (key === "playerPieces") value = Math.min(value, maxPlayerPieces);
   if (key === "blocker") value -= value % 2;
-  value = Math.min(value, FLIP_TRIPLES_CELLS);
+  value = Math.min(value, preset.cells);
   flipSetupDraft[key] = value;
   updateFlipSetupSummary();
 });
@@ -1141,10 +1204,22 @@ flipSetup.addEventListener("click", (event) => {
     return;
   }
 
-  const uniqueSwapBtn = target.closest(".flip-toggle-btn[data-unique-swap]");
-  if (uniqueSwapBtn) {
-    flipSetupDraft.uniqueSwap = uniqueSwapBtn.dataset.uniqueSwap === "on";
+  const boardSizeBtn = target.closest(".flip-board-size-btn");
+  if (boardSizeBtn) {
+    flipSetupDraft.boardSize = boardSizeBtn.dataset.boardSize === "4x6" ? "4x6" : "5x5";
+    if (flipSetupDraft.boardSize === "4x6") flipSetupDraft.protectedMiddle = false;
     renderFlipSetup();
+    return;
+  }
+
+  const optionToggle = target.closest(".flip-option-toggle[data-toggle]");
+  if (optionToggle) {
+    if (optionToggle.classList.contains("disabled")) return;
+    const key = optionToggle.dataset.toggle;
+    if (key === "uniqueSwap" || key === "staticNeutrals" || key === "protectedMiddle") {
+      flipSetupDraft[key] = !flipSetupDraft[key];
+      renderFlipSetup();
+    }
     return;
   }
 

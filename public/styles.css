@@ -519,12 +519,17 @@ h2 {
 
 .board.flip-triples-board {
   display: grid;
-  grid-template-columns: repeat(5, minmax(58px, 86px));
+  grid-template-columns: repeat(var(--flip-cols, 5), minmax(58px, 86px));
   gap: 12px;
   width: fit-content;
   max-width: calc(100vw - 64px);
   margin: 22px 0 48px;
   overflow: visible;
+}
+
+.board.flip-triples-board.flip-board-4x6 {
+  grid-template-columns: repeat(4, minmax(52px, 78px));
+  gap: 10px;
 }
 
 .flip-piece {
@@ -889,6 +894,30 @@ h2 {
   gap: 10px;
 }
 
+.flip-board-size-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.flip-board-size-btn {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.flip-board-size-btn.active {
+  background: var(--accent);
+  color: #1b1203;
+  border-color: transparent;
+}
+
 .flip-mode-toggle,
 .flip-rule-toggle {
   display: flex;
@@ -924,50 +953,58 @@ h2 {
   cursor: default;
 }
 
-.flip-unique-swap {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.flip-option-toggles {
+  display: grid;
+  gap: 10px;
 }
 
-.flip-unique-swap-label {
+.flip-option-toggle {
   display: grid;
   gap: 2px;
-}
-
-.flip-unique-swap-label span {
-  font-weight: 700;
-  color: var(--text);
-}
-
-.flip-unique-swap-label small {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--muted);
-  font-size: 12px;
-}
-
-.flip-toggle {
-  display: flex;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-
-.flip-toggle-btn {
-  padding: 10px 16px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: transparent;
-  color: var(--text);
   font: inherit;
-  font-weight: 700;
+  text-align: left;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.flip-toggle-btn.active {
-  background: var(--accent);
-  color: #1b1203;
-  border-color: transparent;
+.flip-option-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.flip-option-toggle.active {
+  background: rgba(255, 196, 86, 0.16);
+  border-color: rgba(255, 196, 86, 0.45);
+  color: var(--text);
+}
+
+.flip-option-toggle.active .flip-option-title {
+  color: var(--accent);
+}
+
+.flip-option-title {
+  font-weight: 700;
+  color: inherit;
+}
+
+.flip-option-toggle small {
+  color: inherit;
+  opacity: 0.85;
+  font-size: 12px;
+}
+
+.flip-option-toggle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.flip-option-toggle.disabled:hover {
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .flip-setup-summary {
@@ -1171,11 +1208,15 @@ h2 {
   }
 
   .board.flip-triples-board {
-    grid-template-columns: repeat(5, minmax(44px, 1fr));
+    grid-template-columns: repeat(var(--flip-cols, 5), minmax(44px, 1fr));
     gap: 8px;
     width: 100%;
     max-width: calc(100vw - 48px);
     margin-bottom: 16px;
+  }
+
+  .board.flip-triples-board.flip-board-4x6 {
+    grid-template-columns: repeat(4, minmax(40px, 1fr));
   }
 
   .flip-piece {

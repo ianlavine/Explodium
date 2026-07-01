@@ -41,10 +41,9 @@ const maxRangeSquare = 3;
 const maxRangeDiamond = 3;
 const maxRangeCircle = 2;
 const TOY_BATTLE_TYPES = ["Kwak", "Skully", "Cap'n", "Jumbo", "Hook", "XB-42", "Star", "Roxy"];
-const FLIP_TRIPLES_SIZE = 5;
-const FLIP_TRIPLES_CELLS = FLIP_TRIPLES_SIZE * FLIP_TRIPLES_SIZE;
 const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 9;
-const FLIP_TRIPLES_MAX_PLAYER_PIECES = Math.floor(FLIP_TRIPLES_CELLS / 2);
+const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2 };
+const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null };
 const FLIP_SCORING_SHAPES = ["red-x", "blue-o", "purple"];
 const FLIP_DIRECTIONS = [
   [-1, -1],
@@ -65,6 +64,16 @@ const FLIP_OPP_INDEX = 0;
 const FLIP_BOT_SHAPE = "red-x";
 const FLIP_OPP_SHAPE = "blue-o";
 const FLIP_BOT_DELAY_MS = 650;
+
+function flipBoardPreset(boardSize) {
+  return boardSize === "4x6" ? FLIP_BOARD_4X6 : FLIP_BOARD_5X5;
+}
+
+function flipBoardDimsFromBoard(board) {
+  const rows = board.length;
+  const cols = board[0]?.length ?? 0;
+  return { rows, cols, cells: rows * cols };
+}
 
 function getTile(cell) {
   if (!cell || typeof cell !== "object") return null;
@@ -391,20 +400,23 @@ function clampInt(value, min, max, fallback) {
 }
 
 function normalizeFlipSettings(options = {}) {
+  const boardSize = options.boardSize === "4x6" ? "4x6" : "5x5";
+  const preset = flipBoardPreset(boardSize);
+  const maxPlayerPieces = Math.floor(preset.cells / 2);
   let playerPieces = clampInt(
     options.playerPieces,
     0,
-    FLIP_TRIPLES_MAX_PLAYER_PIECES,
+    maxPlayerPieces,
     FLIP_TRIPLES_DEFAULT_PLAYER_PIECES
   );
-  let purple = clampInt(options.purple, 0, FLIP_TRIPLES_CELLS, 0);
-  let hopper = clampInt(options.hopper, 0, FLIP_TRIPLES_CELLS, 0);
-  let blocker = clampInt(options.blocker, 0, FLIP_TRIPLES_CELLS, 0);
+  let purple = clampInt(options.purple, 0, preset.cells, 0);
+  let hopper = clampInt(options.hopper, 0, preset.cells, 0);
+  let blocker = clampInt(options.blocker, 0, preset.cells, 0);
   blocker -= blocker % 2; // blockers come in equal pairs per player
 
   // Trim until everything fits on the board, leaving room for at least 0 neutrals.
   const total = () => playerPieces * 2 + purple + hopper + blocker;
-  while (total() > FLIP_TRIPLES_CELLS) {
+  while (total() > preset.cells) {
     if (playerPieces > 0) playerPieces -= 1;
     else if (purple > 0) purple -= 1;
     else if (hopper > 0) hopper -= 1;
@@ -412,14 +424,19 @@ function normalizeFlipSettings(options = {}) {
     else break;
   }
 
-  const neutralPieces = FLIP_TRIPLES_CELLS - total();
+  const neutralPieces = preset.cells - total();
   const mode = options.mode === "extended" ? "extended" : "basic";
   const extendedRule = ["none", "ring", "swap"].includes(options.extendedRule)
     ? options.extendedRule
     : "none";
   const uniqueSwap = options.uniqueSwap === true;
+  const staticNeutrals = options.staticNeutrals === true;
+  const protectedMiddle = boardSize === "4x6" ? false : options.protectedMiddle === true;
 
   return {
+    boardSize,
+    boardCols: preset.cols,
+    boardRows: preset.rows,
     playerPieces,
     purple,
     hopper,
@@ -427,7 +444,9 @@ function normalizeFlipSettings(options = {}) {
     neutralPieces,
     mode,
     extendedRule: mode === "extended" ? extendedRule : "none",
-    uniqueSwap
+    uniqueSwap,
+    staticNeutrals,
+    protectedMiddle
   };
 }
 
@@ -467,9 +486,10 @@ function createFlipTriplesBoard(settings) {
     pieces.push(makeFlipPiece(index++, "neutral"));
   }
   const shuffled = shuffle(pieces);
+  const { cols, rows } = flipBoardPreset(settings.boardSize);
   const board = [];
-  for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
-    board.push(shuffled.slice(row * FLIP_TRIPLES_SIZE, (row + 1) * FLIP_TRIPLES_SIZE));
+  for (let row = 0; row < rows; row += 1) {
+    board.push(shuffled.slice(row * cols, (row + 1) * cols));
   }
   return board;
 }
@@ -521,25 +541,37 @@ function flipSwapReachable(first, second, fromRow, fromCol, toRow, toCol) {
   return dist === 1;
 }
 
-// In Unique Swap mode the two swapping pieces must have different shapes (no two
-// X's, two O's, two neutrals, etc.). Otherwise any pairing is allowed.
-function flipSwapShapesAllowed(first, second, uniqueSwap) {
-  if (!uniqueSwap) return true;
-  return first.shape !== second.shape;
+// Unique Swap: the two pieces must have different shapes. Static Neutrals: a
+// neutral must flip (first), never slide (second) — so two neutrals can't swap.
+// Protected Middle: the flipping piece can't land on the center cell.
+function flipSwapPairAllowed(first, second, settings = {}, toRow = null, toCol = null) {
+  if (settings.uniqueSwap === true && first.shape === second.shape) return false;
+  if (settings.staticNeutrals === true && second.shape === "neutral") return false;
+  const preset = flipBoardPreset(settings.boardSize);
+  if (
+    settings.protectedMiddle === true &&
+    preset.centerRow != null &&
+    toRow === preset.centerRow &&
+    toCol === preset.centerCol
+  ) {
+    return false;
+  }
+  return true;
 }
 
-function flipMoveExists(board, phase, allowedPlayers, uniqueSwap = false) {
-  for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
-    for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
+function flipMoveExists(board, phase, allowedPlayers, settings = {}) {
+  const { rows, cols } = flipBoardDimsFromBoard(board);
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
       const first = board[row][col];
       if (!isSelectableFlipPiece(first, phase)) continue;
       if (first.protected) continue; // protected pieces can never be the first (flipping) piece
-      for (let r2 = 0; r2 < FLIP_TRIPLES_SIZE; r2 += 1) {
-        for (let c2 = 0; c2 < FLIP_TRIPLES_SIZE; c2 += 1) {
+      for (let r2 = 0; r2 < rows; r2 += 1) {
+        for (let c2 = 0; c2 < cols; c2 += 1) {
           if (r2 === row && c2 === col) continue;
           const second = board[r2][c2];
           if (!isSelectableFlipPiece(second, phase)) continue;
-          if (!flipSwapShapesAllowed(first, second, uniqueSwap)) continue;
+          if (!flipSwapPairAllowed(first, second, settings, r2, c2)) continue;
           if (!flipSwapReachable(first, second, row, col, r2, c2)) continue;
           const actors = flipMoveActors(first, second);
           if (actors.some((p) => allowedPlayers.includes(p))) return true;
@@ -551,11 +583,11 @@ function flipMoveExists(board, phase, allowedPlayers, uniqueSwap = false) {
 }
 
 function anyFlipMove(state) {
-  return flipMoveExists(state.board, state.phase, [0, 1], state.settings?.uniqueSwap);
+  return flipMoveExists(state.board, state.phase, [0, 1], state.settings ?? {});
 }
 
 function playerHasFlipMove(state, playerIndex) {
-  return flipMoveExists(state.board, state.phase, [playerIndex], state.settings?.uniqueSwap);
+  return flipMoveExists(state.board, state.phase, [playerIndex], state.settings ?? {});
 }
 
 function getFlipTriples(board, shape) {
@@ -565,13 +597,14 @@ function getFlipTriples(board, shape) {
     [1, 1],
     [1, -1]
   ];
+  const { rows, cols } = flipBoardDimsFromBoard(board);
   const triples = [];
-  for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
-    for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
       directions.forEach(([dr, dc]) => {
         const cells = [0, 1, 2].map((offset) => [row + dr * offset, col + dc * offset]);
         const inBounds = cells.every(
-          ([r, c]) => r >= 0 && r < FLIP_TRIPLES_SIZE && c >= 0 && c < FLIP_TRIPLES_SIZE
+          ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols
         );
         if (!inBounds) return;
         if (cells.every(([r, c]) => flipPieceMatchesShape(board[r][c], shape))) triples.push(cells);
@@ -636,8 +669,9 @@ function computeFlipWinner(state) {
   const { red, blue } = state.scores;
   if (red > blue) return "red";
   if (blue > red) return "blue";
-  const mid = Math.floor(FLIP_TRIPLES_SIZE / 2);
-  const center = state.board?.[mid]?.[mid];
+  const preset = flipBoardPreset(state.settings?.boardSize);
+  if (preset.centerRow == null) return "tie";
+  const center = state.board?.[preset.centerRow]?.[preset.centerCol];
   let controller = null;
   if (center) {
     if (center.shape === "red-x") controller = "red";
@@ -795,19 +829,20 @@ function flipBoardClone(board) {
 }
 
 // Every legal (first, second) swap available to a given player on a board.
-function flipLegalMovesFor(board, phase, playerIndex, uniqueSwap = false) {
+function flipLegalMovesFor(board, phase, playerIndex, settings = {}) {
   const moves = [];
-  for (let fr = 0; fr < FLIP_TRIPLES_SIZE; fr += 1) {
-    for (let fc = 0; fc < FLIP_TRIPLES_SIZE; fc += 1) {
+  const { rows, cols } = flipBoardDimsFromBoard(board);
+  for (let fr = 0; fr < rows; fr += 1) {
+    for (let fc = 0; fc < cols; fc += 1) {
       const first = board[fr][fc];
       if (!isSelectableFlipPiece(first, phase)) continue;
       if (first.protected) continue;
-      for (let tr = 0; tr < FLIP_TRIPLES_SIZE; tr += 1) {
-        for (let tc = 0; tc < FLIP_TRIPLES_SIZE; tc += 1) {
+      for (let tr = 0; tr < rows; tr += 1) {
+        for (let tc = 0; tc < cols; tc += 1) {
           if (fr === tr && fc === tc) continue;
           const second = board[tr][tc];
           if (!isSelectableFlipPiece(second, phase)) continue;
-          if (!flipSwapShapesAllowed(first, second, uniqueSwap)) continue;
+          if (!flipSwapPairAllowed(first, second, settings, tr, tc)) continue;
           if (!flipSwapReachable(first, second, fr, fc, tr, tc)) continue;
           const actors = flipMoveActors(first, second);
           if (!actors.includes(playerIndex)) continue;
@@ -843,13 +878,14 @@ function flipLockedTripleCount(board, shape) {
     [1, 1],
     [1, -1]
   ];
+  const { rows, cols } = flipBoardDimsFromBoard(board);
   let count = 0;
-  for (let row = 0; row < FLIP_TRIPLES_SIZE; row += 1) {
-    for (let col = 0; col < FLIP_TRIPLES_SIZE; col += 1) {
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
       directions.forEach(([dr, dc]) => {
         const cells = [0, 1, 2].map((offset) => [row + dr * offset, col + dc * offset]);
         const inBounds = cells.every(
-          ([r, c]) => r >= 0 && r < FLIP_TRIPLES_SIZE && c >= 0 && c < FLIP_TRIPLES_SIZE
+          ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols
         );
         if (!inBounds) return;
         if (
@@ -868,9 +904,9 @@ function flipLockedTripleCount(board, shape) {
 
 // True if `playerIndex` can, on their next turn, lock in a new permanent triple
 // of `shape`.
-function flipPlayerCanScore(board, phase, playerIndex, shape, uniqueSwap = false) {
+function flipPlayerCanScore(board, phase, playerIndex, shape, settings = {}) {
   const base = flipLockedTripleCount(board, shape);
-  const moves = flipLegalMovesFor(board, phase, playerIndex, uniqueSwap);
+  const moves = flipLegalMovesFor(board, phase, playerIndex, settings);
   for (const move of moves) {
     const after = flipApplyMove(board, phase, move);
     if (flipLockedTripleCount(after, shape) > base) return true;
@@ -882,10 +918,10 @@ function flipPlayerCanScore(board, phase, playerIndex, shape, uniqueSwap = false
 // (i.e. the gaps the bot may want to block). In phase 1 the only way to add a
 // locked triple is via the flipping first piece, so the completing cell is the
 // move's `to`.
-function flipThreatCells(board, phase, playerIndex, shape, uniqueSwap = false) {
+function flipThreatCells(board, phase, playerIndex, shape, settings = {}) {
   const base = flipLockedTripleCount(board, shape);
   const cells = new Set();
-  for (const move of flipLegalMovesFor(board, phase, playerIndex, uniqueSwap)) {
+  for (const move of flipLegalMovesFor(board, phase, playerIndex, settings)) {
     const after = flipApplyMove(board, phase, move);
     if (flipLockedTripleCount(after, shape) > base) {
       cells.add(`${move.to.row},${move.to.col}`);
@@ -895,23 +931,19 @@ function flipThreatCells(board, phase, playerIndex, shape, uniqueSwap = false) {
 }
 
 function flipTouchesLockedShape(board, row, col, shape) {
+  const { rows, cols } = flipBoardDimsFromBoard(board);
   for (const [dr, dc] of FLIP_DIRECTIONS) {
     const r = row + dr;
     const c = col + dc;
-    if (r < 0 || r >= FLIP_TRIPLES_SIZE || c < 0 || c >= FLIP_TRIPLES_SIZE) continue;
+    if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
     const piece = board[r][c];
     if (piece && piece.flipped && flipPieceMatchesShape(piece, shape)) return true;
   }
   return false;
 }
 
-function flipIsEdgeCell(row, col) {
-  return (
-    row === 0 ||
-    col === 0 ||
-    row === FLIP_TRIPLES_SIZE - 1 ||
-    col === FLIP_TRIPLES_SIZE - 1
-  );
+function flipIsEdgeCell(row, col, rows, cols) {
+  return row === 0 || col === 0 || row === rows - 1 || col === cols - 1;
 }
 
 function flipRandomChoice(items) {
@@ -941,9 +973,12 @@ function flipChoosePhase2Move(board, phase, moves) {
 // Lock a piece into the center cell, preferring the bot's own X (the center sits
 // on the most triple lines), then a neutral, then a bot-owned blocker. Never
 // locks an opponent O into the center. Returns null if the center can't be taken.
-function flipCenterMove(moves) {
-  const mid = Math.floor(FLIP_TRIPLES_SIZE / 2);
-  const centerMoves = moves.filter((move) => move.to.row === mid && move.to.col === mid);
+function flipCenterMove(moves, settings = {}) {
+  const preset = flipBoardPreset(settings.boardSize);
+  if (preset.centerRow == null) return null;
+  const centerMoves = moves.filter(
+    (move) => move.to.row === preset.centerRow && move.to.col === preset.centerCol
+  );
   if (!centerMoves.length) return null;
   for (const shape of ["red-x", "neutral", "blocker"]) {
     const options = centerMoves.filter((move) => move.firstShape === shape);
@@ -955,22 +990,22 @@ function flipCenterMove(moves) {
 function flipBotContext(state) {
   const board = state.board;
   const phase = state.phase;
-  const uniqueSwap = state.settings?.uniqueSwap === true;
-  const moves = flipLegalMovesFor(board, phase, FLIP_BOT_INDEX, uniqueSwap);
-  return { board, phase, uniqueSwap, moves };
+  const settings = state.settings ?? {};
+  const moves = flipLegalMovesFor(board, phase, FLIP_BOT_INDEX, settings);
+  return { board, phase, settings, moves };
 }
 
 // Block an opponent permanent O-triple (neutral > X > relocate the O).
 function flipTryDefendMove(ctx) {
-  const { board, phase, uniqueSwap, moves } = ctx;
-  if (!flipPlayerCanScore(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap)) return null;
-  const threatCells = flipThreatCells(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap);
+  const { board, phase, settings, moves } = ctx;
+  if (!flipPlayerCanScore(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings)) return null;
+  const threatCells = flipThreatCells(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings);
   const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
   let best = null;
   for (const move of moves) {
     const after = flipApplyMove(board, phase, move);
     if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue;
-    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap)) continue;
+    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings)) continue;
     const fillsThreat = threatCells.has(`${move.to.row},${move.to.col}`);
     let category;
     if (fillsThreat && move.firstShape === "neutral") category = 0;
@@ -984,13 +1019,13 @@ function flipTryDefendMove(ctx) {
 
 // Complete a permanent X-triple if possible.
 function flipTryScoreMove(ctx) {
-  const { board, phase, uniqueSwap, moves } = ctx;
+  const { board, phase, settings, moves } = ctx;
   const base = flipLockedTripleCount(board, FLIP_BOT_SHAPE);
   const scoring = [];
   for (const move of moves) {
     const after = flipApplyMove(board, phase, move);
     if (flipLockedTripleCount(after, FLIP_BOT_SHAPE) > base) {
-      const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap);
+      const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings);
       scoring.push({ move, givesOpp });
     }
   }
@@ -1003,21 +1038,21 @@ function flipTryScoreMove(ctx) {
 // A "scoring location" is a cell where the bot could, on its next turn, lock an
 // X in to complete a permanent X-triple (which requires an available X next to
 // that cell). The count is the number of distinct such cells on the board.
-function flipScoringLocationCount(board, phase, uniqueSwap) {
-  return flipThreatCells(board, phase, FLIP_BOT_INDEX, FLIP_BOT_SHAPE, uniqueSwap).size;
+function flipScoringLocationCount(board, phase, settings = {}) {
+  return flipThreatCells(board, phase, FLIP_BOT_INDEX, FLIP_BOT_SHAPE, settings).size;
 }
 
 // Set a trap: lock an X in such that it leaves at least TWO scoring locations
 // for next turn. Skips moves that would hand the opponent a permanent point.
 function flipTryTrapMove(ctx) {
-  const { board, phase, uniqueSwap, moves } = ctx;
+  const { board, phase, settings, moves } = ctx;
   let bestTraps = null;
   let bestCount = 1;
   for (const move of moves) {
     if (move.firstShape !== FLIP_BOT_SHAPE) continue;
     const after = flipApplyMove(board, phase, move);
-    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap)) continue;
-    const locations = flipScoringLocationCount(after, phase, uniqueSwap);
+    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings)) continue;
+    const locations = flipScoringLocationCount(after, phase, settings);
     if (locations < 2) continue;
     if (locations > bestCount) {
       bestCount = locations;
@@ -1031,7 +1066,8 @@ function flipTryTrapMove(ctx) {
 
 // Lock an opponent O onto an edge, away from its other locked O's.
 function flipTryEdgeMove(ctx) {
-  const { board, phase, uniqueSwap, moves } = ctx;
+  const { board, phase, settings, moves } = ctx;
+  const { rows, cols } = flipBoardDimsFromBoard(board);
   const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
   const candidates = [];
   for (const move of moves) {
@@ -1039,9 +1075,9 @@ function flipTryEdgeMove(ctx) {
     const after = flipApplyMove(board, phase, move);
     if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue;
     const { row, col } = move.to;
-    const edge = flipIsEdgeCell(row, col);
+    const edge = flipIsEdgeCell(row, col, rows, cols);
     const touching = flipTouchesLockedShape(after, row, col, FLIP_OPP_SHAPE);
-    const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, uniqueSwap);
+    const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings);
     let tier;
     if (edge && !touching && !givesOpp) tier = 0;
     else if (edge && !touching) tier = 1;
@@ -1072,7 +1108,7 @@ function chooseFlipDefensiveMove(state, isFirstMove = false) {
   if (ctx.phase !== 1) return flipChoosePhase2Move(ctx.board, ctx.phase, ctx.moves);
 
   if (isFirstMove) {
-    const centerMove = flipCenterMove(ctx.moves);
+    const centerMove = flipCenterMove(ctx.moves, ctx.settings);
     if (centerMove) return centerMove;
   }
 
@@ -1090,7 +1126,7 @@ function chooseFlipAggressiveMove(state, isFirstMove = false) {
   if (ctx.phase !== 1) return flipChoosePhase2Move(ctx.board, ctx.phase, ctx.moves);
 
   if (isFirstMove) {
-    const centerMove = flipCenterMove(ctx.moves);
+    const centerMove = flipCenterMove(ctx.moves, ctx.settings);
     if (centerMove) return centerMove;
   }
 
@@ -1474,14 +1510,15 @@ io.on("connection", (socket) => {
     const state = room.flipTriples;
     if (state.setup || state.pendingPhase2 || state.gameOver) return;
     if (room.turn !== socket.id) return;
+    const { rows, cols } = flipBoardDimsFromBoard(state.board);
     const isCoordinate = (point) =>
       point &&
       Number.isInteger(point.row) &&
       Number.isInteger(point.col) &&
       point.row >= 0 &&
-      point.row < FLIP_TRIPLES_SIZE &&
+      point.row < rows &&
       point.col >= 0 &&
-      point.col < FLIP_TRIPLES_SIZE;
+      point.col < cols;
     if (!isCoordinate(from) || !isCoordinate(to)) return;
 
     const board = state.board;
@@ -1491,7 +1528,7 @@ io.on("connection", (socket) => {
     if (!isSelectableFlipPiece(first, state.phase)) return;
     if (!isSelectableFlipPiece(second, state.phase)) return;
     if (first.protected) return; // protected pieces must be selected second
-    if (!flipSwapShapesAllowed(first, second, state.settings?.uniqueSwap)) return;
+    if (!flipSwapPairAllowed(first, second, state.settings ?? {}, to.row, to.col)) return;
 
     const dist = Math.max(Math.abs(from.row - to.row), Math.abs(from.col - to.col));
     if (dist === 0) return;
