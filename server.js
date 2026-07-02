@@ -400,7 +400,7 @@ function clampInt(value, min, max, fallback) {
 }
 
 function normalizeFlipSettings(options = {}) {
-  const boardSize = options.boardSize === "4x6" ? "4x6" : "5x5";
+  const boardSize = options.boardSize === "5x5" ? "5x5" : "4x6";
   const preset = flipBoardPreset(boardSize);
   const maxPlayerPieces = Math.floor(preset.cells / 2);
   let playerPieces = clampInt(
@@ -429,7 +429,7 @@ function normalizeFlipSettings(options = {}) {
   const extendedRule = ["none", "ring", "swap"].includes(options.extendedRule)
     ? options.extendedRule
     : "none";
-  const uniqueSwap = options.uniqueSwap === true;
+  const uniqueSwap = options.uniqueSwap !== false;
   const staticNeutrals = options.staticNeutrals === true;
   const protectedMiddle = boardSize === "4x6" ? false : options.protectedMiddle === true;
 
@@ -663,14 +663,30 @@ function refreshFlipTriplesTotals(state) {
   };
 }
 
-// Tie-breaker: if triple counts are equal, the player whose piece sits on the
-// center cell loses; a neutral center leaves it a tie.
+function countFlipRemainingWhitePieces(board, shape) {
+  let count = 0;
+  board.forEach((row) => {
+    row.forEach((piece) => {
+      if (piece && piece.shape === shape && !piece.flipped) count += 1;
+    });
+  });
+  return count;
+}
+
+// Tie-breaker: 5×5 uses the center cell (occupant loses). 4×6 uses remaining
+// unflipped player pieces — more white X's or O's wins; equal counts stay tied.
 function computeFlipWinner(state) {
   const { red, blue } = state.scores;
   if (red > blue) return "red";
   if (blue > red) return "blue";
   const preset = flipBoardPreset(state.settings?.boardSize);
-  if (preset.centerRow == null) return "tie";
+  if (preset.centerRow == null) {
+    const redWhite = countFlipRemainingWhitePieces(state.board, "red-x");
+    const blueWhite = countFlipRemainingWhitePieces(state.board, "blue-o");
+    if (redWhite > blueWhite) return "red";
+    if (blueWhite > redWhite) return "blue";
+    return "tie";
+  }
   const center = state.board?.[preset.centerRow]?.[preset.centerCol];
   let controller = null;
   if (center) {

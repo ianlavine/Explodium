@@ -123,14 +123,14 @@ function flipBoardPreset(boardSize) {
 
 function defaultFlipSetupDraft() {
   return {
-    boardSize: "5x5",
+    boardSize: "4x6",
     playerPieces: 9,
     purple: 0,
     hopper: 0,
     blocker: 0,
     mode: "basic",
     extendedRule: "none",
-    uniqueSwap: false,
+    uniqueSwap: true,
     staticNeutrals: false,
     protectedMiddle: false
   };
@@ -838,14 +838,14 @@ function renderFlipSetup() {
   if (!flipSetupDraft) {
     flipSetupDraft = flipTriplesState?.settings
       ? {
-          boardSize: flipTriplesState.settings.boardSize ?? "5x5",
+          boardSize: flipTriplesState.settings.boardSize ?? "4x6",
           playerPieces: flipTriplesState.settings.playerPieces ?? 9,
           purple: flipTriplesState.settings.purple ?? 0,
           hopper: flipTriplesState.settings.hopper ?? 0,
           blocker: flipTriplesState.settings.blocker ?? 0,
           mode: flipTriplesState.settings.mode ?? "basic",
           extendedRule: flipTriplesState.settings.extendedRule ?? "none",
-          uniqueSwap: flipTriplesState.settings.uniqueSwap ?? false,
+          uniqueSwap: flipTriplesState.settings.uniqueSwap ?? true,
           staticNeutrals: flipTriplesState.settings.staticNeutrals ?? false,
           protectedMiddle: flipTriplesState.settings.protectedMiddle ?? false
         }
