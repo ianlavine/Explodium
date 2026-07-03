@@ -3,6 +3,7 @@ import http from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
+import { chooseSolverMove } from "./flip-solver.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,25 +46,15 @@ const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 9;
 const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2 };
 const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null };
 const FLIP_SCORING_SHAPES = ["red-x", "blue-o", "purple"];
-const FLIP_DIRECTIONS = [
-  [-1, -1],
-  [-1, 0],
-  [-1, 1],
-  [0, -1],
-  [0, 1],
-  [1, -1],
-  [1, 0],
-  [1, 1]
-];
 
 // The Flip Triples bot always plays as X (red) and always goes second, so it
 // occupies player index 1 while the human opponent (O / blue) takes index 0.
 const FLIP_BOT_ID = "__flip_bot__";
 const FLIP_BOT_INDEX = 1;
-const FLIP_OPP_INDEX = 0;
-const FLIP_BOT_SHAPE = "red-x";
-const FLIP_OPP_SHAPE = "blue-o";
-const FLIP_BOT_DELAY_MS = 650;
+const FLIP_BOT_DELAY_MS = 300;
+// Search budget per bot move. The search runs synchronously, so keep it short
+// enough not to stall the event loop for long.
+const FLIP_BOT_TIME_MS = Number(process.env.FLIP_BOT_MS || 900);
 
 function flipBoardPreset(boardSize) {
   return boardSize === "4x6" ? FLIP_BOARD_4X6 : FLIP_BOARD_5X5;
@@ -823,7 +814,6 @@ function performFlipSwap(room, actorId, from, to, recordUndo) {
     room.flipUndo = {
       by: actorId,
       turn: room.turn,
-      botMoveCount: room.botMoveCount || 0,
       snapshot: JSON.parse(JSON.stringify(state))
     };
   }
@@ -840,326 +830,9 @@ function performFlipSwap(room, actorId, from, to, recordUndo) {
   settleFlipTurn(room, actorId);
 }
 
-function flipBoardClone(board) {
-  return board.map((row) => row.map((piece) => ({ ...piece })));
-}
-
-// Every legal (first, second) swap available to a given player on a board.
-function flipLegalMovesFor(board, phase, playerIndex, settings = {}) {
-  const moves = [];
-  const { rows, cols } = flipBoardDimsFromBoard(board);
-  for (let fr = 0; fr < rows; fr += 1) {
-    for (let fc = 0; fc < cols; fc += 1) {
-      const first = board[fr][fc];
-      if (!isSelectableFlipPiece(first, phase)) continue;
-      if (first.protected) continue;
-      for (let tr = 0; tr < rows; tr += 1) {
-        for (let tc = 0; tc < cols; tc += 1) {
-          if (fr === tr && fc === tc) continue;
-          const second = board[tr][tc];
-          if (!isSelectableFlipPiece(second, phase)) continue;
-          if (!flipSwapPairAllowed(first, second, settings, tr, tc)) continue;
-          if (!flipSwapReachable(first, second, fr, fc, tr, tc)) continue;
-          const actors = flipMoveActors(first, second);
-          if (!actors.includes(playerIndex)) continue;
-          moves.push({
-            from: { row: fr, col: fc },
-            to: { row: tr, col: tc },
-            firstShape: first.shape,
-            secondShape: second.shape
-          });
-        }
-      }
-    }
-  }
-  return moves;
-}
-
-function flipApplyMove(board, phase, move) {
-  const next = flipBoardClone(board);
-  const first = next[move.from.row][move.from.col];
-  const second = next[move.to.row][move.to.col];
-  next[move.to.row][move.to.col] = { ...first, flipped: phase === 1 };
-  next[move.from.row][move.from.col] = second;
-  return next;
-}
-
-// Triples (3-in-a-row, any of 4 orientations) made entirely of locked-in
-// (flipped) pieces matching a shape. These are "permanent" points in phase 1
-// because flipped pieces can no longer move.
-function flipLockedTripleCount(board, shape) {
-  const directions = [
-    [0, 1],
-    [1, 0],
-    [1, 1],
-    [1, -1]
-  ];
-  const { rows, cols } = flipBoardDimsFromBoard(board);
-  let count = 0;
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      directions.forEach(([dr, dc]) => {
-        const cells = [0, 1, 2].map((offset) => [row + dr * offset, col + dc * offset]);
-        const inBounds = cells.every(
-          ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols
-        );
-        if (!inBounds) return;
-        if (
-          cells.every(([r, c]) => {
-            const piece = board[r][c];
-            return piece && piece.flipped && flipPieceMatchesShape(piece, shape);
-          })
-        ) {
-          count += 1;
-        }
-      });
-    }
-  }
-  return count;
-}
-
-// True if `playerIndex` can, on their next turn, lock in a new permanent triple
-// of `shape`.
-function flipPlayerCanScore(board, phase, playerIndex, shape, settings = {}) {
-  const base = flipLockedTripleCount(board, shape);
-  const moves = flipLegalMovesFor(board, phase, playerIndex, settings);
-  for (const move of moves) {
-    const after = flipApplyMove(board, phase, move);
-    if (flipLockedTripleCount(after, shape) > base) return true;
-  }
-  return false;
-}
-
-// The cells where the player could land a locking piece to complete a triple
-// (i.e. the gaps the bot may want to block). In phase 1 the only way to add a
-// locked triple is via the flipping first piece, so the completing cell is the
-// move's `to`.
-function flipThreatCells(board, phase, playerIndex, shape, settings = {}) {
-  const base = flipLockedTripleCount(board, shape);
-  const cells = new Set();
-  for (const move of flipLegalMovesFor(board, phase, playerIndex, settings)) {
-    const after = flipApplyMove(board, phase, move);
-    if (flipLockedTripleCount(after, shape) > base) {
-      cells.add(`${move.to.row},${move.to.col}`);
-    }
-  }
-  return cells;
-}
-
-function flipTouchesLockedShape(board, row, col, shape) {
-  const { rows, cols } = flipBoardDimsFromBoard(board);
-  for (const [dr, dc] of FLIP_DIRECTIONS) {
-    const r = row + dr;
-    const c = col + dc;
-    if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
-    const piece = board[r][c];
-    if (piece && piece.flipped && flipPieceMatchesShape(piece, shape)) return true;
-  }
-  return false;
-}
-
-function flipIsEdgeCell(row, col, rows, cols) {
-  return row === 0 || col === 0 || row === rows - 1 || col === cols - 1;
-}
-
-function flipRandomChoice(items) {
-  return items[Math.floor(Math.random() * items.length)];
-}
-
-// Greedy fallback used in phase 2 (where "locked" no longer maps cleanly to the
-// permanent-point heuristics): pick whatever maximizes final X triples minus
-// final O triples.
-function flipChoosePhase2Move(board, phase, moves) {
-  let best = null;
-  let bestScore = -Infinity;
-  for (const move of moves) {
-    const after = flipApplyMove(board, phase, move);
-    const score =
-      countFlipTriples(after, FLIP_BOT_SHAPE) - countFlipTriples(after, FLIP_OPP_SHAPE);
-    if (score > bestScore) {
-      bestScore = score;
-      best = [move];
-    } else if (score === bestScore) {
-      best.push(move);
-    }
-  }
-  return best ? flipRandomChoice(best) : null;
-}
-
-// Lock a piece into the center cell, preferring the bot's own X (the center sits
-// on the most triple lines), then a neutral, then a bot-owned blocker. Never
-// locks an opponent O into the center. Returns null if the center can't be taken.
-function flipCenterMove(moves, settings = {}) {
-  const preset = flipBoardPreset(settings.boardSize);
-  if (preset.centerRow == null) return null;
-  const centerMoves = moves.filter(
-    (move) => move.to.row === preset.centerRow && move.to.col === preset.centerCol
-  );
-  if (!centerMoves.length) return null;
-  for (const shape of ["red-x", "neutral", "blocker"]) {
-    const options = centerMoves.filter((move) => move.firstShape === shape);
-    if (options.length) return flipRandomChoice(options);
-  }
-  return null;
-}
-
-function flipBotContext(state) {
-  const board = state.board;
-  const phase = state.phase;
-  const settings = state.settings ?? {};
-  const moves = flipLegalMovesFor(board, phase, FLIP_BOT_INDEX, settings);
-  return { board, phase, settings, moves };
-}
-
-// Block an opponent permanent O-triple (neutral > X > relocate the O).
-function flipTryDefendMove(ctx) {
-  const { board, phase, settings, moves } = ctx;
-  if (!flipPlayerCanScore(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings)) return null;
-  const threatCells = flipThreatCells(board, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings);
-  const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
-  let best = null;
-  for (const move of moves) {
-    const after = flipApplyMove(board, phase, move);
-    if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue;
-    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings)) continue;
-    const fillsThreat = threatCells.has(`${move.to.row},${move.to.col}`);
-    let category;
-    if (fillsThreat && move.firstShape === "neutral") category = 0;
-    else if (fillsThreat && move.firstShape === "red-x") category = 1;
-    else if (move.firstShape === "blue-o") category = 2;
-    else category = 3;
-    if (!best || category < best.category) best = { move, category };
-  }
-  return best?.move ?? null;
-}
-
-// Complete a permanent X-triple if possible.
-function flipTryScoreMove(ctx) {
-  const { board, phase, settings, moves } = ctx;
-  const base = flipLockedTripleCount(board, FLIP_BOT_SHAPE);
-  const scoring = [];
-  for (const move of moves) {
-    const after = flipApplyMove(board, phase, move);
-    if (flipLockedTripleCount(after, FLIP_BOT_SHAPE) > base) {
-      const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings);
-      scoring.push({ move, givesOpp });
-    }
-  }
-  if (!scoring.length) return null;
-  const safe = scoring.filter((entry) => !entry.givesOpp);
-  const pool = safe.length ? safe : scoring;
-  return flipRandomChoice(pool).move;
-}
-
-// A "scoring location" is a cell where the bot could, on its next turn, lock an
-// X in to complete a permanent X-triple (which requires an available X next to
-// that cell). The count is the number of distinct such cells on the board.
-function flipScoringLocationCount(board, phase, settings = {}) {
-  return flipThreatCells(board, phase, FLIP_BOT_INDEX, FLIP_BOT_SHAPE, settings).size;
-}
-
-// Set a trap: lock an X in such that it leaves at least TWO scoring locations
-// for next turn. Skips moves that would hand the opponent a permanent point.
-function flipTryTrapMove(ctx) {
-  const { board, phase, settings, moves } = ctx;
-  let bestTraps = null;
-  let bestCount = 1;
-  for (const move of moves) {
-    if (move.firstShape !== FLIP_BOT_SHAPE) continue;
-    const after = flipApplyMove(board, phase, move);
-    if (flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings)) continue;
-    const locations = flipScoringLocationCount(after, phase, settings);
-    if (locations < 2) continue;
-    if (locations > bestCount) {
-      bestCount = locations;
-      bestTraps = [move];
-    } else if (locations === bestCount) {
-      bestTraps.push(move);
-    }
-  }
-  return bestTraps ? flipRandomChoice(bestTraps) : null;
-}
-
-// Lock an opponent O onto an edge, away from its other locked O's.
-function flipTryEdgeMove(ctx) {
-  const { board, phase, settings, moves } = ctx;
-  const { rows, cols } = flipBoardDimsFromBoard(board);
-  const oppBase = flipLockedTripleCount(board, FLIP_OPP_SHAPE);
-  const candidates = [];
-  for (const move of moves) {
-    if (move.firstShape !== "blue-o") continue;
-    const after = flipApplyMove(board, phase, move);
-    if (flipLockedTripleCount(after, FLIP_OPP_SHAPE) > oppBase) continue;
-    const { row, col } = move.to;
-    const edge = flipIsEdgeCell(row, col, rows, cols);
-    const touching = flipTouchesLockedShape(after, row, col, FLIP_OPP_SHAPE);
-    const givesOpp = flipPlayerCanScore(after, phase, FLIP_OPP_INDEX, FLIP_OPP_SHAPE, settings);
-    let tier;
-    if (edge && !touching && !givesOpp) tier = 0;
-    else if (edge && !touching) tier = 1;
-    else if (edge) tier = 2;
-    else if (!touching) tier = 3;
-    else tier = 4;
-    candidates.push({ move, tier });
-  }
-  if (!candidates.length) return null;
-  const minTier = Math.min(...candidates.map((entry) => entry.tier));
-  const pool = candidates.filter((entry) => entry.tier === minTier);
-  return flipRandomChoice(pool).move;
-}
-
-function flipFirstAvailableMove(ctx, steps) {
-  for (const step of steps) {
-    const move = step(ctx);
-    if (move) return move;
-  }
-  return null;
-}
-
-// DEFENSIVE: defend -> score -> edge -> random
-// (Plus an opening center grab on the bot's very first turn.)
-function chooseFlipDefensiveMove(state, isFirstMove = false) {
-  const ctx = flipBotContext(state);
-  if (ctx.moves.length === 0) return null;
-  if (ctx.phase !== 1) return flipChoosePhase2Move(ctx.board, ctx.phase, ctx.moves);
-
-  if (isFirstMove) {
-    const centerMove = flipCenterMove(ctx.moves, ctx.settings);
-    if (centerMove) return centerMove;
-  }
-
-  return (
-    flipFirstAvailableMove(ctx, [flipTryDefendMove, flipTryScoreMove, flipTryEdgeMove]) ??
-    flipRandomChoice(ctx.moves)
-  );
-}
-
-// AGGRESSIVE: score -> trap -> defend -> edge -> random
-// (Plus an opening center grab on the bot's very first turn.)
-function chooseFlipAggressiveMove(state, isFirstMove = false) {
-  const ctx = flipBotContext(state);
-  if (ctx.moves.length === 0) return null;
-  if (ctx.phase !== 1) return flipChoosePhase2Move(ctx.board, ctx.phase, ctx.moves);
-
-  if (isFirstMove) {
-    const centerMove = flipCenterMove(ctx.moves, ctx.settings);
-    if (centerMove) return centerMove;
-  }
-
-  return (
-    flipFirstAvailableMove(ctx, [
-      flipTryScoreMove,
-      flipTryTrapMove,
-      flipTryDefendMove,
-      flipTryEdgeMove
-    ]) ?? flipRandomChoice(ctx.moves)
-  );
-}
-
-function chooseFlipBotMove(state, isFirstMove = false, botType = "defensive") {
-  if (botType === "aggressive") return chooseFlipAggressiveMove(state, isFirstMove);
-  return chooseFlipDefensiveMove(state, isFirstMove);
-}
+// The bot's move choice lives in flip-solver.js: an iterative-deepening
+// alpha-beta search that solves the game exactly once the remaining tree fits
+// in its time budget, and plays the deepest completed search before that.
 
 // Drives the bot: readies it for phase 2 automatically and plays its move(s)
 // whenever it is the bot's turn. Re-schedules itself for back-to-back bot turns.
@@ -1189,10 +862,8 @@ function runFlipBot(roomId) {
   }
 
   if (room.turn !== FLIP_BOT_ID) return;
-  const isFirstMove = (room.botMoveCount || 0) === 0;
-  const move = chooseFlipBotMove(state, isFirstMove, room.botType);
+  const move = chooseSolverMove(state, FLIP_BOT_INDEX, { timeMs: FLIP_BOT_TIME_MS });
   if (!move) return;
-  room.botMoveCount = (room.botMoveCount || 0) + 1;
   performFlipSwap(room, FLIP_BOT_ID, move.from, move.to, false);
   emitFlipTriplesState(roomId, room);
   if (!state.gameOver && !state.pendingPhase2) {
@@ -1320,14 +991,13 @@ io.on("connection", (socket) => {
 
   // Single-player vs. the AI. Only Flip Triples ships a bot, so other games fall
   // back to a normal solo (the human controls both sides).
-  socket.on("start_bot", ({ gameId = "default", options = {}, botType = "defensive" } = {}) => {
+  socket.on("start_bot", ({ gameId = "default", options = {} } = {}) => {
     const botSupported = gameId === "flip-triples";
     const opponentId = botSupported ? FLIP_BOT_ID : socket.id;
     const roomId = createRoom(gameId, socket.id, opponentId, options);
     io.sockets.sockets.get(socket.id)?.join(roomId);
     const room = rooms.get(roomId);
     room.isBot = botSupported;
-    room.botType = botType === "aggressive" ? "aggressive" : "defensive";
     io.to(socket.id).emit("match_found", {
       roomId,
       gameId,
@@ -1489,9 +1159,6 @@ io.on("connection", (socket) => {
     if (!room.flipUndo || room.flipUndo.by !== socket.id) return;
     room.flipTriples = room.flipUndo.snapshot;
     room.turn = room.flipUndo.turn;
-    if (typeof room.flipUndo.botMoveCount === "number") {
-      room.botMoveCount = room.flipUndo.botMoveCount;
-    }
     room.flipUndo = null;
     room.phase2Ready = new Set();
     emitFlipTriplesState(roomId, room);

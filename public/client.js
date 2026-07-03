@@ -351,7 +351,7 @@ function startSoloGame(selected) {
   socket.emit("start_solo", { gameId: selected.id, options: activeGameOptions });
 }
 
-function startBotGame(selected, botType) {
+function startBotGame(selected) {
   currentGame = selected;
   activeGameOptions = {};
   isSoloGame = false;
@@ -359,11 +359,10 @@ function startBotGame(selected, botType) {
   gameTitle.textContent = selected.name;
   resetGameUi();
   setScreen("lobby");
-  const label = botType === "aggressive" ? "Aggressive" : "Defensive";
-  lobbyStatus.textContent = `Starting game vs ${label} bot...`;
-  playerStatus.textContent = `Vs ${label}`;
+  lobbyStatus.textContent = "Starting game vs Solver bot...";
+  playerStatus.textContent = "Vs Solver";
   playersNeeded.textContent = "0";
-  socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions, botType });
+  socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions });
 }
 
 function openSoloPicker(selected) {
@@ -389,8 +388,8 @@ soloPicker.addEventListener("click", (event) => {
   const selected = soloPickerGame;
   const bot = option.dataset.bot;
   closeSoloPicker();
-  if (bot === "defensive" || bot === "aggressive") {
-    startBotGame(selected, bot);
+  if (bot === "solver") {
+    startBotGame(selected);
   } else {
     startSoloGame(selected);
   }
