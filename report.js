@@ -122,6 +122,125 @@ function ladderSection(data) {
   );
 }
 
+// Average points the stronger budget finishes ahead by (triple = 1 point,
+// remaining white piece = 0.1). Only games played since margin tracking was
+// added carry this data, so n is per-pair.
+function marginSection(data) {
+  const pairs = ladderRows(data).filter((p) => (p.diffGames ?? 0) > 0);
+  if (!pairs.length) return "<p class='note'>No margin data yet.</p>";
+  const values = pairs.map((p) => p.diffSum / p.diffGames);
+  const axisMax = Math.max(0.5, Math.ceil(Math.max(...values) * 2) / 2);
+  const rows = pairs
+    .map((p, i) => {
+      const v = values[i];
+      const width = Math.max(0, Math.min(100, (v / axisMax) * 100));
+      return (
+        `<div class="row">` +
+        `<div class="row-label">${esc(p.strong)} <span class="vs">vs</span> ${esc(p.weak)}</div>` +
+        `<div class="track track-open">` +
+        `<div class="seg seg-margin" style="width:${width.toFixed(2)}%" tabindex="0" ` +
+        `data-tip="${esc(
+          `${p.strong} beats ${p.weak} by ${v.toFixed(2)} points on average over ${p.diffGames} measured games`
+        )}"></div></div>` +
+        `<div class="row-value">${v >= 0 ? "+" : ""}${v.toFixed(2)} <span class="vs">n=${p.diffGames}</span></div>` +
+        `</div>`
+      );
+    })
+    .join("");
+  const table =
+    `<details><summary>Data table</summary><table>` +
+    `<tr><th>Matchup</th><th>Measured games</th><th>Avg margin (points)</th></tr>` +
+    pairs
+      .map((p, i) => `<tr><td>${esc(p.strong)} vs ${esc(p.weak)}</td><td>${p.diffGames}</td><td>${values[i].toFixed(2)}</td></tr>`)
+      .join("") +
+    `</table></details>`;
+  const summary =
+    `<p class="reading">Scoring: each triple is 1 point, each of your surviving white pieces is 0.1 — ` +
+    `whites top out at 0.9, so they can never outweigh a triple, exactly mirroring the real ` +
+    `tie-break rule. A margin near 1.0 means the stronger side wins by about a full triple.</p>`;
+  return (
+    `<div class="chart">${rows}</div>` +
+    `<div class="axis"><span>0 pts</span><span>${axisMax.toFixed(1)} pts</span></div>` +
+    summary +
+    table
+  );
+}
+
+// Decided games split by HOW they were decided: triple counts differing vs
+// triples tied and the white count settling it. Margins tracked per bucket.
+function decidedSection(data) {
+  const pairs = ladderRows(data).filter((p) => (p.splitGames ?? 0) > 0);
+  if (!pairs.length) return "<p class='note'>No decision-type data yet.</p>";
+  const rows = pairs
+    .map((p) => {
+      const tbAvg = p.tbWins ? p.tbDiffSum / p.tbWins : 0;
+      const ntbAvg = p.tripleWins ? p.ntbDiffSum / p.tripleWins : 0;
+      const splitTies = p.splitGames - p.tbWins - p.tripleWins;
+      const bar = segBar(
+        [
+          {
+            cls: "seg-own",
+            count: p.tripleWins,
+            name: `decided on triples (stronger side's avg margin ${ntbAvg.toFixed(2)} pts)`
+          },
+          {
+            cls: "seg-opp",
+            count: p.tbWins,
+            name: `decided on the white tiebreak (stronger side's avg margin ${tbAvg.toFixed(2)} pts)`
+          },
+          { cls: "seg-neu", count: splitTies, name: "dead ties" }
+        ],
+        p.splitGames,
+        { unit: "measured games" }
+      );
+      return (
+        `<div class="row">` +
+        `<div class="row-label">${esc(p.strong)} <span class="vs">vs</span> ${esc(p.weak)}</div>` +
+        bar +
+        `<div class="row-value"><span class="vs">n=${p.splitGames}</span></div>` +
+        `</div>`
+      );
+    })
+    .join("");
+  const totals = pairs.reduce(
+    (a, p) => ({ tb: a.tb + p.tbWins, tri: a.tri + p.tripleWins, n: a.n + p.splitGames }),
+    { tb: 0, tri: 0, n: 0 }
+  );
+  const summary =
+    `<p class="reading">Across all ${totals.n} measured games, ` +
+    `<strong>${fmtPct(pct(totals.tb, totals.n))} were decided by the white tiebreak</strong> ` +
+    `(triples dead even) and ${fmtPct(pct(totals.tri, totals.n))} on triple count. Tiebreak wins are ` +
+    `worth at most 0.9 points by construction, so the two margin columns in the table are on ` +
+    `different scales — compare counts across rungs, and margins within a column.</p>`;
+  const table =
+    `<details><summary>Data table</summary><table>` +
+    `<tr><th>Matchup</th><th>Measured</th><th>Triple-decided</th><th>Avg margin</th>` +
+    `<th>Tiebreak-decided</th><th>Avg margin</th><th>Ties</th></tr>` +
+    pairs
+      .map((p) => {
+        const tbAvg = p.tbWins ? p.tbDiffSum / p.tbWins : null;
+        const ntbAvg = p.tripleWins ? p.ntbDiffSum / p.tripleWins : null;
+        return (
+          `<tr><td>${esc(p.strong)} vs ${esc(p.weak)}</td><td>${p.splitGames}</td>` +
+          `<td>${p.tripleWins}</td><td>${ntbAvg === null ? "—" : ntbAvg.toFixed(2)}</td>` +
+          `<td>${p.tbWins}</td><td>${tbAvg === null ? "—" : tbAvg.toFixed(2)}</td>` +
+          `<td>${p.splitGames - p.tbWins - p.tripleWins}</td></tr>`
+        );
+      })
+      .join("") +
+    `</table></details>`;
+  return (
+    legend([
+      ["seg-own", "decided on triples"],
+      ["seg-opp", "decided on white tiebreak"],
+      ["seg-neu", "dead tie"]
+    ]) +
+    `<div class="chart">${rows}</div>` +
+    summary +
+    table
+  );
+}
+
 function firstPlayerSection(data) {
   const runs = [...data.selfplay].sort((a, b) => a.ms - b.ms);
   if (!runs.length) return "<p class='note'>No self-play data yet.</p>";
@@ -386,6 +505,8 @@ export function generateReport(data) {
   .swatch.seg-corner { background: var(--z1); }
   .swatch.seg-edge { background: var(--z2); }
   .swatch.seg-middle { background: var(--z3); }
+  .track-open { background: transparent; }
+  .seg-margin { background: var(--blue); border-radius: 0 4px 4px 0; }
   .row-duo { grid-template-columns: 64px 1fr 1fr; }
   .legend-row .legend { margin-bottom: 2px; }
   .duo-group { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
@@ -434,6 +555,20 @@ export function generateReport(data) {
       other game). While the stronger budget keeps winning well above the 50% line, the game
       still rewards deeper play at that level.</p>
     ${ladderSection(data)}
+  </section>
+
+  <section>
+    <h2>Winning margin per rung</h2>
+    <p class="h2-sub">Not just whether the stronger budget wins, but by how much: the average
+      final-score gap (stronger minus weaker) across measured games, both seats played equally.</p>
+    ${marginSection(data)}
+  </section>
+
+  <section>
+    <h2>How games get decided — triples vs the white tiebreak</h2>
+    <p class="h2-sub">Each decided game either had a triple-count gap, or dead-even triples with
+      the surviving white pieces settling it. Hover a segment for that bucket's average margin.</p>
+    ${decidedSection(data)}
   </section>
 
   <section>

@@ -16,6 +16,7 @@ const playersNeeded = document.getElementById("players-needed");
 
 const gameTitle = document.getElementById("game-title");
 const turnStatus = document.getElementById("turn-status");
+const botThinking = document.getElementById("bot-thinking");
 const gameBoard = document.getElementById("game-board");
 const handEl = document.getElementById("hand");
 const gameList = document.getElementById("game-list");
@@ -34,6 +35,7 @@ let currentGame = null;
 let activeGameOptions = {};
 let myPlayerIndex = null;
 let isSoloGame = false;
+let isBotGame = false;
 let selectedTileType = 0;
 let boardState = [];
 let handState = [];
@@ -144,6 +146,7 @@ function resetGameUi() {
   flipPhase2Banner.classList.add("hidden");
   flipPhase2Banner.innerHTML = "";
   flipUndoBtn.classList.add("hidden");
+  setBotThinking(false);
 }
 
 function setScreen(name) {
@@ -151,9 +154,16 @@ function setScreen(name) {
   screens[name].classList.add("screen-active");
 }
 
+// Bouncing dots shown while the bot is picking its move (God bot thinks for
+// several seconds, so the player needs a cue to wait).
+function setBotThinking(visible) {
+  botThinking.classList.toggle("hidden", !visible);
+}
+
 function updateTurn(turnId) {
   const isMyTurn = turnId === myId;
   turnStatus.textContent = isMyTurn ? "Your turn" : "Opponent's turn";
+  setBotThinking(isBotGame && !isMyTurn);
 }
 
 function isToyBattle() {
@@ -275,8 +285,10 @@ socket.on("state_update", ({ board, hands, turn, toyBattle, flipTriples }) => {
 
     if (flipTriples.gameOver) {
       turnStatus.textContent = `Game over - ${getFlipWinnerText()} (${flipTriples.scores.red}-${flipTriples.scores.blue})`;
+      setBotThinking(false);
     } else if (flipTriples.pendingPhase2) {
       turnStatus.textContent = "Phase 1 complete";
+      setBotThinking(false);
     } else {
       updateFlipTriplesTurn(turn);
     }
@@ -341,6 +353,7 @@ function startSoloGame(selected) {
   currentGame = selected;
   activeGameOptions = {};
   isSoloGame = true;
+  isBotGame = false;
   lobbyGameName.textContent = selected.name;
   gameTitle.textContent = selected.name;
   resetGameUi();
@@ -351,16 +364,20 @@ function startSoloGame(selected) {
   socket.emit("start_solo", { gameId: selected.id, options: activeGameOptions });
 }
 
+const BOT_LEVEL_NAMES = { 0: "Baby bot", 1: "Level 1 bot", 2: "Level 2 bot", 3: "Level 3 bot", 4: "God bot" };
+
 function startBotGame(selected, botLevel) {
   currentGame = selected;
   activeGameOptions = {};
   isSoloGame = false;
+  isBotGame = true;
   lobbyGameName.textContent = selected.name;
   gameTitle.textContent = selected.name;
   resetGameUi();
   setScreen("lobby");
-  lobbyStatus.textContent = `Starting game vs Level ${botLevel} bot...`;
-  playerStatus.textContent = `Vs Bot L${botLevel}`;
+  const label = BOT_LEVEL_NAMES[botLevel] ?? `Level ${botLevel} bot`;
+  lobbyStatus.textContent = `Starting game vs ${label}...`;
+  playerStatus.textContent = `Vs ${label}`;
   playersNeeded.textContent = "0";
   socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions, botLevel });
 }
@@ -418,6 +435,7 @@ gameList.addEventListener("click", (event) => {
   currentGame = selected;
   activeGameOptions = {};
   isSoloGame = false;
+  isBotGame = false;
   lobbyGameName.textContent = selected.name;
   gameTitle.textContent = selected.name;
   resetGameUi();
@@ -641,6 +659,7 @@ function getFlipPhaseName() {
 function updateFlipTriplesTurn(turn) {
   const isMyTurn = turn === myId || isSoloGame;
   turnStatus.textContent = `${getFlipPhaseLabel()} - ${isMyTurn ? "Your turn" : "Opponent's turn"}`;
+  setBotThinking(isBotGame && !isMyTurn);
 }
 
 function renderFlipTriplesBoard() {

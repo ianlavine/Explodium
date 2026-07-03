@@ -43,6 +43,9 @@
         <div class="game-header">
           <h2 id="game-title">Explodium</h2>
           <span id="turn-status" class="turn-status">Waiting for match...</span>
+          <span id="bot-thinking" class="bot-thinking hidden" aria-label="Bot is thinking" role="status">
+            <span></span><span></span><span></span>
+          </span>
         </div>
         <div id="flip-setup" class="flip-setup hidden" aria-live="polite"></div>
         <div class="play-area">
@@ -68,20 +71,24 @@
             <small>Play against yourself</small>
           </button>
           <button type="button" class="solo-opt" data-bot="0">
-            <strong>Bot — Level 0</strong>
-            <small>Quick glances, frequent blunders</small>
+            <strong>Baby bot</strong>
+            <small>Mostly wings it — great for learning</small>
           </button>
           <button type="button" class="solo-opt" data-bot="1">
             <strong>Bot — Level 1</strong>
-            <small>Decent moves, occasional slips</small>
+            <small>Decent moves, frequent slips</small>
           </button>
           <button type="button" class="solo-opt" data-bot="2">
             <strong>Bot — Level 2</strong>
-            <small>Always its best move at a short think</small>
+            <small>Sharp, with the occasional blunder</small>
           </button>
           <button type="button" class="solo-opt" data-bot="3">
             <strong>Bot — Level 3</strong>
-            <small>Deep search; plays the endgame perfectly</small>
+            <small>Always its best move; perfect endgame</small>
+          </button>
+          <button type="button" class="solo-opt" data-bot="4">
+            <strong>God bot</strong>
+            <small>Thinks 4.5s a move — bring a plan</small>
           </button>
         </div>
         <button type="button" class="ghost-btn solo-picker-cancel">Cancel</button>

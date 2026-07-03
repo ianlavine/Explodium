@@ -54,12 +54,16 @@ const FLIP_BOT_INDEX = 1;
 const FLIP_BOT_DELAY_MS = 300;
 // Difficulty levels: search budget per move (runs synchronously, so keep it
 // short enough not to stall the event loop) plus deliberate blunders —
-// pickWeights are the probabilities of playing the 1st/2nd/3rd/... ranked move.
+// pickWeights are the probabilities of playing the 1st/2nd/3rd/... ranked
+// move. The engine is strong even at tiny budgets, so the lower levels lean
+// on blunders to stay beatable: Baby bot (0) plays its best move only 15% of
+// the time; God bot (4) always plays its best move on a long think.
 const FLIP_BOT_LEVELS = {
-  0: { timeMs: 30, pickWeights: [0.4, 0.3, 0.2, 0.1] },
-  1: { timeMs: 120, pickWeights: [0.7, 0.2, 0.1] },
-  2: { timeMs: 400, pickWeights: null },
-  3: { timeMs: Number(process.env.FLIP_BOT_MS || 1500), pickWeights: null }
+  0: { timeMs: 15, pickWeights: [0.15, 0.25, 0.25, 0.2, 0.15] },
+  1: { timeMs: 60, pickWeights: [0.5, 0.25, 0.15, 0.1] },
+  2: { timeMs: 200, pickWeights: [0.75, 0.17, 0.08] },
+  3: { timeMs: 800, pickWeights: null },
+  4: { timeMs: Number(process.env.FLIP_BOT_MS || 4500), pickWeights: null }
 };
 const FLIP_BOT_DEFAULT_LEVEL = 3;
 

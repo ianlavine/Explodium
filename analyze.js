@@ -113,6 +113,8 @@ function playGame(state, agents, rand, onMove = null) {
     winner: result.winner,
     red: result.red,
     blue: result.blue,
+    redPoints: result.redPoints,
+    bluePoints: result.bluePoints,
     plies,
     avgBranching: branchSum / Math.max(plies, 1),
     solvedFromPly
@@ -212,6 +214,15 @@ function runLadder(args) {
         strongWins: prev.strongWins + pair.strongWins,
         weakWins: prev.weakWins + pair.weakWins,
         ties: prev.ties + pair.ties,
+        // Margin/tiebreak tracking arrived later, so older entries contribute
+        // no measured games; sums accumulate only over games that measured it.
+        diffGames: (prev.diffGames ?? 0) + pair.diffGames,
+        diffSum: (prev.diffSum ?? 0) + pair.diffSum,
+        splitGames: (prev.splitGames ?? 0) + pair.splitGames,
+        tbWins: (prev.tbWins ?? 0) + pair.tbWins,
+        tripleWins: (prev.tripleWins ?? 0) + pair.tripleWins,
+        tbDiffSum: (prev.tbDiffSum ?? 0) + pair.tbDiffSum,
+        ntbDiffSum: (prev.ntbDiffSum ?? 0) + pair.ntbDiffSum,
         seed: `${prev.seed}+${pair.seed}`
       };
     } else if (idx >= 0) data.ladder.pairs[idx] = pair;
@@ -231,6 +242,11 @@ function runLadder(args) {
     let strongWins = 0;
     let weakWins = 0;
     let ties = 0;
+    let diffSum = 0;
+    let tbWins = 0; // decided games where triples were equal (whites decided)
+    let tripleWins = 0; // decided games where triple counts differed
+    let tbDiffSum = 0;
+    let ntbDiffSum = 0;
     let deal = null;
     for (let g = 0; g < deals; g += 1) {
       // Even games draw a fresh deal with the stronger agent as red (moving
@@ -244,11 +260,27 @@ function runLadder(args) {
       if (result.winner === "tie") ties += 1;
       else if ((result.winner === "red") === strongIsRed) strongWins += 1;
       else weakWins += 1;
+      const diff = strongIsRed
+        ? result.redPoints - result.bluePoints
+        : result.bluePoints - result.redPoints;
+      diffSum += diff;
+      if (result.winner !== "tie") {
+        if (result.red === result.blue) {
+          tbWins += 1;
+          tbDiffSum += diff;
+        } else {
+          tripleWins += 1;
+          ntbDiffSum += diff;
+        }
+      }
     }
     const mins = ((Date.now() - t0) / 60000).toFixed(1);
     console.log(
       `${agentLabel(strong).padStart(7)} vs ${agentLabel(weak).padEnd(7)} -> ` +
-        `stronger wins ${strongWins}/${deals} (${pct(strongWins, deals)}), loses ${weakWins}, ties ${ties} [${mins}min]`
+        `stronger wins ${strongWins}/${deals} (${pct(strongWins, deals)}), loses ${weakWins}, ties ${ties}, ` +
+        `avg margin ${(diffSum / deals).toFixed(2)} pts ` +
+        `(tiebreak-decided ${tbWins}: avg ${(tbWins ? tbDiffSum / tbWins : 0).toFixed(2)}, ` +
+        `triple-decided ${tripleWins}: avg ${(tripleWins ? ntbDiffSum / tripleWins : 0).toFixed(2)}) [${mins}min]`
     );
     savePair({
       weak: agentLabel(weak),
@@ -257,6 +289,13 @@ function runLadder(args) {
       strongWins,
       weakWins,
       ties,
+      diffGames: deals,
+      diffSum: Number(diffSum.toFixed(3)),
+      splitGames: deals,
+      tbWins,
+      tripleWins,
+      tbDiffSum: Number(tbDiffSum.toFixed(3)),
+      ntbDiffSum: Number(ntbDiffSum.toFixed(3)),
       seed,
       date: new Date().toISOString()
     });
