@@ -351,7 +351,7 @@ function startSoloGame(selected) {
   socket.emit("start_solo", { gameId: selected.id, options: activeGameOptions });
 }
 
-function startBotGame(selected) {
+function startBotGame(selected, botLevel) {
   currentGame = selected;
   activeGameOptions = {};
   isSoloGame = false;
@@ -359,10 +359,10 @@ function startBotGame(selected) {
   gameTitle.textContent = selected.name;
   resetGameUi();
   setScreen("lobby");
-  lobbyStatus.textContent = "Starting game vs Solver bot...";
-  playerStatus.textContent = "Vs Solver";
+  lobbyStatus.textContent = `Starting game vs Level ${botLevel} bot...`;
+  playerStatus.textContent = `Vs Bot L${botLevel}`;
   playersNeeded.textContent = "0";
-  socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions });
+  socket.emit("start_bot", { gameId: selected.id, options: activeGameOptions, botLevel });
 }
 
 function openSoloPicker(selected) {
@@ -388,8 +388,8 @@ soloPicker.addEventListener("click", (event) => {
   const selected = soloPickerGame;
   const bot = option.dataset.bot;
   closeSoloPicker();
-  if (bot === "solver") {
-    startBotGame(selected);
+  if (bot !== undefined && bot !== "none" && !Number.isNaN(Number(bot))) {
+    startBotGame(selected, Number(bot));
   } else {
     startSoloGame(selected);
   }

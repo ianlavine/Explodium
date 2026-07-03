@@ -52,9 +52,16 @@ const FLIP_SCORING_SHAPES = ["red-x", "blue-o", "purple"];
 const FLIP_BOT_ID = "__flip_bot__";
 const FLIP_BOT_INDEX = 1;
 const FLIP_BOT_DELAY_MS = 300;
-// Search budget per bot move. The search runs synchronously, so keep it short
-// enough not to stall the event loop for long.
-const FLIP_BOT_TIME_MS = Number(process.env.FLIP_BOT_MS || 900);
+// Difficulty levels: search budget per move (runs synchronously, so keep it
+// short enough not to stall the event loop) plus deliberate blunders —
+// pickWeights are the probabilities of playing the 1st/2nd/3rd/... ranked move.
+const FLIP_BOT_LEVELS = {
+  0: { timeMs: 30, pickWeights: [0.4, 0.3, 0.2, 0.1] },
+  1: { timeMs: 120, pickWeights: [0.7, 0.2, 0.1] },
+  2: { timeMs: 400, pickWeights: null },
+  3: { timeMs: Number(process.env.FLIP_BOT_MS || 1500), pickWeights: null }
+};
+const FLIP_BOT_DEFAULT_LEVEL = 3;
 
 function flipBoardPreset(boardSize) {
   return boardSize === "4x6" ? FLIP_BOARD_4X6 : FLIP_BOARD_5X5;
@@ -862,7 +869,11 @@ function runFlipBot(roomId) {
   }
 
   if (room.turn !== FLIP_BOT_ID) return;
-  const move = chooseSolverMove(state, FLIP_BOT_INDEX, { timeMs: FLIP_BOT_TIME_MS });
+  const level = FLIP_BOT_LEVELS[room.botLevel] ?? FLIP_BOT_LEVELS[FLIP_BOT_DEFAULT_LEVEL];
+  const move = chooseSolverMove(state, FLIP_BOT_INDEX, {
+    timeMs: level.timeMs,
+    pickWeights: level.pickWeights
+  });
   if (!move) return;
   performFlipSwap(room, FLIP_BOT_ID, move.from, move.to, false);
   emitFlipTriplesState(roomId, room);
@@ -991,13 +1002,14 @@ io.on("connection", (socket) => {
 
   // Single-player vs. the AI. Only Flip Triples ships a bot, so other games fall
   // back to a normal solo (the human controls both sides).
-  socket.on("start_bot", ({ gameId = "default", options = {} } = {}) => {
+  socket.on("start_bot", ({ gameId = "default", options = {}, botLevel } = {}) => {
     const botSupported = gameId === "flip-triples";
     const opponentId = botSupported ? FLIP_BOT_ID : socket.id;
     const roomId = createRoom(gameId, socket.id, opponentId, options);
     io.sockets.sockets.get(socket.id)?.join(roomId);
     const room = rooms.get(roomId);
     room.isBot = botSupported;
+    room.botLevel = FLIP_BOT_LEVELS[botLevel] ? botLevel : FLIP_BOT_DEFAULT_LEVEL;
     io.to(socket.id).emit("match_found", {
       roomId,
       gameId,

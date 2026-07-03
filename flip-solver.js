@@ -205,6 +205,21 @@ export function createState({
   return state;
 }
 
+// Fresh copy of a state (e.g. to replay the same deal with colors swapped).
+export function cloneState(state) {
+  return createState({
+    shapes: state.shapes,
+    flipped: state.flipped,
+    rows: state.geom.rows,
+    cols: state.geom.cols,
+    phase: state.phase,
+    uniqueSwap: state.uniqueSwap,
+    staticNeutrals: state.staticNeutrals,
+    protectedMiddle: state.blockedCenter >= 0,
+    carryDiff: state.carryDiff
+  });
+}
+
 // Build a solver state from the live game state (room.flipTriples).
 export function stateFromGame(gameState) {
   const board = gameState.board;
@@ -640,6 +655,7 @@ export function search(state, player, { timeMs = 1000, maxDepth = 64 } = {}) {
   let bestValue = sign * -INF;
   let completedDepth = 0;
   let solved = false;
+  let lastValues = null;
 
   for (let depth = 1; depth <= maxDepth; depth += 1) {
     cutoffCount = 0;
@@ -684,6 +700,7 @@ export function search(state, player, { timeMs = 1000, maxDepth = 64 } = {}) {
     bestMove = iterMove;
     bestValue = iterBest;
     completedDepth = depth;
+    lastValues = values;
     // Re-order root moves by this iteration's results (best first for the mover).
     order.sort((x, y) => {
       const vx = values.has(x.m) ? sign * values.get(x.m) : -INF;
@@ -697,13 +714,22 @@ export function search(state, player, { timeMs = 1000, maxDepth = 64 } = {}) {
     if (Date.now() > deadline) break;
   }
 
+  // Root moves ranked best-first for the mover. Non-best values may be
+  // alpha-beta bounds rather than exact, but the ranking is what matters
+  // (it drives the blunder-injection difficulty levels).
+  const ranked = order.map(({ m }) => ({
+    move: m,
+    ...decodeMove(state, m),
+    value: lastValues?.has(m) ? lastValues.get(m) : null
+  }));
   const result = {
     move: bestMove,
     ...decodeMove(state, bestMove),
     value: bestValue,
     depth: completedDepth,
     solved,
-    nodes
+    nodes,
+    ranked
   };
   tt = null;
   history = null;
@@ -711,11 +737,32 @@ export function search(state, player, { timeMs = 1000, maxDepth = 64 } = {}) {
 }
 
 // Convenience wrapper for server.js: pick a move for the live game state.
+// `pickWeights` (optional) turns the solver into a weaker bot: it is a list of
+// probabilities over the ranked moves — e.g. [0.6, 0.25, 0.15] plays the best
+// move 60% of the time, the 2nd best 25%, the 3rd 15%. Omitted or [1] means
+// always play the best move.
 export function chooseSolverMove(gameState, playerIndex, opts = {}) {
+  const { pickWeights = null, rand = Math.random, ...searchOpts } = opts;
   const state = stateFromGame(gameState);
-  const result = search(state, playerIndex, opts);
+  const result = search(state, playerIndex, searchOpts);
   if (!result) return null;
-  return { from: result.from, to: result.to, info: result };
+  let choice = result;
+  if (pickWeights && result.ranked.length > 1) {
+    const n = Math.min(pickWeights.length, result.ranked.length);
+    let total = 0;
+    for (let i = 0; i < n; i += 1) total += pickWeights[i];
+    let roll = rand() * total;
+    let idx = 0;
+    for (let i = 0; i < n; i += 1) {
+      roll -= pickWeights[i];
+      if (roll <= 0) {
+        idx = i;
+        break;
+      }
+    }
+    choice = result.ranked[idx];
+  }
+  return { from: choice.from, to: choice.to, info: result };
 }
 
 // ---------------------------------------------------------------------------

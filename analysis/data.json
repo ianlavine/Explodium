@@ -1,0 +1,431 @@
+{
+  "settings": {
+    "board": "4x6",
+    "pieces": "9 red + 9 blue + 6 neutral",
+    "uniqueSwap": true,
+    "tiebreak": "more unflipped (white) own pieces"
+  },
+  "ladder": {
+    "rungs": [
+      "random",
+      "10ms",
+      "50ms",
+      "250ms",
+      "1000ms",
+      "4000ms",
+      "12000ms"
+    ],
+    "deals": 10,
+    "pairs": [
+      {
+        "weak": "random",
+        "strong": "10ms",
+        "games": 50,
+        "strongWins": 49,
+        "weakWins": 1,
+        "ties": 0,
+        "seed": 13,
+        "date": "2026-07-03T05:26:42.952Z"
+      },
+      {
+        "weak": "10ms",
+        "strong": "50ms",
+        "games": 50,
+        "strongWins": 37,
+        "weakWins": 12,
+        "ties": 1,
+        "seed": 13,
+        "date": "2026-07-03T05:27:01.743Z"
+      },
+      {
+        "weak": "50ms",
+        "strong": "250ms",
+        "games": 50,
+        "strongWins": 34,
+        "weakWins": 15,
+        "ties": 1,
+        "seed": 13,
+        "date": "2026-07-03T05:28:22.877Z"
+      },
+      {
+        "weak": "250ms",
+        "strong": "1000ms",
+        "games": 50,
+        "strongWins": 37,
+        "weakWins": 10,
+        "ties": 3,
+        "seed": 13,
+        "date": "2026-07-03T05:33:35.505Z"
+      },
+      {
+        "weak": "1000ms",
+        "strong": "4000ms",
+        "games": 50,
+        "strongWins": 34,
+        "weakWins": 14,
+        "ties": 2,
+        "seed": 13,
+        "date": "2026-07-03T05:53:45.857Z"
+      },
+      {
+        "weak": "4000ms",
+        "strong": "12000ms",
+        "games": 30,
+        "strongWins": 19,
+        "weakWins": 9,
+        "ties": 2,
+        "seed": "17+19",
+        "date": "2026-07-03T06:26:19.126Z"
+      }
+    ]
+  },
+  "selfplay": [
+    {
+      "ms": 150,
+      "deals": 200,
+      "seed": 21,
+      "blue": 101,
+      "red": 87,
+      "tie": 12,
+      "avgPlies": 17.07,
+      "avgBranching": 38.88,
+      "avgSolvedTailPlies": 6.76,
+      "solvedGames": 200,
+      "date": "2026-07-03T04:54:05.076Z"
+    },
+    {
+      "ms": 1000,
+      "deals": 40,
+      "seed": 31,
+      "blue": 15,
+      "red": 21,
+      "tie": 4,
+      "avgPlies": 17.4,
+      "avgBranching": 38.39,
+      "avgSolvedTailPlies": 8.32,
+      "solvedGames": 40,
+      "date": "2026-07-03T05:00:32.679Z"
+    },
+    {
+      "ms": 10,
+      "deals": 20,
+      "seed": 510,
+      "blue": 8,
+      "red": 11,
+      "tie": 1,
+      "avgPlies": 16.8,
+      "avgBranching": 41.36,
+      "avgSolvedTailPlies": 4.85,
+      "solvedGames": 20,
+      "date": "2026-07-03T05:26:43.974Z"
+    },
+    {
+      "ms": 50,
+      "deals": 20,
+      "seed": 550,
+      "blue": 7,
+      "red": 11,
+      "tie": 2,
+      "avgPlies": 16.7,
+      "avgBranching": 38.65,
+      "avgSolvedTailPlies": 6,
+      "solvedGames": 20,
+      "date": "2026-07-03T05:26:55.815Z"
+    },
+    {
+      "ms": 250,
+      "deals": 20,
+      "seed": 750,
+      "blue": 10,
+      "red": 8,
+      "tie": 2,
+      "avgPlies": 17.2,
+      "avgBranching": 39.13,
+      "avgSolvedTailPlies": 7.1,
+      "solvedGames": 20,
+      "date": "2026-07-03T05:27:49.403Z"
+    },
+    {
+      "ms": 1000,
+      "deals": 20,
+      "seed": 1500,
+      "blue": 9,
+      "red": 7,
+      "tie": 4,
+      "avgPlies": 17.35,
+      "avgBranching": 38.46,
+      "avgSolvedTailPlies": 8.15,
+      "solvedGames": 20,
+      "date": "2026-07-03T05:31:07.366Z"
+    },
+    {
+      "ms": 4000,
+      "deals": 20,
+      "seed": 4500,
+      "blue": 14,
+      "red": 5,
+      "tie": 1,
+      "avgPlies": 17.2,
+      "avgBranching": 37.19,
+      "avgSolvedTailPlies": 8.6,
+      "solvedGames": 20,
+      "date": "2026-07-03T05:43:16.314Z"
+    },
+    {
+      "ms": 12000,
+      "deals": 20,
+      "seed": 12500,
+      "blue": 9,
+      "red": 8,
+      "tie": 3,
+      "avgPlies": 16.85,
+      "avgBranching": 37.45,
+      "avgSolvedTailPlies": 9.2,
+      "solvedGames": 20,
+      "date": "2026-07-03T06:17:42.955Z"
+    }
+  ],
+  "updated": "2026-07-03T06:26:19.128Z",
+  "moveProfile": [
+    {
+      "ms": 10,
+      "deals": 40,
+      "seed": 910,
+      "moves": 680,
+      "counts": {
+        "early": {
+          "own": {
+            "corner": 2,
+            "edge": 25,
+            "middle": 61
+          },
+          "opponent": {
+            "corner": 20,
+            "edge": 87,
+            "middle": 23
+          },
+          "neutral": {
+            "corner": 2,
+            "edge": 5,
+            "middle": 16
+          }
+        },
+        "mid": {
+          "own": {
+            "corner": 14,
+            "edge": 46,
+            "middle": 85
+          },
+          "opponent": {
+            "corner": 11,
+            "edge": 27,
+            "middle": 3
+          },
+          "neutral": {
+            "corner": 1,
+            "edge": 21,
+            "middle": 19
+          }
+        },
+        "late": {
+          "own": {
+            "corner": 0,
+            "edge": 19,
+            "middle": 17
+          },
+          "opponent": {
+            "corner": 15,
+            "edge": 63,
+            "middle": 19
+          },
+          "neutral": {
+            "corner": 14,
+            "edge": 35,
+            "middle": 30
+          }
+        }
+      },
+      "date": "2026-07-03T05:38:42.368Z"
+    },
+    {
+      "ms": 250,
+      "deals": 40,
+      "seed": 1150,
+      "moves": 685,
+      "counts": {
+        "early": {
+          "own": {
+            "corner": 1,
+            "edge": 31,
+            "middle": 120
+          },
+          "opponent": {
+            "corner": 14,
+            "edge": 31,
+            "middle": 1
+          },
+          "neutral": {
+            "corner": 2,
+            "edge": 13,
+            "middle": 28
+          }
+        },
+        "mid": {
+          "own": {
+            "corner": 4,
+            "edge": 46,
+            "middle": 60
+          },
+          "opponent": {
+            "corner": 17,
+            "edge": 48,
+            "middle": 12
+          },
+          "neutral": {
+            "corner": 2,
+            "edge": 29,
+            "middle": 13
+          }
+        },
+        "late": {
+          "own": {
+            "corner": 0,
+            "edge": 16,
+            "middle": 9
+          },
+          "opponent": {
+            "corner": 19,
+            "edge": 71,
+            "middle": 22
+          },
+          "neutral": {
+            "corner": 17,
+            "edge": 42,
+            "middle": 17
+          }
+        }
+      },
+      "date": "2026-07-03T05:40:29.097Z"
+    },
+    {
+      "ms": 1000,
+      "deals": 30,
+      "seed": 1900,
+      "moves": 522,
+      "counts": {
+        "early": {
+          "own": {
+            "corner": 4,
+            "edge": 32,
+            "middle": 98
+          },
+          "opponent": {
+            "corner": 12,
+            "edge": 9,
+            "middle": 0
+          },
+          "neutral": {
+            "corner": 1,
+            "edge": 6,
+            "middle": 23
+          }
+        },
+        "mid": {
+          "own": {
+            "corner": 6,
+            "edge": 33,
+            "middle": 36
+          },
+          "opponent": {
+            "corner": 20,
+            "edge": 36,
+            "middle": 8
+          },
+          "neutral": {
+            "corner": 5,
+            "edge": 20,
+            "middle": 8
+          }
+        },
+        "late": {
+          "own": {
+            "corner": 0,
+            "edge": 14,
+            "middle": 9
+          },
+          "opponent": {
+            "corner": 16,
+            "edge": 52,
+            "middle": 19
+          },
+          "neutral": {
+            "corner": 4,
+            "edge": 36,
+            "middle": 15
+          }
+        }
+      },
+      "date": "2026-07-03T05:45:25.709Z"
+    },
+    {
+      "ms": 4000,
+      "deals": 20,
+      "seed": 4900,
+      "moves": 363,
+      "counts": {
+        "early": {
+          "own": {
+            "corner": 3,
+            "edge": 27,
+            "middle": 87
+          },
+          "opponent": {
+            "corner": 2,
+            "edge": 3,
+            "middle": 0
+          },
+          "neutral": {
+            "corner": 0,
+            "edge": 1,
+            "middle": 4
+          }
+        },
+        "mid": {
+          "own": {
+            "corner": 2,
+            "edge": 22,
+            "middle": 20
+          },
+          "opponent": {
+            "corner": 13,
+            "edge": 30,
+            "middle": 4
+          },
+          "neutral": {
+            "corner": 5,
+            "edge": 17,
+            "middle": 7
+          }
+        },
+        "late": {
+          "own": {
+            "corner": 2,
+            "edge": 5,
+            "middle": 9
+          },
+          "opponent": {
+            "corner": 12,
+            "edge": 38,
+            "middle": 13
+          },
+          "neutral": {
+            "corner": 9,
+            "edge": 24,
+            "middle": 4
+          }
+        }
+      },
+      "date": "2026-07-03T05:59:43.695Z"
+    }
+  ]
+}
