@@ -693,6 +693,25 @@ h2 {
   z-index: 2;
 }
 
+.flip-symbol.yellow {
+  position: relative;
+  width: 46%;
+  aspect-ratio: 1;
+  background: #e8c62a;
+  border-radius: 999px;
+}
+
+.flip-symbol.yellow .yellow-minus {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #11151c;
+  font-size: clamp(24px, 5vw, 38px);
+  font-weight: 700;
+  line-height: 1;
+}
+
 .flip-symbol.hopper {
   color: #11151c;
   font-size: clamp(30px, 6vw, 48px);

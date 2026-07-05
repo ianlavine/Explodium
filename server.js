@@ -412,15 +412,17 @@ function normalizeFlipSettings(options = {}) {
     FLIP_TRIPLES_DEFAULT_PLAYER_PIECES
   );
   let purple = clampInt(options.purple, 0, preset.cells, 0);
+  let yellow = clampInt(options.yellow, 0, preset.cells, 0);
   let hopper = clampInt(options.hopper, 0, preset.cells, 0);
   let blocker = clampInt(options.blocker, 0, preset.cells, 0);
   blocker -= blocker % 2; // blockers come in equal pairs per player
 
   // Trim until everything fits on the board, leaving room for at least 0 neutrals.
-  const total = () => playerPieces * 2 + purple + hopper + blocker;
+  const total = () => playerPieces * 2 + purple + yellow + hopper + blocker;
   while (total() > preset.cells) {
     if (playerPieces > 0) playerPieces -= 1;
     else if (purple > 0) purple -= 1;
+    else if (yellow > 0) yellow -= 1;
     else if (hopper > 0) hopper -= 1;
     else if (blocker >= 2) blocker -= 2;
     else break;
@@ -441,6 +443,7 @@ function normalizeFlipSettings(options = {}) {
     boardRows: preset.rows,
     playerPieces,
     purple,
+    yellow,
     hopper,
     blocker,
     neutralPieces,
@@ -463,7 +466,7 @@ function makeFlipPiece(index, shape, owner = null) {
     flipped: false,
     opportunity: false,
     swapped: false,
-    protected: shape === "purple" || shape === "hopper",
+    protected: shape === "purple" || shape === "yellow" || shape === "hopper",
     owner: shape === "blocker" ? owner : null
   };
 }
@@ -477,6 +480,9 @@ function createFlipTriplesBoard(settings) {
   }
   for (let i = 0; i < settings.purple; i += 1) {
     pieces.push(makeFlipPiece(index++, "purple"));
+  }
+  for (let i = 0; i < settings.yellow; i += 1) {
+    pieces.push(makeFlipPiece(index++, "yellow"));
   }
   for (let i = 0; i < settings.hopper; i += 1) {
     pieces.push(makeFlipPiece(index++, "hopper"));
@@ -521,9 +527,13 @@ function isSelectableFlipPiece(piece, phase) {
   return phase === 1 ? !piece.flipped : piece.flipped;
 }
 
+// Purple and yellow are wildcards: they complete triples for either player.
+// Purple triples score normally; yellow triples cost the scorer a point.
 function flipPieceMatchesShape(piece, shape) {
   if (!piece) return false;
-  if (piece.shape === "purple") return shape === "red-x" || shape === "blue-o";
+  if (piece.shape === "purple" || piece.shape === "yellow") {
+    return shape === "red-x" || shape === "blue-o";
+  }
   return piece.shape === shape;
 }
 
@@ -616,8 +626,14 @@ function getFlipTriples(board, shape) {
   return triples;
 }
 
+// Net triple score: a triple through a yellow piece counts -1 instead of +1.
 function countFlipTriples(board, shape) {
-  return getFlipTriples(board, shape).length;
+  let score = 0;
+  getFlipTriples(board, shape).forEach((triple) => {
+    const hasYellow = triple.some(([row, col]) => board[row][col].shape === "yellow");
+    score += hasYellow ? -1 : 1;
+  });
+  return score;
 }
 
 function getFlipTriplesScores(board) {

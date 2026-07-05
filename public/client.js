@@ -126,19 +126,23 @@ function flipBoardPreset(boardSize) {
 function defaultFlipSetupDraft() {
   return {
     purple: false,
+    yellow: false,
     blockers: false
   };
 }
 
-// The setup screen only exposes two toggles; everything else is fixed to the
-// standard 4x6 basic game (9 scoring pieces each, unique swap on).
+// The setup screen only exposes a few toggles; everything else is fixed to the
+// standard 4x6 basic game (9 scoring pieces each, unique swap on). Purple
+// replaces a scoring piece per player; yellow only replaces a neutral.
 function flipDraftToOptions(draft) {
   const purple = draft.purple ? 1 : 0;
+  const yellow = draft.yellow ? 1 : 0;
   const blocker = draft.blockers ? 4 : 0; // 2 per player
   return {
     boardSize: "4x6",
     playerPieces: purple ? 8 : 9,
     purple,
+    yellow,
     hopper: 0,
     blocker,
     mode: "basic",
@@ -592,6 +596,8 @@ function getFlipShape(piece) {
       return `<span class="flip-symbol blue-o" aria-hidden="true"></span>`;
     case "purple":
       return `<span class="flip-symbol purple" aria-hidden="true"><span class="purple-ring"></span><span class="purple-x">×</span></span>`;
+    case "yellow":
+      return `<span class="flip-symbol yellow" aria-hidden="true"><span class="yellow-minus">−</span></span>`;
     case "hopper":
       return `<span class="flip-symbol hopper" aria-hidden="true">H</span>`;
     default:
@@ -871,6 +877,7 @@ function renderFlipSetup() {
     flipSetupDraft = flipTriplesState?.settings
       ? {
           purple: (flipTriplesState.settings.purple ?? 0) > 0,
+          yellow: (flipTriplesState.settings.yellow ?? 0) > 0,
           blockers: (flipTriplesState.settings.blocker ?? 0) > 0
         }
       : defaultFlipSetupDraft();
@@ -885,6 +892,10 @@ function renderFlipSetup() {
         <button type="button" class="flip-option-toggle${draft.purple ? " active" : ""}" data-toggle="purple">
           <span class="flip-option-title">Purple</span>
           <small>8 scoring pieces each; one neutral becomes a purple wildcard</small>
+        </button>
+        <button type="button" class="flip-option-toggle${draft.yellow ? " active" : ""}" data-toggle="yellow">
+          <span class="flip-option-title">Yellow</span>
+          <small>9 scoring pieces each; one neutral becomes a yellow wildcard that costs a point in any triple</small>
         </button>
         <button type="button" class="flip-option-toggle${draft.blockers ? " active" : ""}" data-toggle="blockers">
           <span class="flip-option-title">Blockers</span>
@@ -1118,7 +1129,7 @@ flipSetup.addEventListener("click", (event) => {
   const optionToggle = target.closest(".flip-option-toggle[data-toggle]");
   if (optionToggle) {
     const key = optionToggle.dataset.toggle;
-    if (key === "purple" || key === "blockers") {
+    if (key === "purple" || key === "yellow" || key === "blockers") {
       flipSetupDraft[key] = !flipSetupDraft[key];
       renderFlipSetup();
     }

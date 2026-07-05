@@ -21,19 +21,21 @@
 // (red/blue/neutral x white/flipped) live across three parallel masks:
 // mRed, mBlue (neutral = neither), and mFlip. Move generation and triple
 // counting become a handful of shifts/ANDs over all cells at once. Exotic
-// pieces (purple/hopper/blocker) fall back to the generic scan path.
+// pieces (purple/yellow/hopper/blocker) fall back to the generic scan path.
 //
 // Rules modeled (matching server.js):
 //   - A move picks a "first" piece (which locks/flips and slides) and an
 //     adjacent "second" piece (Chebyshev distance 1) that takes its old cell.
 //   - Unique Swap: the two pieces must have different shapes.
 //   - Static Neutrals: a neutral can never be the second (sliding) piece.
-//   - Hoppers may be the second piece at any distance; hoppers and purples are
-//     protected (never the first piece). Blocker swaps are owner-restricted.
+//   - Hoppers may be the second piece at any distance; hoppers, purples and
+//     yellows are protected (never the first piece). Blocker swaps are
+//     owner-restricted.
 //   - Turn passes to the opponent if they have a move, else back to the mover;
 //     the phase ends when neither player can move.
 //   - Scoring: 3-in-a-row (4 orientations) counted over ALL pieces at the end.
-//     Purple matches both shapes. Tie-breaker on center-less boards (4x6):
+//     Purple and yellow match both shapes; a triple through a yellow counts
+//     -1 instead of +1. Tie-breaker on center-less boards (4x6):
 //     more of your own unflipped ("white") pieces wins. On odd boards (5x5)
 //     the center-cell occupant loses the tie.
 //
@@ -44,15 +46,17 @@ export const BLUE = 1;
 export const NEUTRAL = 2;
 export const PURPLE = 3;
 export const HOPPER = 4;
-export const BLOCKER0 = 5; // blocker owned by player index 0 (blue)
-export const BLOCKER1 = 6; // blocker owned by player index 1 (red)
+export const YELLOW = 5; // wildcard like purple, but its triples score -1
+export const BLOCKER0 = 6; // blocker owned by player index 0 (blue)
+export const BLOCKER1 = 7; // blocker owned by player index 1 (red)
 
 const SHAPE_CODES = {
   "red-x": RED,
   "blue-o": BLUE,
   neutral: NEUTRAL,
   purple: PURPLE,
-  hopper: HOPPER
+  hopper: HOPPER,
+  yellow: YELLOW
 };
 
 const INF = 1e9;
@@ -162,12 +166,12 @@ function getGeom(rows, cols) {
       )
     : [];
 
-  // Zobrist keys: per cell x (7 shapes x 2 flipped states), split in two
+  // Zobrist keys: per cell x (8 shapes x 2 flipped states), split in two
   // 32-bit halves, plus side-to-move keys.
   const rand = mulberry32(0x9e3779b9);
   const r32 = () => Math.floor(rand() * 4294967296) >>> 0;
-  const zob1 = new Uint32Array(cells * 14);
-  const zob2 = new Uint32Array(cells * 14);
+  const zob1 = new Uint32Array(cells * 16);
+  const zob2 = new Uint32Array(cells * 16);
   for (let i = 0; i < zob1.length; i += 1) {
     zob1[i] = r32();
     zob2[i] = r32();
@@ -219,7 +223,7 @@ function computeHash(state) {
   let h1 = 0;
   let h2 = 0;
   for (let i = 0; i < geom.cells; i += 1) {
-    const idx = i * 14 + cellCode(shapes[i], flipped[i]);
+    const idx = i * 16 + cellCode(shapes[i], flipped[i]);
     h1 ^= geom.zob1[idx];
     h2 ^= geom.zob2[idx];
   }
@@ -246,7 +250,7 @@ function computeMasks(state) {
   state.mBlue = mBlue;
   state.mFlip = mFlip;
   // The bitboard fast path covers red/blue/neutral pieces only; blockers,
-  // hoppers and purples take the generic scan path.
+  // hoppers, purples and yellows take the generic scan path.
   state.simple = geom.fitsBitboard && !exotic;
 
   // Incremental evaluation counters (simple path only): triple counts per
@@ -439,7 +443,7 @@ function sameShapeFamily(a, b) {
 }
 
 function isProtectedShape(shape) {
-  return shape === PURPLE || shape === HOPPER;
+  return shape === PURPLE || shape === YELLOW || shape === HOPPER;
 }
 
 // True when `player` may act on a pair involving these shapes (blockers are
@@ -603,10 +607,10 @@ export function applyMove(state, m) {
   const lockFlip = state.phase === 1 ? 1 : 0;
   let h1 = state.h1;
   let h2 = state.h2;
-  let idx = a * 14 + cellCode(shapes[a], flipped[a]);
+  let idx = a * 16 + cellCode(shapes[a], flipped[a]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
-  idx = b * 14 + cellCode(shapes[b], flipped[b]);
+  idx = b * 16 + cellCode(shapes[b], flipped[b]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
 
@@ -617,10 +621,10 @@ export function applyMove(state, m) {
   shapes[a] = sb;
   flipped[a] = fb;
 
-  idx = a * 14 + cellCode(shapes[a], flipped[a]);
+  idx = a * 16 + cellCode(shapes[a], flipped[a]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
-  idx = b * 14 + cellCode(shapes[b], flipped[b]);
+  idx = b * 16 + cellCode(shapes[b], flipped[b]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
   state.h1 = h1 >>> 0;
@@ -640,10 +644,10 @@ function undoMoveCore(state, m) {
   const activeFlip = state.phase === 1 ? 0 : 1;
   let h1 = state.h1;
   let h2 = state.h2;
-  let idx = a * 14 + cellCode(shapes[a], flipped[a]);
+  let idx = a * 16 + cellCode(shapes[a], flipped[a]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
-  idx = b * 14 + cellCode(shapes[b], flipped[b]);
+  idx = b * 16 + cellCode(shapes[b], flipped[b]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
 
@@ -655,10 +659,10 @@ function undoMoveCore(state, m) {
   shapes[b] = secondShape;
   flipped[b] = secondFlip;
 
-  idx = a * 14 + cellCode(shapes[a], flipped[a]);
+  idx = a * 16 + cellCode(shapes[a], flipped[a]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
-  idx = b * 14 + cellCode(shapes[b], flipped[b]);
+  idx = b * 16 + cellCode(shapes[b], flipped[b]);
   h1 ^= geom.zob1[idx];
   h2 ^= geom.zob2[idx];
   state.h1 = h1 >>> 0;
@@ -710,7 +714,12 @@ function updateMasksAt(state, a, b) {
 // ---------------------------------------------------------------------------
 
 function shapeMatches(shape, target) {
-  return shape === target || shape === PURPLE;
+  return shape === target || shape === PURPLE || shape === YELLOW;
+}
+
+// A triple through a yellow wildcard counts -1 instead of +1.
+function tripleValue(sx, sy, sz) {
+  return sx === YELLOW || sy === YELLOW || sz === YELLOW ? -1 : 1;
 }
 
 function countTriples(state, target) {
@@ -720,7 +729,7 @@ function countTriples(state, target) {
   for (let i = 0; i < lines.length; i += 1) {
     const [x, y, z] = lines[i];
     if (shapeMatches(shapes[x], target) && shapeMatches(shapes[y], target) && shapeMatches(shapes[z], target)) {
-      count += 1;
+      count += tripleValue(shapes[x], shapes[y], shapes[z]);
     }
   }
   return count;
@@ -735,7 +744,7 @@ function countLockedTriples(state, target) {
     const [x, y, z] = lines[i];
     if (isActive(state, x) || isActive(state, y) || isActive(state, z)) continue;
     if (shapeMatches(shapes[x], target) && shapeMatches(shapes[y], target) && shapeMatches(shapes[z], target)) {
-      count += 1;
+      count += tripleValue(shapes[x], shapes[y], shapes[z]);
     }
   }
   return count;
@@ -1328,13 +1337,14 @@ export function chooseSolverMove(gameState, playerIndex, opts = {}) {
 // ---------------------------------------------------------------------------
 
 export function makeRandomDeal(
-  { rows = 6, cols = 4, playerPieces = 9, purple = 0, hopper = 0, blocker = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false, noTiebreak = false } = {},
+  { rows = 6, cols = 4, playerPieces = 9, purple = 0, yellow = 0, hopper = 0, blocker = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false, noTiebreak = false } = {},
   rand = Math.random
 ) {
   const cells = rows * cols;
   const bag = [];
   for (let i = 0; i < playerPieces; i += 1) bag.push(RED, BLUE);
   for (let i = 0; i < purple; i += 1) bag.push(PURPLE);
+  for (let i = 0; i < yellow; i += 1) bag.push(YELLOW);
   for (let i = 0; i < hopper; i += 1) bag.push(HOPPER);
   for (let i = 0; i < blocker; i += 1) bag.push(i < blocker / 2 ? BLOCKER0 : BLOCKER1);
   while (bag.length < cells) bag.push(NEUTRAL);
