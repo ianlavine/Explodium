@@ -3,7 +3,7 @@ import http from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
-import { chooseSolverMove } from "./flip-solver.js";
+import { Worker } from "worker_threads";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -841,12 +841,34 @@ function performFlipSwap(room, actorId, from, to, recordUndo) {
   settleFlipTurn(room, actorId);
 }
 
-// The bot's move choice lives in flip-solver.js: an iterative-deepening
-// alpha-beta search that solves the game exactly once the remaining tree fits
-// in its time budget, and plays the deepest completed search before that.
+// The bot's move choice lives in flip-solver.js, and runs inside a worker
+// thread so a long think (God bot: 4.5s) never blocks the event loop. Replies
+// carry a per-room sequence number; a restart or undo bumps it so any
+// in-flight result for the old position is dropped on arrival.
+const botWorker = new Worker(new URL("./flip-bot-worker.js", import.meta.url));
+botWorker.on("error", (err) => console.error("bot worker crashed:", err));
+botWorker.on("message", ({ seq, roomId, move }) => {
+  const room = rooms.get(roomId);
+  if (!room || room.gameId !== "flip-triples" || !room.isBot) return;
+  if (room.botSeq !== seq) return; // stale: position changed since requested
+  const state = room.flipTriples;
+  if (!state || state.setup || state.gameOver || state.pendingPhase2) return;
+  if (room.turn !== FLIP_BOT_ID || !move) return;
+  performFlipSwap(room, FLIP_BOT_ID, move.from, move.to, false);
+  emitFlipTriplesState(roomId, room);
+  if (!state.gameOver && !state.pendingPhase2) {
+    io.to(roomId).emit("turn_update", { turn: room.turn });
+  }
+  if (state.pendingPhase2 || room.turn === FLIP_BOT_ID) scheduleFlipBot(roomId);
+});
 
-// Drives the bot: readies it for phase 2 automatically and plays its move(s)
-// whenever it is the bot's turn. Re-schedules itself for back-to-back bot turns.
+// Any in-flight bot search no longer matches the room's position.
+function invalidateBotSearch(room) {
+  room.botSeq = (room.botSeq || 0) + 1;
+}
+
+// Drives the bot: readies it for phase 2 automatically and requests a move
+// from the worker whenever it is the bot's turn.
 function runFlipBot(roomId) {
   const room = rooms.get(roomId);
   if (!room || room.gameId !== "flip-triples" || !room.isBot) return;
@@ -874,17 +896,20 @@ function runFlipBot(roomId) {
 
   if (room.turn !== FLIP_BOT_ID) return;
   const level = FLIP_BOT_LEVELS[room.botLevel] ?? FLIP_BOT_LEVELS[FLIP_BOT_DEFAULT_LEVEL];
-  const move = chooseSolverMove(state, FLIP_BOT_INDEX, {
+  invalidateBotSearch(room);
+  botWorker.postMessage({
+    seq: room.botSeq,
+    roomId,
+    gameState: {
+      board: state.board,
+      phase: state.phase,
+      settings: state.settings,
+      phaseScores: state.phaseScores
+    },
+    playerIndex: FLIP_BOT_INDEX,
     timeMs: level.timeMs,
     pickWeights: level.pickWeights
   });
-  if (!move) return;
-  performFlipSwap(room, FLIP_BOT_ID, move.from, move.to, false);
-  emitFlipTriplesState(roomId, room);
-  if (!state.gameOver && !state.pendingPhase2) {
-    io.to(roomId).emit("turn_update", { turn: room.turn });
-  }
-  if (state.pendingPhase2 || room.turn === FLIP_BOT_ID) scheduleFlipBot(roomId);
 }
 
 function scheduleFlipBot(roomId) {
@@ -1158,9 +1183,11 @@ io.on("connection", (socket) => {
   socket.on("flip_triples_start", ({ roomId, options } = {}) => {
     const room = rooms.get(roomId);
     if (!room || room.gameId !== "flip-triples") return;
-    if (!room.flipTriples.setup) return;
+    // Allowed from setup, or as a rematch once the game is over.
+    if (!room.flipTriples.setup && !room.flipTriples.gameOver) return;
     if (!room.players.includes(socket.id)) return;
     // Either player may start; whoever presses first locks in their chosen settings.
+    invalidateBotSearch(room);
     startFlipTriplesGame(room, options || {});
     emitFlipTriplesState(roomId, room);
     if (!room.flipTriples.gameOver && !room.flipTriples.pendingPhase2) {
@@ -1176,6 +1203,7 @@ io.on("connection", (socket) => {
     room.flipTriples = room.flipUndo.snapshot;
     room.turn = room.flipUndo.turn;
     room.flipUndo = null;
+    invalidateBotSearch(room);
     room.phase2Ready = new Set();
     emitFlipTriplesState(roomId, room);
     if (!room.flipTriples.gameOver && !room.flipTriples.pendingPhase2) {

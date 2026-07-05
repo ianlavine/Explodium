@@ -245,7 +245,7 @@
       "date": "2026-07-03T06:17:42.955Z"
     }
   ],
-  "updated": "2026-07-03T16:40:17.252Z",
+  "updated": "2026-07-05T06:18:06.343Z",
   "moveProfile": [
     {
       "ms": 10,
@@ -487,5 +487,43 @@
       },
       "date": "2026-07-03T05:59:43.695Z"
     }
-  ]
+  ],
+  "setupLuck": {
+    "n": 1000,
+    "ms": 5000,
+    "first": 600,
+    "second": 311,
+    "ties": 89,
+    "meanDiff": 0.366,
+    "sdDiff": 0.852,
+    "hist": {
+      "0": 427,
+      "1": 365,
+      "2": 78,
+      "3": 10,
+      "-1": 110,
+      "-2": 8,
+      "-3": 2
+    },
+    "featureR2": 4.8,
+    "tripleBuckets": [
+      {
+        "label": "setup triples: behind",
+        "n": 402,
+        "firstWinPct": 59
+      },
+      {
+        "label": "setup triples: even",
+        "n": 228,
+        "firstWinPct": 62.3
+      },
+      {
+        "label": "setup triples: ahead",
+        "n": 370,
+        "firstWinPct": 59.7
+      }
+    ],
+    "avgSolvedTailPlies": 9.2,
+    "date": "2026-07-05T06:18:06.337Z"
+  }
 }

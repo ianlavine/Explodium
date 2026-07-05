@@ -402,6 +402,69 @@ function movesSection(data) {
   return legends + groups + summary + table;
 }
 
+// 1,000 near-perfect games (both sides full-strength solver, 5s/move,
+// provably perfect endgames): who wins, by how much, and whether the random
+// setup predicts it.
+function setupLuckSection(data) {
+  const s = data.setupLuck;
+  if (!s) return "<p class='note'>No solved-game batch yet.</p>";
+  const firstShare = pct(s.first, s.n);
+  const winnerBar = stackedBar({
+    left: s.first,
+    tie: s.ties,
+    right: s.second,
+    total: s.n,
+    leftName: "first player wins",
+    tieName: "dead ties",
+    rightName: "second player wins"
+  });
+
+  const histTotal = Object.values(s.hist).reduce((a, b) => a + b, 0);
+  const maxCount = Math.max(...Object.values(s.hist));
+  const histRows = [];
+  for (let b = 3; b >= -3; b -= 1) {
+    const count = s.hist[b] ?? 0;
+    const width = (100 * count) / maxCount;
+    const cls = b > 0 ? "seg-left" : b < 0 ? "seg-right" : "seg-tie";
+    const label =
+      b === 3 ? "+3 or more" : b === -3 ? "−3 or less" : `${b > 0 ? "+" : b < 0 ? "−" : ""}${Math.abs(b)}`;
+    histRows.push(
+      `<div class="row">` +
+        `<div class="row-label">${label}</div>` +
+        `<div class="track track-open"><div class="seg ${cls}" style="width:${width.toFixed(1)}%" tabindex="0" ` +
+        `data-tip="${esc(`margin ≈ ${label} points (first minus second): ${count} of ${histTotal} games (${pct(count, histTotal).toFixed(1)}%)`)}"></div></div>` +
+        `<div class="row-value">${count}</div>` +
+        `</div>`
+    );
+  }
+
+  const bucketTable =
+    `<details><summary>Setup-feature table</summary><table>` +
+    `<tr><th>Starting-arrangement bucket</th><th>Games</th><th>First-player win rate</th></tr>` +
+    s.tripleBuckets
+      .map((b) => `<tr><td>${esc(b.label)}</td><td>${b.n}</td><td>${b.firstWinPct.toFixed(1)}%</td></tr>`)
+      .join("") +
+    `</table></details>`;
+
+  return (
+    legend([
+      ["seg-left", "first player (moves first)"],
+      ["seg-tie", "tie"],
+      ["seg-right", "second player"]
+    ]) +
+    `<div class="chart">${winnerBar ? `<div class="row"><div class="row-label">all ${s.n} games</div>${winnerBar}<div class="row-value">${fmtPct(firstShare)} first</div></div>` : ""}</div>` +
+    `<h3 class="hist-head">Final margin distribution (points, first minus second)</h3>` +
+    `<div class="chart">${histRows.join("")}</div>` +
+    `<p class="reading">Under near-perfect play the <strong>first player wins ${firstShare.toFixed(1)}%</strong> ` +
+    `(mean margin +${s.meanDiff.toFixed(2)} pts, sd ${s.sdDiff.toFixed(2)}) — the seat matters. The setup, ` +
+    `surprisingly, barely does: visible arrangement features (starting triples, adjacent pairs, middle ` +
+    `occupancy) explain only <strong>~${s.featureR2}%</strong> of the margin, and first-player win rates are ` +
+    `flat across setup buckets (see table). Every game in this batch was played provably perfectly for its ` +
+    `last ~${s.avgSolvedTailPlies} plies. The randomness adds variance — not a legible pre-decided advantage.</p>` +
+    bucketTable
+  );
+}
+
 function tiles(data) {
   const runs = data.selfplay;
   const totalGames =
@@ -511,6 +574,7 @@ export function generateReport(data) {
   .legend-row .legend { margin-bottom: 2px; }
   .duo-group { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
   .duo-group h3 { font-size: 13.5px; margin: 0 0 2px; }
+  .hist-head { font-size: 13.5px; margin: 18px 0 10px; }
   .refline { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px;
     background: var(--baseline); pointer-events: none; }
   .axis { display: flex; justify-content: space-between; margin: 8px 0 4px;
@@ -576,6 +640,14 @@ export function generateReport(data) {
     <p class="h2-sub">Equal-strength solver vs solver on random deals. Blue always moves
       first, as in the real game.</p>
     ${firstPlayerSection(data)}
+  </section>
+
+  <section>
+    <h2>Setup luck — does the deal decide the game?</h2>
+    <p class="h2-sub">1,000 random deals played by the full-strength solver on both sides
+      (5s/move, no blunders, provably perfect endgames): the winner split, the margin
+      distribution, and how little the starting arrangement predicts.</p>
+    ${setupLuckSection(data)}
   </section>
 
   <section>

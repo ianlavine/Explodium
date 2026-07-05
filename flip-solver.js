@@ -248,6 +248,86 @@ function computeMasks(state) {
   // The bitboard fast path covers red/blue/neutral pieces only; blockers,
   // hoppers and purples take the generic scan path.
   state.simple = geom.fitsBitboard && !exotic;
+
+  // Incremental evaluation counters (simple path only): triple counts per
+  // shape (all pieces / locked-this-phase pieces) and white-piece counts.
+  // applyMove/undoMove keep these in sync so evaluation is O(1) at leaves.
+  state.cntAllRed = 0;
+  state.cntAllBlue = 0;
+  state.cntLockedRed = 0;
+  state.cntLockedBlue = 0;
+  state.whiteRed = 0;
+  state.whiteBlue = 0;
+  if (state.simple) {
+    const lockedM = (state.phase === 1 ? mFlip : ~mFlip) & geom.boardMaskP;
+    const masks = geom.lineMasksP;
+    for (let i = 0; i < masks.length; i += 1) {
+      const L = masks[i];
+      if ((L & mRed) === L) {
+        state.cntAllRed += 1;
+        if ((L & lockedM) === L) state.cntLockedRed += 1;
+      } else if ((L & mBlue) === L) {
+        state.cntAllBlue += 1;
+        if ((L & lockedM) === L) state.cntLockedBlue += 1;
+      }
+    }
+    state.whiteRed = popcnt(mRed & ~mFlip);
+    state.whiteBlue = popcnt(mBlue & ~mFlip);
+  }
+}
+
+// Scratch space for the incremental line update inside a single
+// applyMove/undoMove call (never reentrant between begin and end).
+const lineStamp = new Int32Array(256);
+const affectedLines = new Int16Array(256);
+let lineStampGen = 0;
+let affectedCount = 0;
+
+// Remove (sign=-1) or re-add (sign=+1) the contribution of every line through
+// cells a and b, plus their white-piece contributions, using the CURRENT
+// masks/arrays. Called before and after the actual mutation.
+function adjustCellContributions(state, a, b, sign) {
+  const geom = state.geom;
+  if (sign < 0) {
+    lineStampGen += 1;
+    affectedCount = 0;
+    const la = geom.linesThrough[a];
+    for (let i = 0; i < la.length; i += 1) {
+      lineStamp[la[i]] = lineStampGen;
+      affectedLines[affectedCount++] = la[i];
+    }
+    const lb = geom.linesThrough[b];
+    for (let i = 0; i < lb.length; i += 1) {
+      if (lineStamp[lb[i]] !== lineStampGen) {
+        lineStamp[lb[i]] = lineStampGen;
+        affectedLines[affectedCount++] = lb[i];
+      }
+    }
+  }
+  const mRed = state.mRed;
+  const mBlue = state.mBlue;
+  const lockedM = (state.phase === 1 ? state.mFlip : ~state.mFlip) & geom.boardMaskP;
+  const masks = geom.lineMasksP;
+  for (let i = 0; i < affectedCount; i += 1) {
+    const L = masks[affectedLines[i]];
+    if ((L & mRed) === L) {
+      state.cntAllRed += sign;
+      if ((L & lockedM) === L) state.cntLockedRed += sign;
+    } else if ((L & mBlue) === L) {
+      state.cntAllBlue += sign;
+      if ((L & lockedM) === L) state.cntLockedBlue += sign;
+    }
+  }
+  const shapes = state.shapes;
+  const flipped = state.flipped;
+  if (!flipped[a]) {
+    if (shapes[a] === RED) state.whiteRed += sign;
+    else if (shapes[a] === BLUE) state.whiteBlue += sign;
+  }
+  if (!flipped[b]) {
+    if (shapes[b] === RED) state.whiteRed += sign;
+    else if (shapes[b] === BLUE) state.whiteBlue += sign;
+  }
 }
 
 export function createState({
@@ -259,7 +339,8 @@ export function createState({
   uniqueSwap = true,
   staticNeutrals = false,
   protectedMiddle = false,
-  carryDiff = 0
+  carryDiff = 0,
+  noTiebreak = false // rules-variant testing: equal triples = plain tie
 }) {
   const geom = getGeom(rows, cols);
   const state = {
@@ -271,6 +352,7 @@ export function createState({
     staticNeutrals: !!staticNeutrals,
     blockedCenter: protectedMiddle && geom.centerIdx >= 0 ? geom.centerIdx : -1,
     carryDiff,
+    noTiebreak: !!noTiebreak,
     hasHopper: false,
     simple: false,
     mRed: 0,
@@ -298,7 +380,8 @@ export function cloneState(state) {
     uniqueSwap: state.uniqueSwap,
     staticNeutrals: state.staticNeutrals,
     protectedMiddle: state.blockedCenter >= 0,
-    carryDiff: state.carryDiff
+    carryDiff: state.carryDiff,
+    noTiebreak: state.noTiebreak
   });
 }
 
@@ -516,6 +599,7 @@ export function applyMove(state, m) {
   const cells = geom.cells;
   const a = Math.floor(m / cells);
   const b = m % cells;
+  if (state.simple) adjustCellContributions(state, a, b, -1);
   const lockFlip = state.phase === 1 ? 1 : 0;
   let h1 = state.h1;
   let h2 = state.h2;
@@ -542,9 +626,11 @@ export function applyMove(state, m) {
   state.h1 = h1 >>> 0;
   state.h2 = h2 >>> 0;
   updateMasksAt(state, a, b);
+  if (state.simple) adjustCellContributions(state, a, b, 1);
 }
 
-export function undoMove(state, m) {
+// Mutation-only undo (arrays, zobrist, masks) — counters untouched.
+function undoMoveCore(state, m) {
   const { geom, shapes, flipped } = state;
   const cells = geom.cells;
   const a = Math.floor(m / cells);
@@ -578,6 +664,21 @@ export function undoMove(state, m) {
   state.h1 = h1 >>> 0;
   state.h2 = h2 >>> 0;
   updateMasksAt(state, a, b);
+}
+
+// Public undo: restores counters by symmetric recomputation, so callers may
+// apply/undo freely (LIFO or not). The search path uses undoSearch instead.
+export function undoMove(state, m) {
+  if (!state.simple) {
+    undoMoveCore(state, m);
+    return;
+  }
+  const cells = state.geom.cells;
+  const a = Math.floor(m / cells);
+  const b = m % cells;
+  adjustCellContributions(state, a, b, -1);
+  undoMoveCore(state, m);
+  adjustCellContributions(state, a, b, 1);
 }
 
 // Refresh the bitboard masks for the two cells a move touches.
@@ -654,35 +755,6 @@ function whiteDiffGeneric(state) {
   return diff;
 }
 
-function whiteDiffFast(state) {
-  return popcnt(state.mRed & ~state.mFlip) - popcnt(state.mBlue & ~state.mFlip);
-}
-
-// One pass over the line masks: all-piece and locked triple counts for both
-// shapes. Locked = cannot move again this phase.
-function tripleCountsFast(state) {
-  const g = state.geom;
-  const lockedM = (state.phase === 1 ? state.mFlip : ~state.mFlip) & g.boardMaskP;
-  const mRed = state.mRed;
-  const mBlue = state.mBlue;
-  const masks = g.lineMasksP;
-  let allRed = 0;
-  let allBlue = 0;
-  let lockedRed = 0;
-  let lockedBlue = 0;
-  for (let i = 0; i < masks.length; i += 1) {
-    const L = masks[i];
-    if ((L & mRed) === L) {
-      allRed += 1;
-      if ((L & lockedM) === L) lockedRed += 1;
-    } else if ((L & mBlue) === L) {
-      allBlue += 1;
-      if ((L & lockedM) === L) lockedBlue += 1;
-    }
-  }
-  return { allRed, allBlue, lockedRed, lockedBlue };
-}
-
 function centerTiebreak(state) {
   // 5x5 rule: whoever holds the center loses the tie. Blocker ownership
   // mirrors computeFlipWinner in server.js: owner 0 counts as red control.
@@ -699,30 +771,48 @@ function terminalEval(state) {
   let diff;
   let tb;
   if (state.simple) {
-    const t = tripleCountsFast(state);
-    diff = t.allRed - t.allBlue + state.carryDiff;
-    tb = state.geom.centerIdx >= 0 ? centerTiebreak(state) : whiteDiffFast(state);
+    diff = state.cntAllRed - state.cntAllBlue + state.carryDiff;
+    tb = state.geom.centerIdx >= 0 ? centerTiebreak(state) : state.whiteRed - state.whiteBlue;
   } else {
     diff = countTriples(state, RED) - countTriples(state, BLUE) + state.carryDiff;
     tb = state.geom.centerIdx >= 0 ? centerTiebreak(state) : whiteDiffGeneric(state);
   }
+  if (state.noTiebreak) tb = 0;
   return diff * TERMINAL_SCALE + tb * TIE_SCALE;
 }
 
-// Heuristic for depth-cutoff leaves: locked triples are permanent this phase,
-// soft triples and white pieces are potential.
-function staticEval(state) {
+// Heuristic for depth-cutoff leaves. Weights were CALIBRATED against ~1,100
+// exactly-solved leaf-regime positions (plies 8-13): regressing final game
+// points on the features showed the old hand weights (2000/250/10, no tempo)
+// drastically underpriced white pieces (the tiebreak currency) and unlocked
+// triples, and missed a side-to-move tempo term entirely. `side` is the
+// player to move at this leaf.
+// Weight calibration was attempted July 2026 against ~1,100 exactly-solved
+// leaf-regime positions: regression-fitted weights (soft 2230 / white 1127 /
+// tempo 608) predicted outcomes better but LOST 26% of games head-to-head —
+// they reward correlates of winning (hoarded whites), not causes. Moderate
+// corrections (white 100-300, soft 500, tempo 300) all landed 42-48%,
+// indistinguishable from the originals: at real search depths the engine
+// already compensates for static mispricing. The hand weights stand; env
+// overrides remain for future experiments.
+const EVAL_LOCKED = Number(process.env.EVAL_LOCKED ?? 2000);
+const EVAL_SOFT = Number(process.env.EVAL_SOFT ?? 250);
+const EVAL_WHITE = Number(process.env.EVAL_WHITE ?? 10);
+const EVAL_TEMPO = Number(process.env.EVAL_TEMPO ?? 0);
+
+function staticEval(state, side) {
+  const tempo = side === 1 ? EVAL_TEMPO : -EVAL_TEMPO;
   if (state.simple) {
-    const t = tripleCountsFast(state);
     return (
-      (t.lockedRed - t.lockedBlue + state.carryDiff) * 2000 +
-      (t.allRed - t.allBlue) * 250 +
-      whiteDiffFast(state) * TIE_SCALE
+      (state.cntLockedRed - state.cntLockedBlue + state.carryDiff) * EVAL_LOCKED +
+      (state.cntAllRed - state.cntAllBlue) * EVAL_SOFT +
+      (state.whiteRed - state.whiteBlue) * EVAL_WHITE +
+      tempo
     );
   }
   const lockedDiffV = countLockedTriples(state, RED) - countLockedTriples(state, BLUE) + state.carryDiff;
   const softDiff = countTriples(state, RED) - countTriples(state, BLUE);
-  return lockedDiffV * 2000 + softDiff * 250 + whiteDiffGeneric(state) * TIE_SCALE;
+  return lockedDiffV * EVAL_LOCKED + softDiff * EVAL_SOFT + whiteDiffGeneric(state) * EVAL_WHITE + tempo;
 }
 
 export function isPhaseOver(state) {
@@ -759,7 +849,14 @@ export function computeWinner(state) {
 // ---------------------------------------------------------------------------
 // Transposition table: fixed-size typed arrays (no per-entry heap objects).
 // meta packs: (move+1) in bits 0..11, depth in 12..17, flag+1 in 18..19,
-// solved in 20. meta === 0 means empty.
+// solved in 20, generation in 21..26. meta === 0 means empty.
+//
+// The table PERSISTS across searches: exact game values are timeless within
+// one game, so consecutive bot moves reuse the previous think's work (the
+// reply position was already searched deeply). A context signature guards
+// against reuse across different rules/boards/phases, and a generation
+// counter makes stale entries lose replacement fights without discarding
+// their (still valid) values.
 // ---------------------------------------------------------------------------
 
 const TT_BITS = 21;
@@ -771,6 +868,20 @@ const ttMeta = new Int32Array(TT_SIZE);
 const TT_EXACT = 0;
 const TT_LOWER = 1;
 const TT_UPPER = 2;
+let ttGen = 0;
+let ttContext = "";
+
+function ttPrepare(state) {
+  const g = state.geom;
+  const ctx = `${g.rows}x${g.cols}|${state.phase}|${state.uniqueSwap}|${state.staticNeutrals}|${state.blockedCenter}|${state.carryDiff}|${state.noTiebreak}`;
+  if (ctx !== ttContext) {
+    ttMeta.fill(0);
+    ttContext = ctx;
+    ttGen = 0;
+  } else {
+    ttGen = (ttGen + 1) & 63;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Search: iterative-deepening negamax with alpha-beta + PVS.
@@ -783,6 +894,37 @@ const moveBuf = new Int16Array(MAX_PLY * MAX_MOVES);
 const scoreBuf = new Float64Array(MAX_PLY * MAX_MOVES);
 const killer1 = new Int32Array(MAX_PLY);
 const killer2 = new Int32Array(MAX_PLY);
+// Saved eval counters per ply: search-path undo restores these instead of
+// re-scanning lines (public undoMove keeps the symmetric recompute).
+const cntSave = new Int32Array(MAX_PLY * 8);
+
+function applySearch(state, m, ply) {
+  if (state.simple) {
+    const o = ply * 8;
+    cntSave[o] = state.cntAllRed;
+    cntSave[o + 1] = state.cntAllBlue;
+    cntSave[o + 2] = state.cntLockedRed;
+    cntSave[o + 3] = state.cntLockedBlue;
+    cntSave[o + 4] = state.whiteRed;
+    cntSave[o + 5] = state.whiteBlue;
+  }
+  applyMove(state, m);
+}
+
+function undoSearch(state, m, ply) {
+  if (state.simple) {
+    undoMoveCore(state, m);
+    const o = ply * 8;
+    state.cntAllRed = cntSave[o];
+    state.cntAllBlue = cntSave[o + 1];
+    state.cntLockedRed = cntSave[o + 2];
+    state.cntLockedBlue = cntSave[o + 3];
+    state.whiteRed = cntSave[o + 4];
+    state.whiteBlue = cntSave[o + 5];
+  } else {
+    undoMove(state, m);
+  }
+}
 
 let nodes = 0;
 let cutoffCount = 0;
@@ -863,24 +1005,66 @@ function pickNext(buf, scores, off, i, count) {
   return buf[off + i];
 }
 
+// Full legality check for a TT move before it is applied ahead of move
+// generation (a hash collision could otherwise smuggle in a corrupting move).
+// Simple path only: no protected pieces, no blockers, no hoppers.
+function isLegalSimpleMove(state, m) {
+  const cells = state.geom.cells;
+  if (m < 0 || m >= cells * cells) return false;
+  const a = (m / cells) | 0;
+  const b = m % cells;
+  if (a === b) return false;
+  const g = state.geom;
+  if (Math.abs(g.rowOf[a] - g.rowOf[b]) > 1 || Math.abs(g.colOf[a] - g.colOf[b]) > 1) return false;
+  if (!isActive(state, a) || !isActive(state, b)) return false;
+  const sa = state.shapes[a];
+  const sb = state.shapes[b];
+  if (state.uniqueSwap && sa === sb) return false;
+  if (state.staticNeutrals && sb === NEUTRAL) return false;
+  if (state.blockedCenter === b) return false;
+  return true;
+}
+
+function ttStore(slot, key2, value, depth, flag, solved, bestMove) {
+  const cur = ttMeta[slot];
+  if (cur !== 0 && ttKey[slot] !== key2) {
+    // Different position in this slot: keep it only if it is current-gen and
+    // strictly more valuable (deeper, or solved when ours is not).
+    const eGen = (cur >>> 21) & 63;
+    if (eGen === ttGen) {
+      const eDepth = (cur >> 12) & 0x3f;
+      const eSolved = (cur >>> 20) & 1;
+      if (eDepth > depth && !(solved && !eSolved)) return;
+      if (eSolved && !solved) return;
+    }
+  }
+  ttKey[slot] = key2;
+  ttVal[slot] = value;
+  ttMeta[slot] = (bestMove + 1) | (depth << 12) | ((flag + 1) << 18) | (solved << 20) | (ttGen << 21);
+}
+
 function negamax(state, side, depth, alpha, beta, ply) {
   nodes += 1;
   if ((nodes & 2047) === 0 && Date.now() > deadline) throw ABORT;
 
+  const simple = state.simple;
   const off = ply * MAX_MOVES;
-  const count = genMovesInto(state, side, moveBuf, off);
-  if (count === 0) {
-    // In the simple game both players share the move set, so no moves for one
-    // means no moves for either. With blockers the other side may still move
-    // (the stuck player passes; no depth is consumed).
-    if (state.simple || !hasAnyMove(state, 1 - side)) {
-      return redSign(side) * terminalEval(state);
+  let count = -1; // generated lazily on the simple path
+  if (simple) {
+    // Both players share the move set (no blockers), so "no moves" is
+    // terminal for both, and the check is a handful of mask ops.
+    if (!hasSimpleMove(state)) return redSign(side) * terminalEval(state);
+  } else {
+    count = genGenericInto(state, side, moveBuf, off);
+    if (count === 0) {
+      if (!hasAnyMove(state, 1 - side)) return redSign(side) * terminalEval(state);
+      // The stuck player passes; no depth is consumed.
+      return -negamax(state, 1 - side, depth, -beta, -alpha, ply);
     }
-    return -negamax(state, 1 - side, depth, -beta, -alpha, ply);
   }
   if (depth <= 0) {
     cutoffCount += 1;
-    return redSign(side) * staticEval(state);
+    return redSign(side) * staticEval(state, side);
   }
 
   const key1 = (state.h1 ^ state.geom.sideKey1[side]) >>> 0;
@@ -893,9 +1077,13 @@ function negamax(state, side, depth, alpha, beta, ply) {
     const eDepth = (meta >> 12) & 0x3f;
     const eFlag = ((meta >> 18) & 0x3) - 1;
     const eSolved = (meta >>> 20) & 1;
-    // Solved entries hold exact game values: usable at any depth. Unsolved
-    // entries carry heuristic leaves, so relying on one taints a solve proof.
-    if (eSolved || eDepth >= depth) {
+    const eGen = (meta >>> 21) & 63;
+    // Solved entries hold exact game values: timeless, usable at any depth
+    // and across searches. Unsolved entries carry heuristic leaves whose
+    // parity is tied to the search root that produced them — their VALUES are
+    // only trusted within the current search (same generation); older ones
+    // still provide the move as an ordering hint.
+    if (eSolved || (eGen === ttGen && eDepth >= depth)) {
       const v = ttVal[slot];
       const usable =
         eFlag === TT_EXACT ||
@@ -914,18 +1102,51 @@ function negamax(state, side, depth, alpha, beta, ply) {
   }
 
   const cutoffsAtEntry = cutoffCount;
-  if (state.simple) scoreMovesSimple(state, side, moveBuf, scoreBuf, off, count, ttMove, ply);
-  else scoreMovesGeneric(moveBuf, scoreBuf, off, count, ttMove, ply);
-
   const origAlpha = alpha;
   let best = -INF;
   let bestMove = -1;
-  for (let i = 0; i < count; i += 1) {
-    const m = pickNext(moveBuf, scoreBuf, off, i, count);
-    applyMove(state, m);
+  let searchedFirst = false;
+
+  // Staged TT move: try the remembered best move BEFORE generating anything.
+  // If it produces a cutoff (it usually does), the whole generation+scoring
+  // pass is skipped. Legality is fully validated first.
+  let stagedMove = -1;
+  if (simple && ttMove >= 0 && isLegalSimpleMove(state, ttMove)) {
+    stagedMove = ttMove;
+    applySearch(state, stagedMove, ply);
     let v;
     try {
-      if (i === 0) {
+      v = -negamax(state, 1 - side, depth - 1, -beta, -alpha, ply + 1);
+    } finally {
+      undoSearch(state, stagedMove, ply);
+    }
+    best = v;
+    bestMove = stagedMove;
+    if (best > alpha) alpha = best;
+    searchedFirst = true;
+    if (alpha >= beta) {
+      history[stagedMove] += depth * depth;
+      if (killer1[ply] !== stagedMove) {
+        killer2[ply] = killer1[ply];
+        killer1[ply] = stagedMove;
+      }
+      const solved = cutoffCount === cutoffsAtEntry ? 1 : 0;
+      ttStore(slot, key2, best, depth, TT_LOWER, solved, bestMove);
+      return best;
+    }
+  }
+
+  if (count < 0) count = genSimpleInto(state, moveBuf, off);
+  if (simple) scoreMovesSimple(state, side, moveBuf, scoreBuf, off, count, stagedMove >= 0 ? -1 : ttMove, ply);
+  else scoreMovesGeneric(moveBuf, scoreBuf, off, count, ttMove, ply);
+
+  for (let i = 0; i < count; i += 1) {
+    const m = pickNext(moveBuf, scoreBuf, off, i, count);
+    if (m === stagedMove) continue; // already searched ahead of generation
+    applySearch(state, m, ply);
+    let v;
+    try {
+      if (!searchedFirst) {
         v = -negamax(state, 1 - side, depth - 1, -beta, -alpha, ply + 1);
       } else {
         // PVS: null-window probe proves "not better than alpha" cheaply; any
@@ -937,8 +1158,9 @@ function negamax(state, side, depth, alpha, beta, ply) {
         }
       }
     } finally {
-      undoMove(state, m);
+      undoSearch(state, m, ply);
     }
+    searchedFirst = true;
     if (v > best) {
       best = v;
       bestMove = m;
@@ -958,9 +1180,7 @@ function negamax(state, side, depth, alpha, beta, ply) {
   let flag = TT_EXACT;
   if (best <= origAlpha) flag = TT_UPPER;
   else if (best >= beta) flag = TT_LOWER;
-  ttKey[slot] = key2;
-  ttVal[slot] = best;
-  ttMeta[slot] = (bestMove + 1) | (depth << 12) | ((flag + 1) << 18) | (solved << 20);
+  ttStore(slot, key2, best, depth, flag, solved, bestMove);
   return best;
 }
 
@@ -968,14 +1188,23 @@ function negamax(state, side, depth, alpha, beta, ply) {
 // player has no legal move. `solved` is true when the returned value is the
 // exact game-theoretic value of the position (the search reached every leaf).
 // `value` is reported from RED's perspective (API compatibility).
-export function search(state, player, { timeMs = 1000, maxDepth = 60 } = {}) {
+// `rootMoves` (optional) restricts the choice at the root to a subset of the
+// legal moves — used by analysis tools to compare move classes (e.g. "best
+// center-taking move" vs "best move that avoids the center"). The search
+// below the root is unrestricted either way.
+export function search(state, player, { timeMs = 1000, maxDepth = 60, rootMoves: rootFilter = null } = {}) {
   const rootCount = genMovesInto(state, player, moveBuf, 0);
   if (rootCount === 0) return null;
-  const rootMoves = Array.from(moveBuf.subarray(0, rootCount));
+  let rootMoves = Array.from(moveBuf.subarray(0, rootCount));
+  if (rootFilter) {
+    const allowed = new Set(rootFilter);
+    rootMoves = rootMoves.filter((m) => allowed.has(m));
+    if (rootMoves.length === 0) return null;
+  }
 
   nodes = 0;
   deadline = Date.now() + timeMs;
-  ttMeta.fill(0);
+  ttPrepare(state);
   history = new Int32Array(state.geom.cells * state.geom.cells);
   killer1.fill(-1);
   killer2.fill(-1);
@@ -987,36 +1216,28 @@ export function search(state, player, { timeMs = 1000, maxDepth = 60 } = {}) {
   let solved = false;
   let lastValues = null;
 
-  for (let depth = 1; depth <= maxDepth; depth += 1) {
-    cutoffCount = 0;
+  // One root pass over `order` inside [alpha0, beta0]. Fail-soft.
+  const rootPass = (depth, alpha0, beta0) => {
     let iterBest = -INF;
     let iterMove = -1;
-    let alpha = -INF;
-    const beta = INF;
-    let aborted = false;
+    let alpha = alpha0;
     const values = new Map();
     for (let i = 0; i < order.length; i += 1) {
       const m = order[i];
-      applyMove(state, m);
+      applySearch(state, m, 0);
       let v;
       try {
         if (i === 0) {
-          v = -negamax(state, 1 - player, depth - 1, -beta, -alpha, 1);
+          v = -negamax(state, 1 - player, depth - 1, -beta0, -alpha, 1);
         } else {
           v = -negamax(state, 1 - player, depth - 1, -alpha - 1, -alpha, 1);
-          if (v > alpha && v < beta) {
-            v = -negamax(state, 1 - player, depth - 1, -beta, -v, 1);
+          if (v > alpha && v < beta0) {
+            v = -negamax(state, 1 - player, depth - 1, -beta0, -v, 1);
           }
         }
-      } catch (err) {
-        undoMove(state, m);
-        if (err === ABORT) {
-          aborted = true;
-          break;
-        }
-        throw err;
+      } finally {
+        undoSearch(state, m, 0);
       }
-      undoMove(state, m);
       values.set(m, v);
       if (v > iterBest) {
         iterBest = v;
@@ -1024,19 +1245,31 @@ export function search(state, player, { timeMs = 1000, maxDepth = 60 } = {}) {
       }
       if (iterBest > alpha) alpha = iterBest;
     }
-    if (aborted) break;
+    return { iterBest, iterMove, values };
+  };
 
-    bestMove = iterMove;
-    bestValue = iterBest;
-    completedDepth = depth;
-    lastValues = values;
-    // Re-order root moves by this iteration's results (best first for the mover).
-    order.sort((x, y) => (values.get(y) ?? -INF) - (values.get(x) ?? -INF));
-    if (cutoffCount === 0) {
-      solved = true;
-      break;
+  // NOTE: root aspiration windows were tried and measured HARMFUL here (+50%
+  // time at fixed depth): this game's heuristic values swing with leaf parity
+  // and across depths, so narrow windows fail or degrade root ordering.
+  try {
+    for (let depth = 1; depth <= maxDepth; depth += 1) {
+      cutoffCount = 0;
+      const pass = rootPass(depth, -INF, INF);
+
+      bestMove = pass.iterMove;
+      bestValue = pass.iterBest;
+      completedDepth = depth;
+      lastValues = pass.values;
+      // Re-order root moves by this iteration's results (best first for the mover).
+      order.sort((x, y) => (pass.values.get(y) ?? -INF) - (pass.values.get(x) ?? -INF));
+      if (cutoffCount === 0) {
+        solved = true;
+        break;
+      }
+      if (Date.now() > deadline) break;
     }
-    if (Date.now() > deadline) break;
+  } catch (err) {
+    if (err !== ABORT) throw err;
   }
 
   // Root moves ranked best-first for the mover. Non-best values may be
@@ -1095,7 +1328,7 @@ export function chooseSolverMove(gameState, playerIndex, opts = {}) {
 // ---------------------------------------------------------------------------
 
 export function makeRandomDeal(
-  { rows = 6, cols = 4, playerPieces = 9, purple = 0, hopper = 0, blocker = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false } = {},
+  { rows = 6, cols = 4, playerPieces = 9, purple = 0, hopper = 0, blocker = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false, noTiebreak = false } = {},
   rand = Math.random
 ) {
   const cells = rows * cols;
@@ -1110,7 +1343,7 @@ export function makeRandomDeal(
     const j = Math.floor(rand() * (i + 1));
     [bag[i], bag[j]] = [bag[j], bag[i]];
   }
-  return createState({ shapes: bag, rows, cols, uniqueSwap, staticNeutrals, protectedMiddle });
+  return createState({ shapes: bag, rows, cols, uniqueSwap, staticNeutrals, protectedMiddle, noTiebreak });
 }
 
 export { mulberry32 };

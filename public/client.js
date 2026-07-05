@@ -125,11 +125,22 @@ function flipBoardPreset(boardSize) {
 
 function defaultFlipSetupDraft() {
   return {
+    purple: false,
+    blockers: false
+  };
+}
+
+// The setup screen only exposes two toggles; everything else is fixed to the
+// standard 4x6 basic game (9 scoring pieces each, unique swap on).
+function flipDraftToOptions(draft) {
+  const purple = draft.purple ? 1 : 0;
+  const blocker = draft.blockers ? 4 : 0; // 2 per player
+  return {
     boardSize: "4x6",
-    playerPieces: 9,
-    purple: 0,
+    playerPieces: purple ? 8 : 9,
+    purple,
     hopper: 0,
-    blocker: 0,
+    blocker,
     mode: "basic",
     extendedRule: "none",
     uniqueSwap: true,
@@ -811,18 +822,15 @@ function renderFlipTriplesScore() {
 
   const scores = flipTriplesState?.scores ?? { red: 0, blue: 0 };
   const rows = [
-    { side: "red", label: "Red X", mark: "×", score: scores.red },
-    { side: "blue", label: "Blue O", mark: '<span class="ring"></span>', score: scores.blue }
+    { side: "red", mark: "×", score: scores.red },
+    { side: "blue", mark: '<span class="ring"></span>', score: scores.blue }
   ];
   const leader = scores.red === scores.blue ? null : scores.red > scores.blue ? "red" : "blue";
-  rows.forEach(({ side, label, mark, score }) => {
+  rows.forEach(({ side, mark, score }) => {
     const row = document.createElement("div");
-    row.className = `flip-score-row ${side}${leader === side ? " leading" : ""}`;
+    row.className = `flip-score-row compact ${side}${leader === side ? " leading" : ""}`;
     row.innerHTML = `
-      <span class="flip-score-label">
-        <span class="flip-score-mark">${mark}</span>
-        <span>${label}</span>
-      </span>
+      <span class="flip-score-mark">${mark}</span>
       <strong>${score}</strong>
     `;
     handEl.appendChild(row);
@@ -834,6 +842,12 @@ function renderFlipTriplesScore() {
     winnerEl.className = `flip-winner${winner === "red" ? " red" : winner === "blue" ? " blue" : ""}`;
     winnerEl.textContent = getFlipWinnerText();
     handEl.appendChild(winnerEl);
+
+    const replayBtn = document.createElement("button");
+    replayBtn.type = "button";
+    replayBtn.className = "primary-btn flip-replay-btn";
+    replayBtn.textContent = "Play again";
+    handEl.appendChild(replayBtn);
   }
 }
 
@@ -856,101 +870,28 @@ function renderFlipSetup() {
   if (!flipSetupDraft) {
     flipSetupDraft = flipTriplesState?.settings
       ? {
-          boardSize: flipTriplesState.settings.boardSize ?? "4x6",
-          playerPieces: flipTriplesState.settings.playerPieces ?? 9,
-          purple: flipTriplesState.settings.purple ?? 0,
-          hopper: flipTriplesState.settings.hopper ?? 0,
-          blocker: flipTriplesState.settings.blocker ?? 0,
-          mode: flipTriplesState.settings.mode ?? "basic",
-          extendedRule: flipTriplesState.settings.extendedRule ?? "none",
-          uniqueSwap: flipTriplesState.settings.uniqueSwap ?? true,
-          staticNeutrals: flipTriplesState.settings.staticNeutrals ?? false,
-          protectedMiddle: flipTriplesState.settings.protectedMiddle ?? false
+          purple: (flipTriplesState.settings.purple ?? 0) > 0,
+          blockers: (flipTriplesState.settings.blocker ?? 0) > 0
         }
       : defaultFlipSetupDraft();
   }
   flipSetup.classList.remove("hidden");
 
   const draft = flipSetupDraft;
-  const preset = flipBoardPreset(draft.boardSize);
-  const maxPlayerPieces = Math.floor(preset.cells / 2);
-  const used = draft.playerPieces * 2 + draft.purple + draft.hopper + draft.blocker;
-  const neutral = preset.cells - used;
-  const overflow = neutral < 0;
-  const middleDisabled = draft.boardSize === "4x6";
-
   flipSetup.innerHTML = `
     <div class="flip-setup-card">
       <h3>Game setup</h3>
-      <div class="flip-board-size-toggle" role="group" aria-label="Board size">
-        <button type="button" class="flip-board-size-btn${draft.boardSize === "5x5" ? " active" : ""}" data-board-size="5x5">5×5</button>
-        <button type="button" class="flip-board-size-btn${draft.boardSize === "4x6" ? " active" : ""}" data-board-size="4x6">4×6</button>
-      </div>
-      <div class="flip-setup-grid">
-        <label class="flip-field">
-          <span>Player pieces (each)</span>
-          <input type="number" data-setting="playerPieces" min="0" max="${maxPlayerPieces}" value="${draft.playerPieces}" />
-        </label>
-        <label class="flip-field">
-          <span>Purple</span>
-          <input type="number" data-setting="purple" min="0" max="${preset.cells}" value="${draft.purple}" />
-        </label>
-        <label class="flip-field">
-          <span>Hopper</span>
-          <input type="number" data-setting="hopper" min="0" max="${preset.cells}" value="${draft.hopper}" />
-        </label>
-        <label class="flip-field">
-          <span>Blockers</span>
-          <input type="number" data-setting="blocker" min="0" max="${preset.cells}" step="2" value="${draft.blocker}" />
-        </label>
-      </div>
-
-      <div class="flip-setup-modes">
-        <div class="flip-mode-toggle" role="group" aria-label="Game mode">
-          <button type="button" class="flip-mode-btn${draft.mode === "basic" ? " active" : ""}" data-mode="basic">Basic</button>
-          <button type="button" class="flip-mode-btn${draft.mode === "extended" ? " active" : ""}" data-mode="extended">Extended</button>
-        </div>
-        <div class="flip-rule-toggle${draft.mode === "extended" ? "" : " disabled"}" role="group" aria-label="Extended rule">
-          ${["none", "ring", "swap"]
-            .map(
-              (rule) =>
-                `<button type="button" class="flip-rule-btn${
-                  draft.extendedRule === rule ? " active" : ""
-                }" data-rule="${rule}" ${draft.mode === "extended" ? "" : "disabled"}>${
-                  rule === "none" ? "None" : rule === "ring" ? "Ring" : "Swap"
-                }</button>`
-            )
-            .join("")}
-        </div>
-      </div>
-
-      <div class="flip-option-toggles" role="group" aria-label="Optional rules">
-        <button type="button" class="flip-option-toggle${draft.uniqueSwap ? " active" : ""}" data-toggle="uniqueSwap">
-          <span class="flip-option-title">Unique Swap</span>
-          <small>Swapped pieces must be different shapes</small>
+      <div class="flip-option-toggles" role="group" aria-label="Optional pieces">
+        <button type="button" class="flip-option-toggle${draft.purple ? " active" : ""}" data-toggle="purple">
+          <span class="flip-option-title">Purple</span>
+          <small>8 scoring pieces each; one neutral becomes a purple wildcard</small>
         </button>
-        <button type="button" class="flip-option-toggle${draft.staticNeutrals ? " active" : ""}" data-toggle="staticNeutrals">
-          <span class="flip-option-title">Static Neutrals</span>
-          <small>Neutrals must flip; they never slide</small>
-        </button>
-        <button type="button" class="flip-option-toggle${draft.protectedMiddle ? " active" : ""}${middleDisabled ? " disabled" : ""}" data-toggle="protectedMiddle"${middleDisabled ? " disabled" : ""}>
-          <span class="flip-option-title">Protected Middle</span>
-          <small>${
-            middleDisabled
-              ? "Not available on 4×6 — there is no center square"
-              : "Nothing can flip into the center; select the middle first"
-          }</small>
+        <button type="button" class="flip-option-toggle${draft.blockers ? " active" : ""}" data-toggle="blockers">
+          <span class="flip-option-title">Blockers</span>
+          <small>Each player gets 2 blockers only they can move</small>
         </button>
       </div>
-
-      <p class="flip-setup-summary${overflow ? " error" : ""}">
-        ${
-          overflow
-            ? `Too many pieces for the ${preset.label} board — reduce some.`
-            : `Neutral pieces: ${neutral} (of ${preset.cells})`
-        }
-      </p>
-      <button type="button" class="primary-btn flip-start-btn" ${overflow ? "disabled" : ""}>Start game</button>
+      <button type="button" class="primary-btn flip-start-btn">Start game</button>
     </div>
   `;
 }
@@ -1084,7 +1025,14 @@ handEl.addEventListener("click", (event) => {
     renderToyBattleRack();
     return;
   }
-  if (isFlipTriples()) return;
+  if (isFlipTriples()) {
+    const replayBtn = target.closest(".flip-replay-btn");
+    if (replayBtn && roomId && flipTriplesState?.gameOver) {
+      // Same settings, fresh shuffle — the server re-randomizes the layout.
+      socket.emit("flip_triples_start", { roomId, options: { ...flipTriplesState.settings } });
+    }
+    return;
+  }
 
   const tileCard = target.closest(".tile-card");
   if (!tileCard) return;
@@ -1163,78 +1111,14 @@ gameBoard.addEventListener("click", (event) => {
   });
 });
 
-function updateFlipSetupSummary() {
-  const draft = flipSetupDraft;
-  if (!draft) return;
-  const preset = flipBoardPreset(draft.boardSize);
-  const maxPlayerPieces = Math.floor(preset.cells / 2);
-  const used = draft.playerPieces * 2 + draft.purple + draft.hopper + draft.blocker;
-  const neutral = preset.cells - used;
-  const overflow = neutral < 0;
-  const summary = flipSetup.querySelector(".flip-setup-summary");
-  const startBtn = flipSetup.querySelector(".flip-start-btn");
-  if (summary) {
-    summary.classList.toggle("error", overflow);
-    summary.textContent = overflow
-      ? `Too many pieces for the ${preset.label} board — reduce some.`
-      : `Neutral pieces: ${neutral} (of ${preset.cells})`;
-  }
-  if (startBtn) startBtn.disabled = overflow;
-
-  flipSetup.querySelectorAll("input[data-setting='playerPieces']").forEach((input) => {
-    input.max = String(maxPlayerPieces);
-  });
-  flipSetup.querySelectorAll("input[data-setting='purple'], input[data-setting='hopper'], input[data-setting='blocker']").forEach((input) => {
-    input.max = String(preset.cells);
-  });
-}
-
-flipSetup.addEventListener("input", (event) => {
-  const input = event.target.closest("input[data-setting]");
-  if (!input || !flipSetupDraft) return;
-  const key = input.dataset.setting;
-  const preset = flipBoardPreset(flipSetupDraft.boardSize);
-  const maxPlayerPieces = Math.floor(preset.cells / 2);
-  let value = parseInt(input.value, 10);
-  if (!Number.isInteger(value) || value < 0) value = 0;
-  if (key === "playerPieces") value = Math.min(value, maxPlayerPieces);
-  if (key === "blocker") value -= value % 2;
-  value = Math.min(value, preset.cells);
-  flipSetupDraft[key] = value;
-  updateFlipSetupSummary();
-});
-
 flipSetup.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element) || !flipSetupDraft) return;
 
-  const modeBtn = target.closest(".flip-mode-btn");
-  if (modeBtn) {
-    flipSetupDraft.mode = modeBtn.dataset.mode === "extended" ? "extended" : "basic";
-    renderFlipSetup();
-    return;
-  }
-
-  const ruleBtn = target.closest(".flip-rule-btn");
-  if (ruleBtn && flipSetupDraft.mode === "extended") {
-    flipSetupDraft.extendedRule = ruleBtn.dataset.rule || "none";
-    renderFlipSetup();
-    return;
-  }
-
-  const boardSizeBtn = target.closest(".flip-board-size-btn");
-  if (boardSizeBtn) {
-    flipSetupDraft.boardSize = boardSizeBtn.dataset.boardSize === "4x6" ? "4x6" : "5x5";
-    if (flipSetupDraft.boardSize === "4x6") flipSetupDraft.protectedMiddle = false;
-    renderFlipSetup();
-    return;
-  }
-
   const optionToggle = target.closest(".flip-option-toggle[data-toggle]");
   if (optionToggle) {
-    if (optionToggle.classList.contains("disabled")) return;
     const key = optionToggle.dataset.toggle;
-    if (key === "uniqueSwap" || key === "staticNeutrals" || key === "protectedMiddle") {
+    if (key === "purple" || key === "blockers") {
       flipSetupDraft[key] = !flipSetupDraft[key];
       renderFlipSetup();
     }
@@ -1244,7 +1128,7 @@ flipSetup.addEventListener("click", (event) => {
   const startBtn = target.closest(".flip-start-btn");
   if (startBtn) {
     if (!roomId) return;
-    socket.emit("flip_triples_start", { roomId, options: { ...flipSetupDraft } });
+    socket.emit("flip_triples_start", { roomId, options: flipDraftToOptions(flipSetupDraft) });
   }
 });
 
