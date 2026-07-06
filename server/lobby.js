@@ -8,13 +8,19 @@
 import { createExplodiumGame } from "./games/explodium/game.js";
 import { createToyBattleGame } from "./games/toy-battle/game.js";
 import { createFlipTriplesGame } from "./games/flip-triples/game.js";
+import { createTruckManiaGame } from "./games/truck-mania/game.js";
 
 export function createLobby(io) {
   const queueByGame = new Map(); // queueKey -> [socketId]
   const rooms = new Map(); // roomId -> { gameId, players, turn, ...gameState }
 
   const ctx = { io, rooms };
-  const games = [createExplodiumGame(ctx), createToyBattleGame(ctx), createFlipTriplesGame(ctx)];
+  const games = [
+    createExplodiumGame(ctx),
+    createToyBattleGame(ctx),
+    createFlipTriplesGame(ctx),
+    createTruckManiaGame(ctx)
+  ];
   const gamesById = new Map(games.map((game) => [game.id, game]));
 
   function getGame(gameId) {

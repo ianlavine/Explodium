@@ -10,8 +10,9 @@ import { socket, els, app, setScreen, setBotThinking, updateTurn } from "./conte
 import { explodium } from "../games/explodium/client.js";
 import { toyBattle } from "../games/toy-battle/client.js";
 import { flipTriples } from "../games/flip-triples/client.js";
+import { truckMania } from "../games/truck-mania/client.js";
 
-const games = [explodium, toyBattle, flipTriples];
+const games = [explodium, toyBattle, flipTriples, truckMania];
 
 let soloPickerGame = null;
 
@@ -51,7 +52,13 @@ socket.on("turn_update", ({ turn }) => {
 });
 
 socket.on("state_update", (payload) => {
-  const handler = payload.toyBattle ? toyBattle : payload.flipTriples ? flipTriples : explodium;
+  const handler = payload.toyBattle
+    ? toyBattle
+    : payload.flipTriples
+    ? flipTriples
+    : payload.truckMania
+    ? truckMania
+    : explodium;
   games.forEach((game) => {
     if (game !== handler) game.clearState?.();
   });

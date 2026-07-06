@@ -56,7 +56,11 @@ function getTileSvg(type, tile) {
 
 function isActive() {
   // Explodium is the fallback renderer for any room without a dedicated module.
-  return app.currentGame?.id !== "toy-battle" && app.currentGame?.id !== "flip-triples";
+  return (
+    app.currentGame?.id !== "toy-battle" &&
+    app.currentGame?.id !== "flip-triples" &&
+    app.currentGame?.id !== "truck-mania"
+  );
 }
 
 function renderHand() {
