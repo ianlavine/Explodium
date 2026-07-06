@@ -1,0 +1,200 @@
+/* Explodium: 14x14 tile board, hand of tile cards, and path markers. */
+
+.tile-card {
+  background: transparent;
+  border-radius: 14px;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  cursor: pointer;
+}
+
+.tile-card.selected {
+  outline: 2px solid var(--accent);
+}
+
+.tile-count {
+  font-weight: 700;
+  min-width: 20px;
+}
+
+.tile-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: rgba(8, 10, 14, 0.85);
+  font-weight: 700;
+  font-size: 14px;
+  background-color: var(--tile-base, #2b3340);
+  background-blend-mode: multiply;
+  background-size: 10px 10px;
+}
+
+.tile-icon svg {
+  width: 34px;
+  height: 34px;
+}
+
+.tile-icon svg.icon-diamond,
+.tile-icon svg.icon-square {
+  width: 40px;
+  height: 40px;
+}
+
+.tile-icon svg.icon-circle {
+  width: 44px;
+  height: 44px;
+}
+
+.hand.player-0 .tile-icon {
+  --tile-base: #e34b4b;
+}
+
+.hand.player-1 .tile-icon {
+  --tile-base: #3b82f6;
+}
+
+.tile-icon.type-0 {
+  background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 6px);
+}
+
+.tile-icon.type-1 {
+  background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.3) 0 1px, transparent 1px 4px);
+}
+
+.tile-icon.type-2 {
+  background-image: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.3) 0 1px, transparent 1px 4px);
+}
+
+.tile-icon.type-3 {
+  background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 5px);
+}
+
+.tile-icon.type-4 {
+  background-image: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.35) 0 2px, transparent 3px),
+    radial-gradient(circle at 70% 70%, rgba(255, 255, 255, 0.35) 0 2px, transparent 3px);
+  background-size: 10px 10px;
+}
+
+.board-cell {
+  width: 48px;
+  height: 48px;
+  background: #10151d;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  cursor: pointer;
+}
+
+.path-markers {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.path-marker {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  background: rgba(8, 10, 14, 0.3);
+}
+
+.path-marker.filled {
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.path-marker.player-0 {
+  color: #ff9a9a;
+  box-shadow: 0 0 6px rgba(255, 154, 154, 0.6);
+}
+
+.path-marker.player-1 {
+  color: #9ec5ff;
+  box-shadow: 0 0 6px rgba(158, 197, 255, 0.6);
+}
+
+.board.player-0 .board-cell:not(.occupied):hover {
+  background: rgba(227, 75, 75, 0.18);
+  border-color: rgba(255, 154, 154, 0.4);
+}
+
+.board.player-1 .board-cell:not(.occupied):hover {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(158, 197, 255, 0.4);
+}
+
+.board-cell.occupied {
+  cursor: default;
+}
+
+.board-cell .tile {
+  position: absolute;
+  inset: 2px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  color: rgba(8, 10, 14, 0.85);
+  background-color: var(--tile-base);
+  background-blend-mode: multiply;
+  background-size: 10px 10px;
+  z-index: 2;
+}
+
+.board-cell .tile svg {
+  width: 30px;
+  height: 30px;
+}
+
+.board-cell .tile svg.icon-diamond,
+.board-cell .tile svg.icon-square {
+  width: 40px;
+  height: 40px;
+}
+
+.board-cell .tile svg.icon-circle {
+  width: 44px;
+  height: 44px;
+}
+
+.tile.player-0 {
+  --tile-base: #e34b4b;
+  border: 2px solid #ff9a9a;
+}
+
+.tile.player-1 {
+  --tile-base: #3b82f6;
+  border: 2px solid #9ec5ff;
+}
+
+.tile.type-0 {
+  background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 6px);
+}
+
+.tile.type-1 {
+  background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.3) 0 1px, transparent 1px 4px);
+}
+
+.tile.type-2 {
+  background-image: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.3) 0 1px, transparent 1px 4px);
+}
+
+.tile.type-3 {
+  background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 5px);
+}
+
+.tile.type-4 {
+  background-image: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.35) 0 2px, transparent 3px),
+    radial-gradient(circle at 70% 70%, rgba(255, 255, 255, 0.35) 0 2px, transparent 3px);
+  background-size: 10px 10px;
+}

@@ -1,6 +1,6 @@
 // Batch near-perfect game runner for setup-luck analysis.
 //
-//   node solve-games.js --games 500 [--ms 5000] [--workers 6] [--seed 1000]
+//   node tools/flip-triples/solve-games.js --games 500 [--ms 5000] [--workers 6] [--seed 1000]
 //                       [--out analysis/solved-games.jsonl]
 //
 // Each game: a random deal played by the full-strength solver on BOTH sides
@@ -18,7 +18,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { search } from "./flip-engine.js";
+import { search } from "../../server/games/flip-triples/engine.js";
 import {
   makeRandomDeal,
   genMoves,
@@ -28,9 +28,10 @@ import {
   mulberry32,
   RED,
   BLUE
-} from "./flip-solver.js";
+} from "../../server/games/flip-triples/solver.js";
 
 const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function parseArgs(argv) {
   const args = {};
@@ -114,7 +115,7 @@ const games = Number(args.games ?? 100);
 const ms = Number(args.ms ?? 5000);
 const workers = Number(args.workers ?? Math.max(1, os.cpus().length - 2));
 const seedBase = Number(args.seed ?? 100000);
-const out = String(args.out ?? "analysis/solved-games.jsonl");
+const out = String(args.out ?? path.join(__dirname, "analysis/solved-games.jsonl"));
 fs.mkdirSync(path.dirname(out), { recursive: true });
 
 console.log(

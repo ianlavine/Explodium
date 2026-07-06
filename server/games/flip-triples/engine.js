@@ -1,7 +1,7 @@
 // Engine facade: WASM search core when the position qualifies (standard
 // red/blue/neutral pieces on a bitboard-capable board), JS engine otherwise
 // (exotic pieces, rootMoves-restricted analysis searches, or when the wasm
-// binary is missing). Result shape matches flip-solver.js `search`.
+// binary is missing). Result shape matches solver.js `search`.
 import fs from "fs";
 import { fileURLToPath } from "url";
 import {
@@ -10,7 +10,7 @@ import {
   decodeMove,
   RED,
   BLUE
-} from "./flip-solver.js";
+} from "./solver.js";
 
 let wasm = null;
 try {
@@ -95,7 +95,7 @@ export function search(state, player, opts = {}) {
 
 export const wasmAvailable = !!wasm;
 
-// Drop-in replacement for flip-solver.js chooseSolverMove, using the facade.
+// Drop-in replacement for solver.js chooseSolverMove, using the facade.
 export function chooseSolverMove(gameState, playerIndex, opts = {}) {
   const { pickWeights = null, rand = Math.random, ...searchOpts } = opts;
   const state = stateFromGame(gameState);

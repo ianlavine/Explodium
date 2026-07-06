@@ -3,9 +3,9 @@
 // serially; each carries a per-room sequence number the server uses to drop
 // replies that a restart/undo has made stale.
 import { parentPort } from "worker_threads";
-// flip-engine prefers the WASM core and falls back to the JS engine for
+// engine.js prefers the WASM core and falls back to the JS engine for
 // exotic pieces or if the wasm binary is missing.
-import { chooseSolverMove } from "./flip-engine.js";
+import { chooseSolverMove } from "./engine.js";
 
 parentPort.on("message", ({ seq, roomId, gameState, playerIndex, timeMs, pickWeights }) => {
   let move = null;

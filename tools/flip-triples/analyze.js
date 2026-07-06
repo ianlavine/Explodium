@@ -1,14 +1,14 @@
 // Depth-analysis harness for Flip Triples (4x6, unique swap, white tie-breaker).
 //
-//   node analyze.js selfplay [--deals 10] [--ms 300] [--seed 1]
+//   node tools/flip-triples/analyze.js selfplay [--deals 10] [--ms 300] [--seed 1]
 //     Solver-vs-solver on random deals. Reports the winner split (how fair the
 //     random setup is under strong play), game length, branching factor, and
 //     the ply from which the game was solved exactly within the budget.
 //
-//   node analyze.js report [--json analysis/data.json] [--out analysis/report.html]
+//   node tools/flip-triples/analyze.js report [--json analysis/data.json] [--out analysis/report.html]
 //     Renders the accumulated JSON dataset into a chart page.
 //
-//   node analyze.js ladder [--deals 20] [--rungs random,10,50,250,1000] [--seed 1]
+//   node tools/flip-triples/analyze.js ladder [--deals 20] [--rungs random,10,50,250,1000] [--seed 1]
 //     Skill ladder: each adjacent pair of rungs plays a match (colors swapped
 //     halfway). Rungs are "random" or a per-move time budget in ms. The number
 //     of rungs where the stronger agent still reliably beats the weaker one is
@@ -19,6 +19,7 @@
 
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import {
   makeRandomDeal,
   cloneState,
@@ -30,11 +31,13 @@ import {
   mulberry32,
   RED,
   BLUE
-} from "./flip-solver.js";
+} from "../../server/games/flip-triples/solver.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Pass --json analysis/data.json to persist results. Runs merge into the file
 // (ladder pairs keyed by matchup, selfplay runs keyed by ms/deals/seed) so the
-// dataset accumulates across sessions; `node analyze.js report` renders it.
+// dataset accumulates across sessions; `node tools/flip-triples/analyze.js report` renders it.
 function loadData(file) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -322,7 +325,7 @@ function emptyMoveCounts() {
 
 // Move anatomy: what kind of piece gets flipped, and into which board zone,
 // at each stage of the game (thirds), for a given solver strength.
-//   node analyze.js moves --deals 30 --ms 250 [--seed 1] [--json analysis/data.json]
+//   node tools/flip-triples/analyze.js moves --deals 30 --ms 250 [--seed 1] [--json analysis/data.json]
 function runMoves(args) {
   const deals = Number(args.deals ?? 30);
   const ms = Number(args.ms ?? 250);
@@ -383,8 +386,8 @@ function runMoves(args) {
 }
 
 async function runReport(args) {
-  const file = args.json ?? "analysis/data.json";
-  const out = args.out ?? "analysis/report.html";
+  const file = args.json ?? path.join(__dirname, "analysis/data.json");
+  const out = args.out ?? path.join(__dirname, "analysis/report.html");
   const { generateReport } = await import("./report.js");
   const data = loadData(file);
   fs.mkdirSync(path.dirname(out), { recursive: true });

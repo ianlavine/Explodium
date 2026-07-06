@@ -1,5 +1,5 @@
 // Renders analysis/data.json into a self-contained HTML report
-// (analysis/report.html). Invoked via `node analyze.js report`.
+// (analysis/report.html). Invoked via `node tools/flip-triples/analyze.js report`.
 
 function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -608,7 +608,7 @@ export function generateReport(data) {
       ${esc(s.pieces ?? "9 + 9 + 6 neutral")}, unique swap on, ties broken by
       ${esc(s.tiebreak ?? "remaining white pieces")}. Agents are the same alpha-beta solver
       given different time budgets per move.</p>
-    <p class="meta">Data updated ${esc(updated)} · regenerate with <code>node analyze.js report</code></p>
+    <p class="meta">Data updated ${esc(updated)} · regenerate with <code>node tools/flip-triples/analyze.js report</code></p>
   </header>
 
   ${tiles(data)}
@@ -663,9 +663,9 @@ export function generateReport(data) {
     <p class="method">Method: every agent is the same iterative-deepening alpha-beta solver
       (flip-solver.js); a rung is a per-move time budget, and "random" plays uniformly random
       legal moves. Deals are seeded and reproducible. Add data with
-      <code>node analyze.js ladder --json analysis/data.json</code> or
-      <code>node analyze.js selfplay --json analysis/data.json</code>, then rebuild this page
-      with <code>node analyze.js report</code>.</p>
+      <code>node tools/flip-triples/analyze.js ladder --json analysis/data.json</code> or
+      <code>node tools/flip-triples/analyze.js selfplay --json analysis/data.json</code>, then rebuild this page
+      with <code>node tools/flip-triples/analyze.js report</code>.</p>
   </section>
 </div>
 <div id="tip" role="status"></div>
