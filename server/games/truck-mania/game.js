@@ -159,9 +159,9 @@ function dropoffColorBag() {
   return shuffle(bag);
 }
 
-// Assign every building a role and recolor it: 12 dropoffs (colored, some colors
-// shared), 15 pickups (grey; 6 "protected" with circle packages, the rest with
-// square packages), the remainder empty white. Mutates the map in place.
+// Assign every building a role and recolor it: 12 dropoffs (colored, some
+// colors shared), 15 pickups (grey; 6 "protected" hold circles, 9 normal hold
+// squares — six packages each), the remainder empty white. Mutates in place.
 let pkgSeq = 0;
 function assignLocations(map) {
   const buildings = (map.blocks ?? []).flatMap((b) => b.buildings ?? []);
@@ -171,6 +171,7 @@ function assignLocations(map) {
     delete b.dropoffColor;
     delete b.protected;
     delete b.packages;
+    delete b.delivered;
   });
 
   const order = shuffle(buildings);
@@ -183,6 +184,7 @@ function assignLocations(map) {
     b.role = "dropoff";
     b.dropoffColor = bag[i];
     b.color = bag[i];
+    b.delivered = []; // flipped-to-black packages dropped here
   }
 
   const pickupN = Math.min(15, order.length - cursor);
@@ -193,18 +195,13 @@ function assignLocations(map) {
     b.role = "pickup";
     b.color = GREY;
     b.protected = i < protectedN;
-    b.packages = [];
+    const shape = b.protected ? "circle" : "square";
+    b.packages = Array.from({ length: 6 }, () => ({
+      id: `pkg${pkgSeq++}`,
+      shape,
+      color: randColor()
+    }));
   });
-
-  // 6 circles: one on each protected pickup.
-  for (let i = 0; i < protectedN; i += 1) {
-    pickups[i].packages.push({ id: `pkg${pkgSeq++}`, shape: "circle", color: randColor() });
-  }
-  // 6 squares: on six random normal pickups (one each).
-  const normals = shuffle(pickups.slice(protectedN));
-  for (let i = 0; i < Math.min(6, normals.length); i += 1) {
-    normals[i].packages.push({ id: `pkg${pkgSeq++}`, shape: "square", color: randColor() });
-  }
 }
 
 function buildingByBid(map, bid) {
@@ -386,7 +383,8 @@ export function createTruckManiaGame({ io, rooms }) {
         const idx = (truck.cargo ?? []).findIndex((p) => p.id === packageId);
         if (idx === -1) return;
         if (truck.cargo[idx].color !== building.dropoffColor) return;
-        truck.cargo.splice(idx, 1);
+        const [delivered] = truck.cargo.splice(idx, 1);
+        (building.delivered ??= []).push(delivered);
 
         // Advance the matching player-board column (orange/brown stay inert).
         const col = COLOR_COLUMN[building.dropoffColor];

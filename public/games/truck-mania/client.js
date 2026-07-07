@@ -781,18 +781,30 @@ function buildingCentroid(b) {
   return [b.x + b.w / 2, b.y + b.h / 2];
 }
 
+// Slot i of a building's 3-wide package grid, growing downward from the top row.
+function bldPkgSlot(cx, cy, i) {
+  const col = i % 3;
+  const row = Math.floor(i / 3);
+  return [cx + (col - 1) * (BLD_PKG_SIZE + 3), cy + (row - 0.5) * (BLD_PKG_SIZE + 3)];
+}
+
 function drawBuildingPackages(layer) {
+  const DELIVERED = "#23272e"; // the flipped "black side"
   (mapState.blocks ?? []).forEach((block) => {
     (block.buildings ?? []).forEach((b) => {
-      const pkgs = (b.packages ?? []).filter((p) => !animatingPkgs.has(p.id));
-      if (!pkgs.length) return;
       const [cx, cy] = buildingCentroid(b);
-      const span = (pkgs.length - 1) * (BLD_PKG_SIZE + 3);
+      const delivered = (b.delivered ?? []).filter((p) => !animatingPkgs.has(p.id));
+      delivered.forEach((pkg, i) => {
+        const [px, py] = bldPkgSlot(cx, cy, i);
+        const g = svgEl("g", { class: "tm-pkg tm-pkg-delivered" }, layer);
+        drawPackage(g, pkg.shape, DELIVERED, px, py, BLD_PKG_SIZE);
+      });
+      const pkgs = (b.packages ?? []).filter((p) => !animatingPkgs.has(p.id));
       pkgs.forEach((pkg, i) => {
-        const px = cx - span / 2 + i * (BLD_PKG_SIZE + 3);
-        pkgPos[pkg.id] = [px, cy];
+        const [px, py] = bldPkgSlot(cx, cy, i);
+        pkgPos[pkg.id] = [px, py];
         const g = svgEl("g", { class: "tm-pkg tm-pkg-building", "data-pkg": pkg.id, "data-bid": b.bid }, layer);
-        drawPackage(g, pkg.shape, pkg.color, px, cy, BLD_PKG_SIZE);
+        drawPackage(g, pkg.shape, pkg.color, px, py, BLD_PKG_SIZE);
       });
     });
   });
@@ -853,6 +865,46 @@ function attemptPickup(pkgId, bid) {
   });
 }
 
+// Fly a parcel to the dropoff slot, then flip it over to its black side —
+// a permanent marker of a delivery at that location.
+function animateDropoff(pkg, from, to, onDone) {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  if (!svg) {
+    onDone?.();
+    return;
+  }
+  let layer = svg.querySelector(".tm-fly");
+  if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
+  const g = svgEl("g", {}, layer);
+  const shapeEl = drawPackage(g, pkg.shape, pkg.color, 0, 0, BLD_PKG_SIZE);
+  const flyDur = 360;
+  const flipDur = 300;
+  const start = performance.now();
+  let flipped = false;
+
+  const step = (now) => {
+    const t = now - start;
+    if (t < flyDur) {
+      const p = t / flyDur;
+      const e = p < 0.5 ? 2 * p * p : 1 - ((-2 * p + 2) ** 2) / 2;
+      g.setAttribute("transform", `translate(${from[0] + (to[0] - from[0]) * e} ${from[1] + (to[1] - from[1]) * e})`);
+    } else if (t < flyDur + flipDur) {
+      const p = (t - flyDur) / flipDur;
+      if (p >= 0.5 && !flipped) {
+        flipped = true;
+        shapeEl.setAttribute("fill", "#23272e");
+      }
+      g.setAttribute("transform", `translate(${to[0]} ${to[1]}) scale(${Math.abs(1 - 2 * p)} 1)`);
+    } else {
+      g.remove();
+      onDone?.();
+      return;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 function attemptDropoff(pkgId) {
   const truck = trucksState[0];
   if (!truck) return;
@@ -861,13 +913,16 @@ function attemptDropoff(pkgId) {
   const pkg = truck.cargo?.find((p) => p.id === pkgId);
   if (!pkg || pkg.color !== building.dropoffColor) return;
   const from = truckLocalToWorld(truckPos[truck.id] ?? { x: 0, y: 0, angle: 0 }, ...dockSlotLocal(truck.cargo.indexOf(pkg)));
-  const to = buildingCentroid(building);
+  const [cx, cy] = buildingCentroid(building);
+  const slot = (building.delivered ?? []).filter((p) => !animatingPkgs.has(p.id)).length;
+  const to = bldPkgSlot(cx, cy, slot);
   animatingPkgs.add(pkgId);
   renderCargo(truck.id);
   socket.emit("truck_mania_dropoff", { roomId: app.roomId, truckId: truck.id, packageId: pkgId });
-  flyPackage(pkg.shape, pkg.color, from, to, () => {
+  animateDropoff(pkg, from, to, () => {
     animatingPkgs.delete(pkgId);
     renderCargo(truck.id);
+    renderBuildingPackagesRefresh();
   });
 }
 

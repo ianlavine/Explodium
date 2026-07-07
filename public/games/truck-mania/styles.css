@@ -79,6 +79,10 @@
   cursor: pointer;
 }
 
+.tm-pkg-delivered {
+  pointer-events: none;
+}
+
 .tm-fly {
   pointer-events: none;
 }
