@@ -34,6 +34,29 @@
   stroke-width: 1;
 }
 
+/* Protected locations: dark outline + lettered badge */
+
+.tm-building polygon.tm-protected,
+.tm-building rect.tm-protected {
+  stroke: #1c222b;
+  stroke-width: 2.5;
+}
+
+.tm-loc-letter-bg {
+  fill: #1c222b;
+  stroke: #f4f1ea;
+  stroke-width: 1.5;
+}
+
+.tm-loc-letter-text {
+  fill: #f4f1ea;
+  font-size: 10px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: central;
+  user-select: none;
+}
+
 /* Octagon signals */
 
 .tm-oct polygon {
@@ -50,6 +73,22 @@
 /* Trucks */
 
 .tm-truck {
+  pointer-events: auto;
+}
+
+.tm-truck-foe {
+  cursor: pointer;
+}
+
+.tm-truck-selected {
+  filter: drop-shadow(0 0 4px #ffe17a) drop-shadow(0 0 4px #ffe17a);
+}
+
+.tm-dropoff-slot {
+  fill: none;
+  stroke: rgba(60, 66, 74, 0.75);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
   pointer-events: none;
 }
 
@@ -79,12 +118,116 @@
   cursor: pointer;
 }
 
+/* Stealing: highlight a passed truck's cargo and its Continue button */
+
+.tm-pkg-cargo.tm-steal-target {
+  stroke: #ffe17a;
+  stroke-width: 2.2;
+  filter: drop-shadow(0 0 3px rgba(255, 216, 92, 0.95));
+}
+
+.tm-steal {
+  pointer-events: none;
+}
+
+.tm-steal-label-bg {
+  fill: rgba(16, 21, 29, 0.94);
+  stroke: #ffe17a;
+  stroke-width: 1;
+}
+
+.tm-steal-label-text {
+  fill: #ffe17a;
+  font-size: 10px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: central;
+  user-select: none;
+}
+
+.tm-steal-continue {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.tm-steal-continue-bg {
+  fill: #3ac0c0;
+  stroke: rgba(18, 22, 28, 0.6);
+  stroke-width: 1;
+}
+
+.tm-steal-continue:hover .tm-steal-continue-bg {
+  fill: #52d6d6;
+}
+
+.tm-steal-continue-text {
+  fill: #10151d;
+  font-size: 11px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: central;
+  user-select: none;
+  pointer-events: none;
+}
+
 .tm-pkg-delivered {
   pointer-events: none;
 }
 
 .tm-fly {
   pointer-events: none;
+}
+
+/* Route preview */
+
+.tm-route-line {
+  fill: none;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.9;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+
+.tm-route-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+  stroke-linecap: round;
+  cursor: pointer;
+}
+
+.tm-chev {
+  pointer-events: none;
+}
+
+.tm-chev-mark {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.95;
+}
+
+.tm-route-badge {
+  pointer-events: none;
+}
+
+.tm-route-badge-bg {
+  fill: #f7f2ea;
+  stroke: #cf4a3c;
+  stroke-width: 2;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+.tm-route-badge-num {
+  fill: #cf4a3c;
+  font-size: 12px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: central;
+  user-select: none;
 }
 
 /* Parking spots */
@@ -125,6 +268,253 @@
   user-select: none;
 }
 
+/* Location / ability decks (left of the clock + dice) */
+
+.tm-decks {
+  position: fixed;
+  top: 84px;
+  right: calc(clamp(150px, 17vw, 210px) + 52px);
+  width: 180px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+
+.tm-deck-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+}
+
+.tm-deck-active {
+  border-color: #ffe17a;
+  background: rgba(255, 216, 92, 0.12);
+  animation: tm-deck-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes tm-deck-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 216, 92, 0.5); }
+  50% { box-shadow: 0 0 0 4px rgba(255, 216, 92, 0.12); }
+}
+
+.tm-deck-stack {
+  width: 40px;
+  min-height: 52px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #3a4250, #232a34);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.35);
+  color: #d7dbe2;
+  text-align: center;
+}
+
+.tm-deck-active .tm-deck-stack[data-draft-deck] {
+  cursor: pointer;
+}
+
+.tm-deck-name {
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+}
+
+.tm-deck-count {
+  font-size: 11px;
+  font-weight: 800;
+  color: #aeb3ba;
+}
+
+.tm-deck-shown {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tm-card {
+  width: 44px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 6px;
+  background: #f4f1ea;
+  color: #1c222b;
+  font-weight: 800;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+
+.tm-card-locations {
+  font-size: 22px;
+}
+
+.tm-card-abilities {
+  font-size: 10px;
+  line-height: 1.1;
+  padding: 3px;
+}
+
+.tm-card-pick {
+  cursor: pointer;
+  outline: 2px solid transparent;
+  transition: transform 0.1s ease, outline-color 0.1s ease;
+}
+
+.tm-deck-active .tm-card-pick:hover {
+  transform: translateY(-3px);
+  outline-color: #ffe17a;
+}
+
+/* Player-board qualitative tiles */
+
+.tm-pb-tile {
+  color: #10151d;
+  font-weight: 800;
+}
+
+.tm-pb-empty {
+  opacity: 0.6;
+}
+
+/* Scoreboard (in the shared game header) */
+
+.tm-scoreboard {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+
+.tm-score {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tm-score-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.tm-score-val {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text, #eef1f4);
+  min-width: 14px;
+  text-align: center;
+}
+
+/* Ticket dice (below the clock) */
+
+.tm-dice {
+  position: fixed;
+  right: 28px;
+  top: clamp(238px, calc(84px + 17vw + 24px), 320px);
+  width: clamp(150px, 17vw, 210px);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+
+.tm-dice-head {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.tm-dice-good {
+  color: #4f9d57;
+}
+
+.tm-dice-bad {
+  color: #cf4a3c;
+}
+
+.tm-dice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.tm-die {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  padding: 3px;
+  border-radius: 5px;
+  background: #f4f1ea;
+}
+
+.tm-die-safe {
+  box-shadow: inset 0 0 0 2px #4f9d57;
+}
+
+.tm-die-ticket {
+  box-shadow: inset 0 0 0 2px #cf4a3c;
+}
+
+.tm-die-rolling {
+  box-shadow: inset 0 0 0 2px #8a93a3;
+  animation: tm-die-shake 0.16s linear infinite;
+}
+
+@keyframes tm-die-shake {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  25% { transform: translateY(-1px) rotate(-6deg); }
+  75% { transform: translateY(1px) rotate(6deg); }
+}
+
+.tm-rush-tag {
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  background: #cf4a3c;
+  border-radius: 999px;
+  padding: 1px 7px;
+  letter-spacing: 0.03em;
+}
+
+.tm-pip {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  align-self: center;
+  justify-self: center;
+  background: #23272e;
+}
+
+.tm-die-ticket .tm-pip {
+  background: #cf4a3c;
+}
+
 /* The clock */
 
 .tm-clock {
@@ -139,6 +529,30 @@
   width: 100%;
   height: auto;
   display: block;
+}
+
+.tm-clock-daynight {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(240, 224, 150, 0.22);
+  font-weight: 800;
+  font-size: 15px;
+  color: #2a3038;
+}
+
+.tm-clock-daynight.tm-night {
+  background: rgba(40, 52, 90, 0.9);
+  color: #dfe6ff;
+}
+
+.tm-daynight-icon {
+  font-size: 17px;
+  line-height: 1;
 }
 
 .tm-clock-face {
@@ -181,13 +595,60 @@
   fill: #2a3038;
 }
 
-/* Player board */
+.tm-clock-cost {
+  fill: #8a5bb0;
+  font-size: 15px;
+  font-weight: 800;
+  text-anchor: middle;
+  pointer-events: none;
+  user-select: none;
+}
 
-.tm-player-board {
+.tm-clock-cost.tm-cost-over {
+  fill: #cf4a3c;
+}
+
+/* Player board (with the time-stone stack above it) */
+
+.tm-pb-wrap {
   position: fixed;
   right: 24px;
   bottom: 84px;
   z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.tm-stones {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+
+.tm-stone {
+  width: 18px;
+  height: 18px;
+  margin-left: -7px;
+}
+
+.tm-stone:first-child {
+  margin-left: 0;
+}
+
+.tm-stones-count {
+  color: #c9a6e8;
+  font-weight: 800;
+  font-size: 13px;
+  margin-left: 8px;
+}
+
+.tm-player-board {
   border-radius: 12px;
   overflow: hidden;
   background: rgba(16, 21, 29, 0.96);
@@ -298,6 +759,28 @@
 }
 
 .tm-map-select option {
+  color: #1a1f27;
+}
+
+.tm-ai-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.tm-ai-select {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.tm-ai-select option {
   color: #1a1f27;
 }
 

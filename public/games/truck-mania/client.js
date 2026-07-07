@@ -11,6 +11,7 @@ let mapState = null;
 let hourState = null;
 let octEls = [];
 let handEl = null;
+let dayNightEl = null; // the sun/moon + AM/PM readout above the clock
 let boardMode = "play"; // "play" | "edit"
 let savedMaps = [];
 let canSaveMaps = true;
@@ -25,7 +26,67 @@ const cargoEls = {}; // id -> cargo sub-group inside the truck
 const truckPos = {}; // id -> { x, y, angle }
 const truckSpots = {}; // id -> last spot index rendered
 const truckAnim = {}; // id -> rAF handle
+const pendingRoutes = {}; // id -> { spot, path, endAngle } routed locally, awaiting server echo
+let previewState = null; // { truckId, spot, routes:[{path,reds,endAngle}] } awaiting the player's pick
+let stealSession = null; // { victimId, remaining } while parked on a robbable truck
 let graphCache = null; // { seed, graph }
+
+// Ticket-dice animation + drive deferral: the truck waits for the roll to
+// finish before it moves, and everyone sees the roll.
+let lastRollSeq = -1;
+let diceAnimating = false;
+let deferredDrives = []; // drives held until the dice animation ends
+const pendingFlies = {}; // truckId -> fly events held until the truck arrives
+
+// Turn + time-of-day state (mirrors the server).
+let timeState = 0; // 0-23, 0 = midnight
+let nightState = true; // theft window: 9pm–6am
+let rushState = false; // rush hour: tickets doubled
+let turnWhose = 0; // player index whose turn it is
+let turnActed = false; // this turn's truck has picked up/delivered (movement locked)
+let turnStolen = false; // this turn has performed a steal
+let turnChangedTime = false; // this turn has changed the clock
+let stealVictimId = null; // which truck was robbed this turn
+let aiMoveState = null; // { truckId, path, endAngle } — an AI's chosen drive to animate
+
+// Extra truck: the human may own two trucks but moves one per turn. `turnTruck`
+// is the truck locked in as this turn's mover (null until they act);
+// `selectedTruckId` is which of their trucks they're currently aiming.
+let turnTruck = null;
+let selectedTruckId = 0;
+
+function hasAbil(id) {
+  return !!myPlayer()?.abilities?.includes(id);
+}
+
+function myIndex() {
+  return app.myPlayerIndex ?? 0;
+}
+
+function myTruckList() {
+  return trucksState.filter((t) => t.player === myIndex());
+}
+
+function activeTruckId() {
+  return turnTruck != null ? turnTruck : selectedTruckId;
+}
+
+function activeTruck() {
+  return trucksState.find((t) => t.id === activeTruckId()) ?? myTruckList()[0] ?? null;
+}
+
+// Does a given truck (default the active one) share its spot with another?
+function truckShares(truck) {
+  return !!truck && trucksState.some((t) => t.id !== truck.id && t.spot === truck.spot);
+}
+
+function anyMyTruckShares() {
+  return myTruckList().some((t) => truckShares(t));
+}
+
+function isMyTurn() {
+  return turnWhose === (app.myPlayerIndex ?? 0);
+}
 
 // Packages: parcels sitting on pickup buildings or stacked in a truck's dock.
 const pkgPos = {}; // package id -> last rendered world position (fly source)
@@ -36,6 +97,34 @@ const BLD_PKG_SIZE = 11;
 // Player board: seven columns, each a color-linked track of six values. The
 // last two (Locations / Abilities) are placeholders with no values yet.
 let playersState = [];
+let lastRollState = null; // most recent ticket roll: { player, dice, aversion, tickets }
+let decksState = null; // { locations:{shown,remaining}, abilities:{shown,remaining} }
+
+const ABILITY_LABELS = {
+  uturn: "U-turn",
+  "drive-by-pickup": "Drive-by pickup",
+  "drive-by-dropoff": "Drive-by dropoff",
+  "cheap-time": "Cheap time",
+  "day-theft": "Day theft",
+  swerve: "Swerve",
+  "time-lord": "Time lord",
+  "free-parking": "Free parking",
+  "reverse-time": "Reverse time",
+  "extra-truck": "Extra truck"
+};
+const ABILITY_ICONS = {
+  uturn: "↩",
+  "drive-by-pickup": "⇥",
+  "drive-by-dropoff": "⤶",
+  "cheap-time": "½",
+  "day-theft": "☀",
+  swerve: "〰",
+  "time-lord": "⏳",
+  "free-parking": "🅿",
+  "reverse-time": "⏱",
+  "extra-truck": "🚚"
+};
+
 const PB_COLUMNS = [
   { id: "capacity", title: "Capacity", color: "#e8c33c", values: [2, 3, 4, 5, 6, 7] },
   { id: "variety", title: "Variety", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] },
@@ -251,13 +340,16 @@ function appendBuilding(parent, building) {
     }, g);
   });
 
+  // Protected locations get a dark outline so they read as special.
+  const shapeClass = building.protected ? "tm-protected" : "";
   if (building.points) {
-    svgEl("polygon", { points: polygonToString(building.points), fill: building.color }, g);
+    svgEl("polygon", { points: polygonToString(building.points), fill: building.color, class: shapeClass }, g);
   } else {
     const rect = svgEl("rect", {
       x: building.x, y: building.y, width: building.w, height: building.h,
       rx: 3,
-      fill: building.color
+      fill: building.color,
+      class: shapeClass
     }, g);
     if (building.rotation) {
       rect.setAttribute(
@@ -279,6 +371,38 @@ function appendBuilding(parent, building) {
       class: "tm-connector-dot"
     }, g);
   });
+
+  // The location letter, badged at the building's top-left corner.
+  if (building.protected && building.letter) {
+    const bb = buildingBBox(building);
+    const bx = bb.minX + 8;
+    const by = bb.minY + 8;
+    const badge = svgEl("g", { class: "tm-loc-letter" }, g);
+    svgEl("circle", { cx: bx, cy: by, r: 7.5, class: "tm-loc-letter-bg" }, badge);
+    const t = svgEl("text", { x: bx, y: by, class: "tm-loc-letter-text" }, badge);
+    t.textContent = building.letter;
+  }
+}
+
+// Axis-aligned bounds of a building (rect or poly), used to place its badge.
+function buildingBBox(b) {
+  let pts;
+  if (b.points) {
+    pts = b.points;
+  } else {
+    pts = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]];
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of pts) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
 }
 
 // --------------------------------------------------------------------------
@@ -348,10 +472,22 @@ function refreshOctagonsHard() {
 // The clock
 // --------------------------------------------------------------------------
 
+// The hand normally sweeps clockwise, so rotation accumulates: going from 10
+// to 2 turns forward through 12, never backwards. With the Reverse-time
+// ability it takes whichever spin is fewer hours (the cheaper one).
+let handDeg = 0;
 function setHand() {
   if (!handEl) return;
-  const deg = hourState ? hourState * 30 : 0;
-  handEl.style.transform = `rotate(${deg}deg)`;
+  const target = ((hourState ?? 12) * 30) % 360;
+  const cur = ((handDeg % 360) + 360) % 360;
+  const cwSteps = ((target - cur) + 360) % 360;
+  const ccwSteps = (360 - cwSteps) % 360;
+  if (myPlayer()?.abilities?.includes("reverse-time") && ccwSteps < cwSteps) {
+    handDeg -= ccwSteps;
+  } else {
+    handDeg += cwSteps;
+  }
+  handEl.style.transform = `rotate(${handDeg}deg)`;
 }
 
 // Ring the two octagons carrying this hour's number, so it's clear which
@@ -391,12 +527,35 @@ function stagedTimeChange(hour) {
   }, 540);
 }
 
+// Each hour of clockwise sweep costs one time stone. Reverse-time lets a player
+// take the cheaper of the two spin directions.
+function hourCost(hour) {
+  const cur = hourState ?? 12;
+  const cw = (hour - cur + 12) % 12;
+  let cost = hasAbil("reverse-time") ? Math.min(cw, (cur - hour + 12) % 12) : cw;
+  if (hasAbil("cheap-time")) cost = Math.ceil(cost / 2); // half, rounded up
+  return cost;
+}
+
 function renderClock() {
   const wrap = document.createElement("div");
   wrap.className = "tm-clock";
 
+  dayNightEl = document.createElement("div");
+  dayNightEl.className = "tm-clock-daynight";
+  wrap.appendChild(dayNightEl);
+
   const svg = svgEl("svg", { viewBox: "0 0 200 200", role: "img", "aria-label": "Clock" });
   svgEl("circle", { cx: 100, cy: 100, r: 94, class: "tm-clock-face" }, svg);
+
+  // Cost readout while hovering an hour: how many stones the sweep would take.
+  const costEl = svgEl("text", { x: 100, y: 138, class: "tm-clock-cost" }, svg);
+  const showCost = (h) => {
+    const cost = hourCost(h);
+    const stones = myPlayer()?.timeStones ?? 0;
+    costEl.textContent = cost ? `−${cost} ◆` : "";
+    costEl.classList.toggle("tm-cost-over", cost > stones);
+  };
 
   for (let h = 1; h <= 12; h += 1) {
     const a = (h * 30 * Math.PI) / 180;
@@ -408,10 +567,12 @@ function renderClock() {
     num.textContent = String(h);
     hit.addEventListener("mouseenter", () => {
       hoveredHour = h;
+      showCost(h);
       if (!flipping) setHourHighlight(h, true);
     });
     hit.addEventListener("mouseleave", () => {
       hoveredHour = null;
+      costEl.textContent = "";
       if (!flipping) setHourHighlight(h, false);
     });
   }
@@ -423,15 +584,39 @@ function renderClock() {
   wrap.appendChild(svg);
   wrap.addEventListener("click", (event) => {
     const hourElement = event.target.closest("[data-hour]");
-    if (!hourElement || !app.roomId || !isActive() || editor) return;
-    socket.emit("truck_mania_set_hour", {
-      roomId: app.roomId,
-      hour: Number(hourElement.dataset.hour)
-    });
+    if (!hourElement || !app.roomId || !isActive() || editor || stealSession || !isMyTurn() || diceAnimating) return;
+    if (turnChangedTime && !hasAbil("time-lord")) return; // time changes once per turn
+    const hour = Number(hourElement.dataset.hour);
+    const cost = hourCost(hour);
+    if (!cost || cost > (myPlayer()?.timeStones ?? 0)) return; // can't afford (or same hour)
+    socket.emit("truck_mania_set_hour", { roomId: app.roomId, hour });
   });
 
   els.gameBoard.appendChild(wrap);
   setHand();
+  updateDayNight();
+}
+
+// Sun/moon + AM/PM readout above the clock; night tints it and is the theft
+// window (9pm–6am).
+function updateDayNight() {
+  if (!dayNightEl) return;
+  const face = hourState ?? 12;
+  dayNightEl.innerHTML = "";
+  const icon = document.createElement("span");
+  icon.className = "tm-daynight-icon";
+  icon.textContent = nightState ? "🌙" : "☀️";
+  const label = document.createElement("span");
+  label.className = "tm-daynight-label";
+  label.textContent = `${face} ${timeState < 12 ? "AM" : "PM"}`;
+  dayNightEl.append(icon, label);
+  if (rushState) {
+    const rush = document.createElement("span");
+    rush.className = "tm-rush-tag";
+    rush.textContent = "⚠ RUSH";
+    dayNightEl.appendChild(rush);
+  }
+  dayNightEl.classList.toggle("tm-night", nightState);
 }
 
 // --------------------------------------------------------------------------
@@ -572,6 +757,145 @@ function findPath(graph, ax, ay, bx, by) {
   return pts;
 }
 
+// First (or last) well-defined direction along a polyline, as a unit vector.
+function polyDir(pts, fromEnd = false) {
+  if (fromEnd) {
+    for (let i = pts.length - 1; i > 0; i -= 1) {
+      const dx = pts[i][0] - pts[i - 1][0];
+      const dy = pts[i][1] - pts[i - 1][1];
+      const len = Math.hypot(dx, dy);
+      if (len > 0.01) return [dx / len, dy / len];
+    }
+  } else {
+    for (let i = 1; i < pts.length; i += 1) {
+      const dx = pts[i][0] - pts[0][0];
+      const dy = pts[i][1] - pts[0][1];
+      const len = Math.hypot(dx, dy);
+      if (len > 0.01) return [dx / len, dy / len];
+    }
+  }
+  return [1, 0];
+}
+
+// Trucks never U-turn, so routing runs over directed arcs (edge + direction)
+// instead of nodes: a transition at a node is legal only if it doesn't reverse
+// back the way the truck came, and the first arc must roughly match the
+// truck's current facing. Cost is lexicographic — red lights crossed first,
+// distance second — so this returns the green-only route whenever one exists,
+// otherwise the route through the fewest red lights.
+const UTURN_COS = -0.966; // turns sharper than ~165° count as U-turns
+
+// Returns up to two routes to the goal spot: the overall least-red, then
+// shortest, route (facing whichever way it arrives), and the least-red route
+// that arrives facing the *opposite* way — the truck could park either
+// direction, so both are offered. Each is { path, reds, endAngle, endDir }.
+function findRoutes(graph, ax, ay, headingDeg, bx, by, canUturn = false) {
+  const start = nearestNode(graph, ax, ay);
+  const goal = nearestNode(graph, bx, by);
+  if (start < 0 || goal < 0 || start === goal) return [];
+
+  // Red cost of driving an arc: every red octagon the truck brushes along it
+  // (within an octagon radius of the driven polyline). Two octagons don't
+  // count: one sitting beside the start or goal parking spot (the truck parks
+  // shy of it, never crossing), and one at the arc's departure junction (it was
+  // already tallied when the truck drove *into* that junction on the prior arc).
+  const RED_REACH = OCT_RADIUS;
+  const redOcts = (mapState.intersections ?? [])
+    .filter((o) => o.color === "red")
+    .filter((o) =>
+      Math.hypot(o.x - ax, o.y - ay) >= RED_REACH && Math.hypot(o.x - bx, o.y - by) >= RED_REACH
+    );
+  const arcReds = (e) => {
+    let n = 0;
+    const [sx, sy] = e.pts[0];
+    for (const o of redOcts) {
+      if (Math.hypot(o.x - sx, o.y - sy) < RED_REACH) continue;
+      for (let i = 0; i < e.pts.length - 1; i += 1) {
+        const pr = projectToSegment(o.x, o.y, e.pts[i][0], e.pts[i][1], e.pts[i + 1][0], e.pts[i + 1][1]);
+        if (pr.dist < RED_REACH) {
+          n += 1;
+          break;
+        }
+      }
+    }
+    return n;
+  };
+
+  const better = (a, b) => a.reds < b.reds || (a.reds === b.reds && a.dist < b.dist);
+  const states = new Map(); // "node:arcIndex" -> best way to finish that arc
+
+  const hx = Math.cos((headingDeg * Math.PI) / 180);
+  const hy = Math.sin((headingDeg * Math.PI) / 180);
+  (graph.adj[start] ?? []).forEach((e, k) => {
+    if (!canUturn) {
+      const [dx, dy] = polyDir(e.pts);
+      if (dx * hx + dy * hy <= 0) return; // would have to reverse out of the spot
+    }
+    states.set(`${start}:${k}`, {
+      e, key: `${start}:${k}`, reds: arcReds(e), dist: e.w, prevKey: null, done: false
+    });
+  });
+
+  // Settle every arc-state (full Dijkstra over the directed arcs); we need the
+  // goal's arrivals in both facings, not just the first one popped.
+  for (;;) {
+    let cur = null;
+    for (const s of states.values()) {
+      if (!s.done && (!cur || better(s, cur))) cur = s;
+    }
+    if (!cur) break;
+    cur.done = true;
+    const v = cur.e.to;
+    const inDir = polyDir(cur.e.pts, true);
+    (graph.adj[v] ?? []).forEach((e2, k2) => {
+      if (!canUturn) {
+        const outDir = polyDir(e2.pts);
+        if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
+      }
+      const key2 = `${v}:${k2}`;
+      const old = states.get(key2);
+      const cand = {
+        e: e2,
+        key: key2,
+        reds: cur.reds + arcReds(e2),
+        dist: cur.dist + e2.w,
+        prevKey: cur.key,
+        done: false
+      };
+      if (!old || (!old.done && better(cand, old))) states.set(key2, cand);
+    });
+  }
+
+  // Stitch an arrival state's arc chain into one drivable polyline.
+  const build = (s) => {
+    const chain = [];
+    for (let st = s; st; st = st.prevKey ? states.get(st.prevKey) : null) chain.push(st);
+    chain.reverse();
+    const pts = [chain[0].e.pts[0].slice()];
+    for (const st of chain) {
+      for (let i = 1; i < st.e.pts.length; i += 1) pts.push(st.e.pts[i].slice());
+    }
+    const endDir = polyDir(s.e.pts, true);
+    return {
+      path: pts,
+      reds: s.reds,
+      endDir,
+      endAngle: (Math.atan2(endDir[1], endDir[0]) * 180) / Math.PI
+    };
+  };
+
+  const arrivals = [...states.values()].filter((s) => s.e.to === goal);
+  if (!arrivals.length) return [];
+  arrivals.sort((a, b) => (better(a, b) ? -1 : 1));
+
+  const routeA = build(arrivals[0]);
+  const opp = arrivals.find((s) => {
+    const d = polyDir(s.e.pts, true);
+    return d[0] * routeA.endDir[0] + d[1] * routeA.endDir[1] < 0;
+  });
+  return opp ? [routeA, build(opp)] : [routeA];
+}
+
 // The truck rotates to its heading. When that heading points leftward the
 // naive rotation would put it upside down, so we mirror it vertically in its
 // own frame — nose still points along travel, wheels stay on the underside.
@@ -613,11 +937,206 @@ function renderTrucks(svg) {
   Object.keys(truckEls).forEach((k) => delete truckEls[k]);
   Object.keys(cargoEls).forEach((k) => delete cargoEls[k]);
   trucksState.forEach((t) => {
-    const g = makeTruckShape(layer, "#f4c542");
+    const color = playersState[t.player]?.color ?? "#f4c542";
+    const g = makeTruckShape(layer, color);
+    g.setAttribute("data-truck", t.id);
+    if (t.player !== myIndex()) g.classList.add("tm-truck-foe"); // clickable steal target
     truckEls[t.id] = g;
     cargoEls[t.id] = g.querySelector(".tm-cargo");
     renderCargo(t.id);
   });
+  renderTruckHighlight();
+}
+
+// When the human owns two trucks, glow the one they're currently aiming.
+function renderTruckHighlight() {
+  const many = myTruckList().length > 1;
+  Object.entries(truckEls).forEach(([id, el]) => {
+    el.classList.toggle("tm-truck-selected", many && Number(id) === activeTruckId());
+  });
+}
+
+// --------------------------------------------------------------------------
+// Route preview: draw the candidate paths a click would take, for the player
+// to pick from (or ignore by clicking a different spot).
+// --------------------------------------------------------------------------
+
+const CHEVRON_SPACING = 30; // px between direction chevrons along a path
+
+// Cumulative arc-length at each polyline vertex.
+function cumLengths(pts) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i += 1) {
+    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  }
+  return cum;
+}
+
+// Position + heading a distance d along the polyline.
+function sampleAlong(pts, cum, d) {
+  let i = 1;
+  while (i < cum.length && cum[i] < d) i += 1;
+  const a = pts[i - 1];
+  const b = pts[Math.min(i, pts.length - 1)];
+  const seg = (cum[Math.min(i, cum.length - 1)] - cum[i - 1]) || 1;
+  const f = Math.max(0, Math.min(1, (d - cum[i - 1]) / seg));
+  return {
+    x: a[0] + (b[0] - a[0]) * f,
+    y: a[1] + (b[1] - a[1]) * f,
+    angle: (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI
+  };
+}
+
+// Number of leading polyline points the two paths share (identical geometry),
+// so a common approach is drawn once and only the fork is split in two.
+function sharedPrefixLen(a, b) {
+  let k = 0;
+  const n = Math.min(a.length, b.length);
+  while (k < n && Math.abs(a[k][0] - b[k][0]) < 0.6 && Math.abs(a[k][1] - b[k][1]) < 0.6) k += 1;
+  return k;
+}
+
+function polylineStr(pts) {
+  return pts.map((p) => `${r1(p[0])},${r1(p[1])}`).join(" ");
+}
+
+const ROUTE_OFFSET = 7; // draw the path beside the road, not down its middle
+
+// Shift a polyline sideways (to the right of travel) by `off`, using averaged
+// segment normals so corners stay put.
+function offsetPath(pts, off) {
+  if (pts.length < 2) return pts.map((p) => p.slice());
+  const normals = [];
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    const dx = pts[i + 1][0] - pts[i][0];
+    const dy = pts[i + 1][1] - pts[i][1];
+    const len = Math.hypot(dx, dy) || 1;
+    normals.push([-dy / len, dx / len]); // right-hand side in screen coords
+  }
+  return pts.map((p, i) => {
+    const a = normals[Math.max(0, i - 1)];
+    const b = normals[Math.min(normals.length - 1, i)];
+    let nx = a[0] + b[0];
+    let ny = a[1] + b[1];
+    const nl = Math.hypot(nx, ny) || 1;
+    return [p[0] + (nx / nl) * off, p[1] + (ny / nl) * off];
+  });
+}
+
+// Chaikin corner-cutting: rounds the polyline into gentle curves.
+function chaikin(pts, iters = 2) {
+  let p = pts;
+  for (let k = 0; k < iters && p.length >= 3; k += 1) {
+    const q = [p[0]];
+    for (let i = 0; i < p.length - 1; i += 1) {
+      const a = p[i];
+      const b = p[i + 1];
+      q.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      q.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    q.push(p[p.length - 1]);
+    p = q;
+  }
+  return p;
+}
+
+// A path as it should be drawn: offset beside the road, corners rounded.
+function dressPath(pts) {
+  if (!pts || pts.length < 2) return pts ? pts.map((p) => p.slice()) : [];
+  return chaikin(offsetPath(pts, ROUTE_OFFSET), 2);
+}
+
+function drawRouteLine(layer, pts, color, routeIdx) {
+  if (pts.length < 2) return;
+  const str = polylineStr(pts);
+  svgEl("polyline", { points: str, class: "tm-route-line", stroke: color }, layer);
+  const hit = svgEl("polyline", { points: str, class: "tm-route-hit" }, layer);
+  if (routeIdx != null) hit.setAttribute("data-route", routeIdx);
+}
+
+function drawChevrons(layer, pts, color) {
+  const cum = cumLengths(pts);
+  const total = cum[cum.length - 1];
+  for (let d = CHEVRON_SPACING * 0.7; d < total - 3; d += CHEVRON_SPACING) {
+    const s = sampleAlong(pts, cum, d);
+    const g = svgEl("g", {
+      class: "tm-chev",
+      transform: `translate(${r1(s.x)} ${r1(s.y)}) rotate(${Math.round(s.angle)})`
+    }, layer);
+    svgEl("polyline", { points: "-3.5,-4 1.5,0 -3.5,4", stroke: color, class: "tm-chev-mark" }, g);
+  }
+}
+
+// Red badge = how many red lights this route crosses, placed a little way into
+// the route's own (post-fork) portion.
+function drawRedBadge(layer, pts, reds) {
+  const cum = cumLengths(pts);
+  const at = sampleAlong(pts, cum, Math.min(22, cum[cum.length - 1] * 0.45));
+  const g = svgEl("g", { class: "tm-route-badge", transform: `translate(${r1(at.x)} ${r1(at.y)})` }, layer);
+  svgEl("circle", { cx: 0, cy: 0, r: 9, class: "tm-route-badge-bg" }, g);
+  const t = svgEl("text", { x: 0, y: 0, class: "tm-route-badge-num" }, g);
+  t.textContent = String(reds);
+}
+
+function clearPreview() {
+  previewState = null;
+  els.gameBoard.querySelector(".tm-map .tm-route-preview")?.remove();
+}
+
+function renderRoutePreview() {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  if (!svg) return;
+  svg.querySelector(".tm-route-preview")?.remove();
+  if (!previewState) return;
+
+  const color = myPlayer()?.color ?? "#3ac0c0";
+  const layer = svgEl("g", { class: "tm-route-preview" }, svg);
+  const routes = previewState.routes;
+
+  if (routes.length === 2) {
+    const p0 = routes[0].path;
+    const p1 = routes[1].path;
+    const split = Math.max(1, sharedPrefixLen(p0, p1));
+    const connect = split - 1;
+    const shared = dressPath(p0.slice(0, split));
+    const tail0 = dressPath(p0.slice(connect));
+    const tail1 = dressPath(p1.slice(connect));
+
+    if (shared.length >= 2) {
+      drawRouteLine(layer, shared, color, null);
+      drawChevrons(layer, shared, color);
+    }
+    drawRouteLine(layer, tail0, color, 0);
+    drawRouteLine(layer, tail1, color, 1);
+    drawChevrons(layer, tail0, color);
+    drawChevrons(layer, tail1, color);
+    // Badge sits on each fork; if there's no real fork (identical tails) both
+    // still render, offset by their own geometry.
+    drawRedBadge(layer, tail0.length >= 2 ? tail0 : dressPath(p0), routes[0].reds);
+    drawRedBadge(layer, tail1.length >= 2 ? tail1 : dressPath(p1), routes[1].reds);
+  } else if (routes.length === 1) {
+    const dressed = dressPath(routes[0].path);
+    drawRouteLine(layer, dressed, color, 0);
+    drawChevrons(layer, dressed, color);
+    drawRedBadge(layer, dressed, routes[0].reds);
+  }
+}
+
+// Commit the chosen preview route: hand the truck the exact approved path (and
+// arrival facing) so the server echo replays it, then clear the preview.
+function commitRoute(routeIdx) {
+  if (!previewState) return;
+  const route = previewState.routes[routeIdx];
+  const truck = trucksState.find((t) => t.id === previewState.truckId);
+  if (!route || !truck) {
+    clearPreview();
+    return;
+  }
+  pendingRoutes[truck.id] = { spot: previewState.spot, path: route.path, endAngle: route.endAngle };
+  const spot = previewState.spot;
+  const reds = route.reds;
+  clearPreview();
+  socket.emit("truck_mania_move_truck", { roomId: app.roomId, truckId: truck.id, spot, reds });
 }
 
 // A parcel: a filled square or circle with a dark outline. Used on buildings,
@@ -651,6 +1170,7 @@ function renderCargo(id) {
   layer.innerHTML = "";
   const truck = trucksState.find((t) => t.id === id);
   if (!truck) return;
+  const isVictim = stealSession?.victimId === id && stealSession.remaining > 0;
   let slot = 0;
   (truck.cargo ?? []).forEach((pkg) => {
     if (animatingPkgs.has(pkg.id)) return;
@@ -659,6 +1179,8 @@ function renderCargo(id) {
     const shape = drawPackage(layer, pkg.shape, pkg.color, lx, ly, CARGO_SIZE);
     shape.classList.add("tm-pkg-cargo");
     shape.setAttribute("data-pkg", pkg.id);
+    shape.setAttribute("data-truck", id);
+    if (isVictim) shape.classList.add("tm-steal-target");
   });
 }
 
@@ -684,17 +1206,147 @@ function syncTrucks(trucks) {
       truckTransform(t.id);
     } else if (prev !== t.spot) {
       truckSpots[t.id] = t.spot;
-      const from = truckPos[t.id] || { x: spot.x, y: spot.y };
-      const path = findPath(getGraph(), from.x, from.y, spot.x, spot.y);
-      driveTruck(t.id, path, spot.angle);
+      if (previewState?.truckId === t.id) clearPreview();
+      const pending = pendingRoutes[t.id];
+      delete pendingRoutes[t.id];
+      // Prefer the exact route the mover took: the human's approved route, or
+      // the AI's server-computed route. Both carry the true arrival facing, so
+      // the truck never snaps around at the end. Fall back to a shortest path.
+      let path;
+      let endAngle;
+      if (pending?.spot === t.spot) {
+        path = pending.path;
+        endAngle = pending.endAngle;
+      } else if (aiMoveState && aiMoveState.truckId === t.id) {
+        path = aiMoveState.path;
+        endAngle = aiMoveState.endAngle;
+      } else {
+        const from = truckPos[t.id] || { x: spot.x, y: spot.y };
+        path = findPath(getGraph(), from.x, from.y, spot.x, spot.y);
+        endAngle = lastPathAngle(path, spot.angle);
+      }
+      startDrive(t.id, path, endAngle);
     }
     renderCargo(t.id);
   });
 }
 
-// Animate a truck along a polyline at roughly constant speed, rotating it to
-// each segment's heading. Settles to the destination's street angle at the end.
-function driveTruck(id, path, endAngle) {
+// Start a truck's drive, or hold it until the dice animation finishes so the
+// truck doesn't move until the roll is over.
+function startDrive(id, path, endAngle) {
+  if (diceAnimating) {
+    deferredDrives.push({ id, path, endAngle });
+    return;
+  }
+  driveTruck(id, path, endAngle, { onArrive: () => onTruckArrive(id) });
+}
+
+function runDeferredDrives() {
+  const list = deferredDrives;
+  deferredDrives = [];
+  list.forEach((d) => driveTruck(d.id, d.path, d.endAngle, { onArrive: () => onTruckArrive(d.id) }));
+}
+
+// On arrival: fly in any packages this truck picked up/delivered mid-drive, and
+// (for the human) offer a steal if it parked on a robbable truck.
+function onTruckArrive(id) {
+  const evs = pendingFlies[id];
+  if (evs) {
+    delete pendingFlies[id];
+    runPkgFlies(evs);
+  }
+  if (id === activeTruckId()) maybeOpenSteal();
+}
+
+// Travel direction at the end of a path (the truck's true arrival facing).
+function lastPathAngle(path, fallback = 0) {
+  if (!path || path.length < 2) return fallback;
+  for (let i = path.length - 1; i > 0; i -= 1) {
+    const dx = path[i][0] - path[i - 1][0];
+    const dy = path[i][1] - path[i - 1][1];
+    if (Math.hypot(dx, dy) > 0.01) return (Math.atan2(dy, dx) * 180) / Math.PI;
+  }
+  return fallback;
+}
+
+// After the human truck parks, offer a steal if it shares the spot with a
+// weaker truck, it's night, it's our turn, and we haven't already robbed a
+// different truck this turn.
+function maybeOpenSteal() {
+  clearSteal();
+  // Night only, unless Day theft; one steal per turn; not after acting.
+  if (!isMyTurn() || (!nightState && !hasAbil("day-theft")) || turnActed || turnStolen) return;
+  const me = activeTruck();
+  if (!me) return;
+  const myAggr = columnValue("agression", myPlayer());
+  const victim = trucksState.find(
+    (t) => t.id !== me.id && t.player !== myIndex() && t.spot === me.spot && (t.cargo?.length > 0) &&
+      myAggr > columnValue("agression", playersState[t.player])
+  );
+  if (!victim) return;
+  const diff = myAggr - columnValue("agression", playersState[victim.player]);
+  stealSession = { victimId: victim.id, remaining: diff };
+  renderCargo(victim.id);
+  renderStealOverlay();
+}
+
+function clearSteal() {
+  if (!stealSession) return;
+  const victimId = stealSession.victimId;
+  stealSession = null;
+  els.gameBoard.querySelector(".tm-map .tm-steal")?.remove();
+  if (trucksState.some((t) => t.id === victimId)) renderCargo(victimId);
+}
+
+// A label above the victim showing steals left; the player leaves by moving.
+function renderStealOverlay() {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  if (!svg) return;
+  svg.querySelector(".tm-steal")?.remove();
+  if (!stealSession) return;
+  const vp = truckPos[stealSession.victimId];
+  if (!vp) return;
+  const layer = svgEl("g", { class: "tm-steal" }, svg);
+  const label = svgEl("g", { transform: `translate(${r1(vp.x)} ${r1(vp.y - 24)})` }, layer);
+  svgEl("rect", { x: -46, y: -9, width: 92, height: 17, rx: 8, class: "tm-steal-label-bg" }, label);
+  const lt = svgEl("text", { x: 0, y: 0, class: "tm-steal-label-text" }, label);
+  lt.textContent = stealSession.remaining > 0 ? `Steal up to ${stealSession.remaining}` : "Move to continue";
+}
+
+// Take a package off the victim: optimistically move it locally for instant
+// feedback (the server reconciles), decrement the steal budget.
+function attemptSteal(pkgId) {
+  if (!stealSession || stealSession.remaining <= 0) return;
+  const me = activeTruck();
+  const victim = trucksState.find((t) => t.id === stealSession.victimId);
+  if (!me || !victim) return;
+  const vIdx = (victim.cargo ?? []).findIndex((p) => p.id === pkgId);
+  if (vIdx === -1) return;
+  const pkg = victim.cargo[vIdx];
+
+  const player = myPlayer();
+  if ((me.cargo?.length ?? 0) >= columnValue("capacity", player)) return;
+  const colors = new Set((me.cargo ?? []).map((p) => p.color));
+  if (!colors.has(pkg.color) && colors.size >= columnValue("variety", player)) return;
+
+  victim.cargo.splice(vIdx, 1);
+  me.cargo.push(pkg);
+  stealSession.remaining -= 1;
+  socket.emit("truck_mania_steal", { roomId: app.roomId, truckId: me.id, victimTruckId: victim.id, packageId: pkgId });
+  renderCargo(victim.id);
+  renderCargo(me.id);
+  renderStealOverlay();
+}
+
+// Signed shortest angular difference a→b, in degrees (−180..180].
+function angleDelta(a, b) {
+  return ((b - a + 540) % 360) - 180;
+}
+
+// Animate a truck along a polyline at roughly constant speed. The heading eases
+// toward the travel direction instead of snapping, so corners are taken as a
+// gentle turn. Calls opts.onArrive when it parks.
+function driveTruck(id, path, endAngle, opts = {}) {
   if (truckAnim[id]) cancelAnimationFrame(truckAnim[id]);
   const cum = [0];
   for (let i = 1; i < path.length; i += 1) {
@@ -705,6 +1357,7 @@ function driveTruck(id, path, endAngle) {
   if (total < 1) {
     truckPos[id] = { x: last[0], y: last[1], angle: endAngle };
     truckTransform(id);
+    opts.onArrive?.();
     return;
   }
   const speed = 240; // px per second
@@ -712,28 +1365,28 @@ function driveTruck(id, path, endAngle) {
   const start = performance.now();
 
   const step = (now) => {
-    const p = Math.min(1, (now - start) / duration);
-    const target = p * total;
+    const target = Math.min(total, ((now - start) / duration) * total);
     let i = 1;
     while (i < cum.length && cum[i] < target) i += 1;
     const a = path[i - 1];
     const b = path[Math.min(i, path.length - 1)];
     const segLen = (cum[i] ?? total) - cum[i - 1] || 1;
     const f = Math.max(0, Math.min(1, (target - cum[i - 1]) / segLen));
-    const x = a[0] + (b[0] - a[0]) * f;
-    const y = a[1] + (b[1] - a[1]) * f;
-    let angle = truckPos[id]?.angle ?? 0;
+    const prev = truckPos[id]?.angle ?? 0;
+    let angle = prev;
     if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 0.5) {
-      angle = (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+      const dir = (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+      angle = prev + angleDelta(prev, dir) * 0.22; // ease into the turn
     }
-    truckPos[id] = { x, y, angle };
+    truckPos[id] = { x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f, angle };
     truckTransform(id);
-    if (p < 1) {
+    if (target < total) {
       truckAnim[id] = requestAnimationFrame(step);
     } else {
-      truckPos[id] = { x: last[0], y: last[1], angle };
+      truckPos[id] = { x: last[0], y: last[1], angle: endAngle };
       truckTransform(id);
       truckAnim[id] = null;
+      opts.onArrive?.();
     }
   };
   truckAnim[id] = requestAnimationFrame(step);
@@ -793,6 +1446,18 @@ function drawBuildingPackages(layer) {
   (mapState.blocks ?? []).forEach((block) => {
     (block.buildings ?? []).forEach((b) => {
       const [cx, cy] = buildingCentroid(b);
+      // Dropoff capacity: a grey dotted square outline per slot, filled by
+      // deliveries (circles land on a square slot too).
+      if (b.role === "dropoff" && b.dropoffLimit) {
+        for (let i = 0; i < b.dropoffLimit; i += 1) {
+          const [px, py] = bldPkgSlot(cx, cy, i);
+          svgEl("rect", {
+            x: px - BLD_PKG_SIZE / 2, y: py - BLD_PKG_SIZE / 2,
+            width: BLD_PKG_SIZE, height: BLD_PKG_SIZE, rx: 1.5,
+            class: "tm-dropoff-slot"
+          }, layer);
+        }
+      }
       const delivered = (b.delivered ?? []).filter((p) => !animatingPkgs.has(p.id));
       delivered.forEach((pkg, i) => {
         const [px, py] = bldPkgSlot(cx, cy, i);
@@ -814,11 +1479,30 @@ function renderBuildingPackages(svg) {
   drawBuildingPackages(svgEl("g", { class: "tm-bld-pkgs" }, svg));
 }
 
-// The bid of the building the player's truck is currently parked at.
+// The bid of the building the active truck is currently parked at.
 function truckBuildingBid() {
-  const truck = trucksState[0];
+  const truck = activeTruck();
   const spot = truck ? mapState.spots?.[truck.spot] : null;
   return spot ? spot.building : null;
+}
+
+// Buildings the human's active truck can use: its spot's building, or — with
+// Free parking — every building in the same block. Mirrors the server.
+function usableBuildingsClient() {
+  const truck = activeTruck();
+  const spot = truck ? mapState.spots?.[truck.spot] : null;
+  if (!spot) return [];
+  const ownBid = spot.building;
+  if (!hasAbil("free-parking")) {
+    const b = buildingsByBid().get(ownBid);
+    return b ? [b] : [];
+  }
+  const block = (mapState.blocks ?? []).find((bl) => (bl.buildings ?? []).some((b) => b.bid === ownBid));
+  return block ? (block.buildings ?? []).slice() : [];
+}
+
+function usableBids() {
+  return new Set(usableBuildingsClient().map((b) => b.bid));
 }
 
 // Temp parcel that flies from `from` to `to`, then runs onDone.
@@ -847,12 +1531,27 @@ function flyPackage(shape, color, from, to, onDone) {
   requestAnimationFrame(step);
 }
 
+// Current value of a player-board column (e.g. capacity 2→7), by its level.
+function columnValue(colId, player) {
+  const col = PB_COLUMNS.find((c) => c.id === colId);
+  return col?.values[player?.columns?.[colId] ?? 0];
+}
+
 function attemptPickup(pkgId, bid) {
-  const truck = trucksState[0];
-  if (!truck || truckBuildingBid() !== bid) return;
+  const truck = activeTruck();
+  if (!truck || truckShares(truck) || !usableBids().has(bid)) return;
   const building = buildingsByBid().get(bid);
   const pkg = building?.packages?.find((p) => p.id === pkgId);
   if (!pkg) return;
+
+  // Mirror the server's limits so we don't animate a doomed pickup: locked
+  // protected locations, capacity (total cargo), and variety (distinct colors).
+  const player = playersState[truck.player] ?? myPlayer();
+  if (building.protected && building.letter && !(player?.locations ?? []).includes(building.letter)) return;
+  if ((truck.cargo?.length ?? 0) >= columnValue("capacity", player)) return;
+  const colors = new Set((truck.cargo ?? []).map((p) => p.color));
+  if (!colors.has(pkg.color) && colors.size >= columnValue("variety", player)) return;
+
   const from = pkgPos[pkgId] || buildingCentroid(building);
   const to = nextDockWorld(truck.id);
   animatingPkgs.add(pkgId);
@@ -906,12 +1605,14 @@ function animateDropoff(pkg, from, to, onDone) {
 }
 
 function attemptDropoff(pkgId) {
-  const truck = trucksState[0];
-  if (!truck) return;
-  const building = buildingsByBid().get(truckBuildingBid());
-  if (!building || building.role !== "dropoff") return;
+  const truck = activeTruck();
+  if (!truck || truckShares(truck)) return;
   const pkg = truck.cargo?.find((p) => p.id === pkgId);
-  if (!pkg || pkg.color !== building.dropoffColor) return;
+  if (!pkg) return;
+  const building = usableBuildingsClient().find((b) =>
+    b.role === "dropoff" && b.dropoffColor === pkg.color &&
+    (b.delivered?.length ?? 0) < (b.dropoffLimit ?? Infinity));
+  if (!building) return;
   const from = truckLocalToWorld(truckPos[truck.id] ?? { x: 0, y: 0, angle: 0 }, ...dockSlotLocal(truck.cargo.indexOf(pkg)));
   const [cx, cy] = buildingCentroid(building);
   const slot = (building.delivered ?? []).filter((p) => !animatingPkgs.has(p.id)).length;
@@ -923,6 +1624,89 @@ function attemptDropoff(pkgId) {
     animatingPkgs.delete(pkgId);
     renderCargo(truck.id);
     renderBuildingPackagesRefresh();
+  });
+}
+
+// Snapshot where every package currently lives, so the next state can be diffed
+// to animate other players' pickups/deliveries (ours already animate locally).
+function snapshotPkgs() {
+  const cargo = {};
+  trucksState.forEach((t) => { cargo[t.id] = new Set((t.cargo ?? []).map((p) => p.id)); });
+  const buildingPkg = new Map();
+  const delivered = new Set();
+  (mapState?.blocks ?? []).forEach((bl) => (bl.buildings ?? []).forEach((b) => {
+    (b.packages ?? []).forEach((p) => buildingPkg.set(p.id, b.bid));
+    (b.delivered ?? []).forEach((p) => delivered.add(p.id));
+  }));
+  return { cargo, buildingPkg, delivered };
+}
+
+// Packages that changed hands between `before` and the new state `tm`, that we
+// aren't already animating ourselves — an AI pickup (building→truck) or
+// delivery (truck→building).
+function diffPkgEvents(before, tm) {
+  const events = [];
+  (tm.trucks ?? []).forEach((t) => {
+    const oldSet = before.cargo[t.id] ?? new Set();
+    (t.cargo ?? []).forEach((pkg) => {
+      if (oldSet.has(pkg.id) || animatingPkgs.has(pkg.id)) return;
+      if (before.buildingPkg.has(pkg.id)) {
+        events.push({ type: "pickup", pkg, truckId: t.id, bid: before.buildingPkg.get(pkg.id) });
+      } // else it was stolen from another truck — no fly
+    });
+  });
+  (tm.map.blocks ?? []).forEach((bl) => (bl.buildings ?? []).forEach((b) => {
+    (b.delivered ?? []).forEach((pkg) => {
+      if (before.delivered.has(pkg.id) || animatingPkgs.has(pkg.id)) return;
+      let fromTruck = null;
+      for (const tid of Object.keys(before.cargo)) {
+        if (before.cargo[tid].has(pkg.id)) fromTruck = Number(tid);
+      }
+      events.push({ type: "dropoff", pkg, truckId: fromTruck, bid: b.bid });
+    });
+  }));
+  return events;
+}
+
+// Route diffed package flies: run them now if the truck is parked, or hold them
+// until it arrives if it's driving (or about to, once the dice settle).
+function dispatchFlies(events) {
+  const byTruck = {};
+  events.forEach((e) => (byTruck[e.truckId] ??= []).push(e));
+  Object.entries(byTruck).forEach(([tid, evs]) => {
+    const id = Number(tid);
+    const moving = truckAnim[id] != null || diceAnimating ||
+      deferredDrives.some((d) => d.id === id) || pendingFlies[id];
+    if (moving) (pendingFlies[id] ??= []).push(...evs);
+    else runPkgFlies(evs);
+  });
+}
+
+// Fly each diffed package from its old home to its new one (staggered).
+function runPkgFlies(events) {
+  events.forEach((e, i) => {
+    setTimeout(() => {
+      if (!animatingPkgs.has(e.pkg.id)) return;
+      const b = buildingsByBid().get(e.bid);
+      if (e.type === "pickup") {
+        const from = pkgPos[e.pkg.id] || (b ? buildingCentroid(b) : [0, 0]);
+        const tp = truckPos[e.truckId] || { x: from[0], y: from[1] };
+        flyPackage(e.pkg.shape, e.pkg.color, from, [tp.x, tp.y], () => {
+          animatingPkgs.delete(e.pkg.id);
+          renderCargo(e.truckId);
+          renderBuildingPackagesRefresh();
+        });
+      } else {
+        const tp = truckPos[e.truckId] || { x: 0, y: 0 };
+        const [cx, cy] = b ? buildingCentroid(b) : [0, 0];
+        const slot = (b?.delivered ?? []).filter((p) => !animatingPkgs.has(p.id)).length;
+        animateDropoff(e.pkg, [tp.x, tp.y], bldPkgSlot(cx, cy, slot), () => {
+          animatingPkgs.delete(e.pkg.id);
+          renderCargo(e.truckId);
+          renderBuildingPackagesRefresh();
+        });
+      }
+    }, i * 130);
   });
 }
 
@@ -938,10 +1722,49 @@ function renderBuildingPackagesRefresh() {
   drawBuildingPackages(layer);
 }
 
+// Can the human steal from truck `vid` (would drive over and rob it)?
+function canStealTarget(vid) {
+  if ((!nightState && !hasAbil("day-theft")) || turnActed || turnStolen) return false;
+  const victim = trucksState.find((t) => t.id === vid);
+  if (!victim || !(victim.cargo?.length > 0)) return false;
+  return columnValue("agression", myPlayer()) > columnValue("agression", playersState[victim.player]);
+}
+
+// Preview the routes to a spot index (or clear if not reachable / same spot).
+function previewTo(spotIndex) {
+  const truck = activeTruck();
+  const dest = mapState.spots?.[spotIndex];
+  const pos = truck ? truckPos[truck.id] : null;
+  if (!truck || !dest || !pos || truck.spot === spotIndex) {
+    clearPreview();
+    return;
+  }
+  const canUturn = !!myPlayer()?.abilities?.includes("uturn");
+  const routes = findRoutes(getGraph(), pos.x, pos.y, pos.angle, dest.x, dest.y, canUturn);
+  if (!routes.length) {
+    clearPreview();
+    window.alert("No route: the truck can't reach that spot without a U-turn.");
+    return;
+  }
+  previewState = { truckId: truck.id, spot: spotIndex, routes };
+  renderRoutePreview();
+}
+
 function onBoardClick(event) {
-  if (editor || !app.roomId) return;
+  if (editor || !app.roomId || !isMyTurn() || diceAnimating) return;
+
+  // Steal from the truck we're parked on.
+  if (stealSession) {
+    const victimPkg = event.target.closest?.(".tm-pkg-cargo");
+    if (victimPkg && Number(victimPkg.dataset.truck) === stealSession.victimId) {
+      attemptSteal(victimPkg.dataset.pkg);
+      return;
+    }
+  }
+
+  // Deliver from the active truck's dock.
   const cargoPkg = event.target.closest?.(".tm-pkg-cargo");
-  if (cargoPkg) {
+  if (cargoPkg && Number(cargoPkg.dataset.truck) === activeTruckId()) {
     attemptDropoff(cargoPkg.dataset.pkg);
     return;
   }
@@ -950,22 +1773,264 @@ function onBoardClick(event) {
     attemptPickup(bldPkg.dataset.pkg, Number(bldPkg.dataset.bid));
     return;
   }
+
+  // Commit a previewed route.
+  const routeEl = event.target.closest?.(".tm-route-hit");
+  if (routeEl) {
+    commitRoute(Number(routeEl.dataset.route));
+    return;
+  }
+
+  // Click a truck: select one of your own (to aim it), or rob an opponent.
+  const truckEl = event.target.closest?.(".tm-truck");
+  if (truckEl && truckEl.dataset.truck != null) {
+    const tid = Number(truckEl.dataset.truck);
+    const clicked = trucksState.find((t) => t.id === tid);
+    if (clicked?.player === myIndex()) {
+      // Switch which truck you're aiming (unless one is already locked in).
+      if ((turnTruck == null || turnTruck === tid) && tid !== selectedTruckId) {
+        selectedTruckId = tid;
+        clearPreview();
+        renderTruckHighlight();
+      }
+      return;
+    }
+    if (!turnActed && canStealTarget(tid)) {
+      previewTo(clicked?.spot);
+      return;
+    }
+  }
+
+  if (turnActed) {
+    clearPreview();
+    return; // movement is over for this turn
+  }
+
   const spotEl = event.target.closest?.(".tm-spot");
-  if (!spotEl) return;
-  const spot = Number(spotEl.dataset.spot);
-  const truck = trucksState[0];
-  if (!truck || truck.spot === spot) return;
-  socket.emit("truck_mania_move_truck", { roomId: app.roomId, truckId: truck.id, spot });
+  if (!spotEl) {
+    clearPreview();
+    return;
+  }
+  const spotIdx = Number(spotEl.dataset.spot);
+  // A spot holds one truck; you can only reach an occupied one by stealing
+  // (click the truck, not the spot).
+  if (trucksState.some((t) => t.id !== activeTruckId() && t.spot === spotIdx)) {
+    clearPreview();
+    return;
+  }
+  previewTo(spotIdx);
 }
 
 // --------------------------------------------------------------------------
 // Player board
 // --------------------------------------------------------------------------
 
+function myPlayer() {
+  return playersState[app.myPlayerIndex] ?? playersState[0];
+}
+
+// Scoreboard in the game header: every player as a color chip with their score.
+function renderScoreboard() {
+  const header = document.querySelector(".game-header");
+  header?.querySelector(".tm-scoreboard")?.remove();
+  if (!header || !playersState.length) return;
+  const bar = document.createElement("div");
+  bar.className = "tm-scoreboard";
+  playersState.forEach((p) => {
+    const chip = document.createElement("div");
+    chip.className = "tm-score";
+    const dot = document.createElement("span");
+    dot.className = "tm-score-dot";
+    dot.style.background = p.color;
+    const val = document.createElement("span");
+    val.className = "tm-score-val";
+    val.textContent = String(p.points ?? 0);
+    chip.append(dot, val);
+    bar.appendChild(chip);
+  });
+  header.appendChild(bar);
+}
+
+// The nine 3×3 pip positions lit for each die face.
+const DIE_PIPS = {
+  1: [4], 2: [0, 8], 3: [0, 4, 8], 4: [0, 2, 6, 8],
+  5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8]
+};
+
+// Draw the dice panel under the clock. `faces` are the pip counts to show;
+// while `settled` is false the dice are mid-roll (no ticket/safe coloring yet).
+// Shown for whoever rolled, to everyone.
+function renderDicePanel(roll, faces, settled) {
+  els.gameBoard.querySelector(".tm-dice")?.remove();
+  if (!roll || !faces?.length) return;
+  const who = playersState[roll.player]?.name ?? "Player";
+
+  const wrap = document.createElement("div");
+  wrap.className = "tm-dice";
+  const head = document.createElement("div");
+  head.className = "tm-dice-head";
+  if (!settled) {
+    head.textContent = `${who} rolling…`;
+  } else if (roll.tickets > 0) {
+    const loss = roll.loss ?? roll.tickets;
+    head.textContent = `${who}: ${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} · −${loss}${roll.rush ? " ⚠" : ""}`;
+    head.classList.add("tm-dice-bad");
+  } else {
+    head.textContent = `${who}: no tickets`;
+    head.classList.add("tm-dice-good");
+  }
+  wrap.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "tm-dice-row";
+  faces.forEach((d) => {
+    const die = document.createElement("div");
+    if (!settled) die.className = "tm-die tm-die-rolling";
+    else die.className = `tm-die ${d > roll.aversion ? "tm-die-ticket" : "tm-die-safe"}`;
+    (DIE_PIPS[d] ?? []).forEach((pos) => {
+      const pip = document.createElement("span");
+      pip.className = "tm-pip";
+      pip.style.gridArea = `${Math.floor(pos / 3) + 1} / ${(pos % 3) + 1}`;
+      die.appendChild(pip);
+    });
+    row.appendChild(die);
+  });
+  wrap.appendChild(row);
+  els.gameBoard.appendChild(wrap);
+}
+
+// Static panel for the most recent roll (used on plain re-renders).
+function renderDice() {
+  if (diceAnimating) return; // the animation owns the panel
+  const roll = lastRollState;
+  if (!roll || !roll.dice?.length) {
+    els.gameBoard.querySelector(".tm-dice")?.remove();
+    return;
+  }
+  renderDicePanel(roll, roll.dice, true);
+}
+
+// Tumble the dice for ~1s, then settle on the real faces and call onDone.
+function animateDiceRoll(roll, onDone) {
+  const n = roll.dice.length;
+  const rnd = () => Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6));
+  renderDicePanel(roll, rnd(), false);
+  let elapsed = 0;
+  const iv = setInterval(() => {
+    elapsed += 90;
+    if (elapsed < 1000) {
+      renderDicePanel(roll, rnd(), false);
+    } else {
+      clearInterval(iv);
+      renderDicePanel(roll, roll.dice, true);
+      setTimeout(onDone, 450);
+    }
+  }, 90);
+}
+
+// --------------------------------------------------------------------------
+// Location / ability decks
+// --------------------------------------------------------------------------
+
+function makeDeckCard(deckId, card) {
+  const c = document.createElement("div");
+  c.className = `tm-card tm-card-${deckId}`;
+  if (deckId === "locations") {
+    c.textContent = card;
+  } else {
+    c.textContent = ABILITY_LABELS[card] ?? card;
+  }
+  return c;
+}
+
+// One deck: a face-down stack (draw random) plus its two face-up options. When
+// the current player owes a draft of this deck, the stack and cards light up
+// and become clickable.
+function makeDeckRow(deckId, title, data, active) {
+  const row = document.createElement("div");
+  row.className = `tm-deck-row${active ? " tm-deck-active" : ""}`;
+
+  const stack = document.createElement("div");
+  stack.className = "tm-deck-stack";
+  const name = document.createElement("span");
+  name.className = "tm-deck-name";
+  name.textContent = title;
+  stack.appendChild(name);
+  const count = document.createElement("span");
+  count.className = "tm-deck-count";
+  count.textContent = String(data?.remaining ?? 0);
+  stack.appendChild(count);
+  if (active && (data?.remaining ?? 0) > 0) {
+    stack.dataset.draftDeck = deckId;
+    stack.dataset.draftChoice = "random";
+    stack.title = "Draw a random card";
+  }
+  row.appendChild(stack);
+
+  const shown = document.createElement("div");
+  shown.className = "tm-deck-shown";
+  (data?.shown ?? []).forEach((card, i) => {
+    const c = makeDeckCard(deckId, card);
+    if (active) {
+      c.dataset.draftDeck = deckId;
+      c.dataset.draftChoice = `shown${i}`;
+      c.classList.add("tm-card-pick");
+    }
+    shown.appendChild(c);
+  });
+  row.appendChild(shown);
+  return row;
+}
+
+function renderDecks() {
+  els.gameBoard.querySelector(".tm-decks")?.remove();
+  if (!decksState) return;
+  const myDrafts = myPlayer()?.pendingDrafts ?? [];
+  const panel = document.createElement("div");
+  panel.className = "tm-decks";
+  panel.appendChild(makeDeckRow("locations", "Locations", decksState.locations, myDrafts.includes("locations")));
+  panel.appendChild(makeDeckRow("abilities", "Abilities", decksState.abilities, myDrafts.includes("abilities")));
+  panel.addEventListener("click", (event) => {
+    const el = event.target.closest?.("[data-draft-deck]");
+    if (!el || !app.roomId) return;
+    const deck = el.dataset.draftDeck;
+    if (!(myPlayer()?.pendingDrafts ?? []).includes(deck)) return;
+    socket.emit("truck_mania_draft", { roomId: app.roomId, deck, choice: el.dataset.draftChoice });
+  });
+  els.gameBoard.appendChild(panel);
+}
+
+// The stack of time stones sitting above the player board.
+function renderTimeStones(parent, count) {
+  const wrap = document.createElement("div");
+  wrap.className = "tm-stones";
+  const shown = Math.min(count, 14);
+  for (let i = 0; i < shown; i += 1) {
+    const svg = svgEl("svg", { viewBox: "0 0 20 20", class: "tm-stone" });
+    svgEl("polygon", {
+      points: "10,1 18,7 15,18 5,18 2,7",
+      fill: "#8a5bb0",
+      stroke: "rgba(18,22,28,0.6)",
+      "stroke-width": 1.5
+    }, svg);
+    svgEl("polygon", { points: "10,4 14.5,7.5 10,11 5.5,7.5", fill: "rgba(255,255,255,0.35)" }, svg);
+    wrap.appendChild(svg);
+  }
+  const label = document.createElement("span");
+  label.className = "tm-stones-count";
+  label.textContent = `× ${count}`;
+  wrap.appendChild(label);
+  parent.appendChild(wrap);
+}
+
 function renderPlayerBoard() {
-  els.gameBoard.querySelector(".tm-player-board")?.remove();
-  const me = playersState[app.myPlayerIndex] ?? playersState[0];
+  els.gameBoard.querySelector(".tm-pb-wrap")?.remove();
+  const me = myPlayer();
   if (!me) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "tm-pb-wrap";
+  renderTimeStones(wrap, me.timeStones ?? 0);
 
   const board = document.createElement("div");
   board.className = "tm-player-board";
@@ -989,6 +2054,33 @@ function renderPlayerBoard() {
     title.textContent = col.title;
     c.appendChild(title);
 
+    // Locations / abilities are qualitative: show the tiles the player owns
+    // rather than a numeric track.
+    if (col.id === "locations" || col.id === "abilities") {
+      const items = col.id === "locations" ? (me.locations ?? []) : (me.abilities ?? []);
+      if (!items.length) {
+        const cell = document.createElement("div");
+        cell.className = "tm-pb-cell tm-pb-empty";
+        cell.style.background = hexToRgba(col.color, 0.16);
+        c.appendChild(cell);
+      } else {
+        items.forEach((it) => {
+          const cell = document.createElement("div");
+          cell.className = "tm-pb-cell tm-pb-tile";
+          cell.style.background = hexToRgba(col.color, 0.85);
+          if (col.id === "locations") {
+            cell.textContent = it;
+          } else {
+            cell.textContent = ABILITY_ICONS[it] ?? "•";
+            cell.title = ABILITY_LABELS[it] ?? it;
+          }
+          c.appendChild(cell);
+        });
+      }
+      grid.appendChild(c);
+      return;
+    }
+
     for (let i = 0; i < 6; i += 1) {
       const cell = document.createElement("div");
       cell.className = "tm-pb-cell";
@@ -1002,7 +2094,8 @@ function renderPlayerBoard() {
     grid.appendChild(c);
   });
   board.appendChild(grid);
-  els.gameBoard.appendChild(board);
+  wrap.appendChild(board);
+  els.gameBoard.appendChild(wrap);
 }
 
 // --------------------------------------------------------------------------
@@ -1071,6 +2164,9 @@ function renderMap() {
   syncTrucks(trucksState);
   renderClock();
   renderPlayerBoard();
+  renderScoreboard();
+  renderDice();
+  renderDecks();
 }
 
 // --------------------------------------------------------------------------
@@ -1611,6 +2707,38 @@ function renderControls() {
   els.hand.appendChild(button("New map", "regen"));
   els.hand.appendChild(button("Mix up", "mixup"));
   els.hand.appendChild(button("Edit map", "edit"));
+
+  // AI opponents (0–3). Re-deals the board when changed.
+  const aiWrap = document.createElement("label");
+  aiWrap.className = "tm-ai-wrap";
+  aiWrap.textContent = "AI";
+  const aiSelect = document.createElement("select");
+  aiSelect.className = "tm-ai-select";
+  const currentAi = Math.max(0, (playersState.length || 1) - 1);
+  for (let n = 0; n <= 3; n += 1) {
+    const opt = document.createElement("option");
+    opt.value = String(n);
+    opt.textContent = String(n);
+    if (n === currentAi) opt.selected = true;
+    aiSelect.appendChild(opt);
+  }
+  aiSelect.addEventListener("change", () => {
+    if (!app.roomId) return;
+    socket.emit("truck_mania_set_opponents", { roomId: app.roomId, count: Number(aiSelect.value) });
+  });
+  aiWrap.appendChild(aiSelect);
+  els.hand.appendChild(aiWrap);
+
+  const endBtn = button("End turn", "endturn", "primary-btn tm-end-turn");
+  endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating;
+  els.hand.appendChild(endBtn);
+}
+
+// Light refresh of just the End-turn button's enabled state (called on every
+// state update, without rebuilding the whole control bar).
+function updateTurnControls() {
+  const btn = els.hand.querySelector(".tm-end-turn");
+  if (btn) btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating;
 }
 
 els.hand.addEventListener("click", (event) => {
@@ -1626,6 +2754,9 @@ els.hand.addEventListener("click", (event) => {
       break;
     case "mixup":
       socket.emit("truck_mania_mix_up", { roomId: app.roomId });
+      break;
+    case "endturn":
+      socket.emit("truck_mania_end_turn", { roomId: app.roomId });
       break;
     case "load": {
       const select = els.hand.querySelector(".tm-map-select");
@@ -1687,9 +2818,31 @@ export const truckMania = {
     if (!payload.truckMania?.map) return false;
     resetGameUi();
     const tm = payload.truckMania;
+    const beforePkgs = mapState ? snapshotPkgs() : null;
     const prevHour = hourState;
     hourState = tm.hour ?? null;
+    timeState = tm.time ?? 0;
+    nightState = !!tm.night;
+    turnWhose = tm.turn ?? 0;
+    turnActed = !!tm.turnState?.acted;
+    turnStolen = !!tm.turnState?.stolen;
+    turnChangedTime = !!tm.turnState?.changedTime;
+    turnTruck = tm.turnState?.truck ?? null;
+    stealVictimId = tm.turnState?.stealVictim ?? null;
+    aiMoveState = tm.aiMove ?? null;
+    // Reconcile the aimed truck: locked to the turn's mover once set, else keep
+    // a valid selection among the player's trucks.
+    const myIds = (tm.trucks ?? []).filter((t) => t.player === myIndex()).map((t) => t.id);
+    if (turnTruck != null) selectedTruckId = turnTruck;
+    else if (!myIds.includes(selectedTruckId)) selectedTruckId = myIds[0] ?? 0;
+    rushState = !!tm.rush;
     playersState = tm.players ?? [];
+    lastRollState = tm.lastRoll ?? null;
+    decksState = tm.decks ?? null;
+    if (!isMyTurn()) {
+      clearPreview();
+      clearSteal();
+    }
 
     if (editor && mapState && tm.map.seed === mapState.seed) {
       // Keep editing; the layout under edit hasn't been replaced.
@@ -1713,19 +2866,52 @@ export const truckMania = {
       });
       mapState = tm.map;
       if (octLayoutChanged) {
+        clearPreview(); // stale red counts
         refreshOctagonsHard();
         setHand();
       } else if (hourState != null && hourState !== prevHour) {
+        clearPreview(); // lights flipped — previewed red counts no longer hold
         stagedTimeChange(hourState); // moves the hand, then flips one at a time
       } else {
         updateOctagons(tm.map);
         setHand();
       }
+      updateDayNight();
+      // A fresh ticket roll tumbles the dice for everyone; the mover's truck is
+      // held (deferred drive) until the roll settles.
+      const roll = tm.lastRoll;
+      const newRoll = roll && roll.seq !== lastRollSeq && roll.dice?.length;
+      if (roll) lastRollSeq = roll.seq;
+      if (newRoll) {
+        diceAnimating = true;
+        updateTurnControls();
+        animateDiceRoll(roll, () => {
+          diceAnimating = false;
+          runDeferredDrives();
+          updateTurnControls();
+        });
+      }
+      // Animate other players' pickups/deliveries: hide the moved packages, let
+      // syncTrucks/refresh render around them, then fly them in on arrival.
+      const flyEvents = beforePkgs ? diffPkgEvents(beforePkgs, tm) : [];
+      flyEvents.forEach((e) => animatingPkgs.add(e.pkg.id));
       syncTrucks(tm.trucks);
+      renderTruckHighlight();
       renderBuildingPackagesRefresh();
+      dispatchFlies(flyEvents);
       renderPlayerBoard();
+      renderScoreboard();
+      renderDice();
+      renderDecks();
+      updateTurnControls(); // reflect turn/steal state on the End-turn button
     } else {
       mapState = tm.map;
+      previewState = null;
+      stealSession = null;
+      diceAnimating = false;
+      deferredDrives = [];
+      lastRollSeq = tm.lastRoll?.seq ?? lastRollSeq;
+      Object.keys(pendingFlies).forEach((k) => delete pendingFlies[k]);
       Object.keys(truckSpots).forEach((k) => delete truckSpots[k]);
       Object.keys(truckPos).forEach((k) => delete truckPos[k]);
       Object.keys(pkgPos).forEach((k) => delete pkgPos[k]);
@@ -1735,8 +2921,9 @@ export const truckMania = {
       renderControls();
     }
 
-    els.turnStatus.textContent = "City map";
-    updateTurn(payload.turn);
+    els.turnStatus.textContent = isMyTurn()
+      ? (turnActed ? "Your turn — end when ready" : "Your turn")
+      : `${playersState[turnWhose]?.name ?? "Opponent"}'s turn…`;
     return true;
   },
 
@@ -1747,6 +2934,7 @@ export const truckMania = {
     hourState = null;
     octEls = [];
     handEl = null;
+    dayNightEl = null;
     editor = null;
     dragCtx = null;
     boardMode = "play";
@@ -1755,8 +2943,30 @@ export const truckMania = {
     graphCache = null;
     hoveredHour = null;
     flipping = false;
+    handDeg = 0;
+    previewState = null;
+    stealSession = null;
+    lastRollState = null;
+    decksState = null;
+    timeState = 0;
+    nightState = true;
+    rushState = false;
+    turnWhose = 0;
+    turnActed = false;
+    turnStolen = false;
+    turnChangedTime = false;
+    turnTruck = null;
+    selectedTruckId = 0;
+    stealVictimId = null;
+    aiMoveState = null;
+    lastRollSeq = -1;
+    diceAnimating = false;
+    deferredDrives = [];
+    Object.keys(pendingFlies).forEach((k) => delete pendingFlies[k]);
+    playersState = [];
+    document.querySelector(".game-header .tm-scoreboard")?.remove();
     animatingPkgs.clear();
-    [truckEls, cargoEls, truckPos, truckSpots, pkgPos].forEach((o) =>
+    [truckEls, cargoEls, truckPos, truckSpots, pkgPos, pendingRoutes].forEach((o) =>
       Object.keys(o).forEach((k) => delete o[k])
     );
     Object.values(truckAnim).forEach((h) => h && cancelAnimationFrame(h));
