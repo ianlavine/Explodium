@@ -760,6 +760,39 @@ export function randomizeOctagons(octagons) {
   return assignOctagons(() => Math.random(), octagons.map(({ x, y }) => ({ x, y })));
 }
 
+// A "spot" is a parking place where a truck sits: the street-end of a building
+// connector. Its facing is parallel to the street it sits on.
+export function deriveSpots(map) {
+  const segs = collectSegments(map.streets);
+  const spots = [];
+  let bid = 0;
+  for (const block of map.blocks ?? []) {
+    for (const b of block.buildings ?? []) {
+      b.bid = bid; // stable index, same order client and server flatten in
+      bid += 1;
+      for (const c of b.connectors ?? []) {
+        let best = null;
+        let bestD = Infinity;
+        for (const seg of segs) {
+          const d = distSqToSegment(c.x2, c.y2, seg[0], seg[1], seg[2], seg[3]);
+          if (d < bestD) {
+            bestD = d;
+            best = seg;
+          }
+        }
+        const angle = best ? Math.atan2(best[3] - best[1], best[2] - best[0]) : 0;
+        spots.push({
+          x: c.x2,
+          y: c.y2,
+          angle: Math.round((angle * 180) / Math.PI),
+          building: b.bid
+        });
+      }
+    }
+  }
+  return spots;
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -836,6 +869,10 @@ function generateOnce(rng, seed) {
     });
   }
 
+  const outBlocks = blocks
+    .filter((b) => b.buildings.length)
+    .map((b, i) => ({ id: `block-${i}`, area: Math.round(b.areaPx), buildings: b.buildings }));
+
   return {
     seed,
     width: MAP_W,
@@ -844,8 +881,7 @@ function generateOnce(rng, seed) {
     rounded: { tl: Math.round(rounded.tl), tr: Math.round(rounded.tr), br: Math.round(rounded.br), bl: Math.round(rounded.bl) },
     intersections: assignOctagons(rng, findIntersections(streets)),
     streets,
-    blocks: blocks
-      .filter((b) => b.buildings.length)
-      .map((b, i) => ({ id: `block-${i}`, area: Math.round(b.areaPx), buildings: b.buildings }))
+    blocks: outBlocks,
+    spots: deriveSpots({ streets, blocks: outBlocks })
   };
 }

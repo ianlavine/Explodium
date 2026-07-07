@@ -15,6 +15,41 @@ let boardMode = "play"; // "play" | "edit"
 let savedMaps = [];
 let canSaveMaps = true;
 let mapsRequested = false;
+let hoveredHour = null;
+let flipping = false;
+
+// Trucks + driving.
+let trucksState = [];
+const truckEls = {}; // id -> svg group
+const cargoEls = {}; // id -> cargo sub-group inside the truck
+const truckPos = {}; // id -> { x, y, angle }
+const truckSpots = {}; // id -> last spot index rendered
+const truckAnim = {}; // id -> rAF handle
+let graphCache = null; // { seed, graph }
+
+// Packages: parcels sitting on pickup buildings or stacked in a truck's dock.
+const pkgPos = {}; // package id -> last rendered world position (fly source)
+const animatingPkgs = new Set(); // ids mid-flight, hidden from static renders
+const CARGO_SIZE = 7;
+const BLD_PKG_SIZE = 11;
+
+// Player board: seven columns, each a color-linked track of six values. The
+// last two (Locations / Abilities) are placeholders with no values yet.
+let playersState = [];
+const PB_COLUMNS = [
+  { id: "capacity", title: "Capacity", color: "#e8c33c", values: [2, 3, 4, 5, 6, 7] },
+  { id: "variety", title: "Variety", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] },
+  { id: "aversion", title: "Aversion", color: "#4f9d57", values: [1, 2, 3, 4, 5, 6] },
+  { id: "agression", title: "Agression", color: "#cf4a3c", values: [0, 1, 2, 3, 4, 5] },
+  { id: "timestones", title: "Time stones", color: "#8a5bb0", values: [2, 4, 6, 8, 10, 12] },
+  { id: "locations", title: "Locations", color: "#e08a3c", values: [] },
+  { id: "abilities", title: "Abilities", color: "#8f6b52", values: [] }
+];
+
+function hexToRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
 
 // Editor session: null when not editing.
 let editor = null; // { buildings, undoStack, selected, addingConn, segments, scaleBase }
@@ -273,7 +308,7 @@ function renderOctagons(parent) {
       const text = svgEl("text", { class: "tm-oct-num", x: 0, y: 0 }, flip);
       text.textContent = String(oct.number);
     }
-    octEls.push({ flip, shape, color: oct.color });
+    octEls.push({ g, flip, shape, color: oct.color });
   });
 }
 
@@ -319,6 +354,43 @@ function setHand() {
   handEl.style.transform = `rotate(${deg}deg)`;
 }
 
+// Ring the two octagons carrying this hour's number, so it's clear which
+// stoplights a time change would flip.
+function setHourHighlight(hour, on) {
+  mapState.intersections.forEach((oct, i) => {
+    if (oct.number === hour && octEls[i]) octEls[i].g.classList.toggle("tm-oct-hi", on);
+  });
+}
+
+// A time change: the hand swings first, then the two matching octagons flip
+// one at a time, with the highlight held through the whole sequence.
+function stagedTimeChange(hour) {
+  flipping = true;
+  const idx = [];
+  mapState.intersections.forEach((oct, i) => {
+    if (oct.number === hour) idx.push(i);
+  });
+  idx.forEach((i) => octEls[i]?.g.classList.add("tm-oct-hi"));
+  setHand();
+
+  setTimeout(() => {
+    let delay = 0;
+    idx.forEach((i) => {
+      setTimeout(() => {
+        const entry = octEls[i];
+        if (!entry) return;
+        flipOctagon(entry, mapState.intersections[i].color);
+        entry.color = mapState.intersections[i].color;
+      }, delay);
+      delay += 520;
+    });
+    setTimeout(() => {
+      flipping = false;
+      if (hoveredHour !== hour) idx.forEach((i) => octEls[i]?.g.classList.remove("tm-oct-hi"));
+    }, delay + 380);
+  }, 540);
+}
+
 function renderClock() {
   const wrap = document.createElement("div");
   wrap.className = "tm-clock";
@@ -334,6 +406,14 @@ function renderClock() {
     svgEl("circle", { cx: x, cy: y, r: 15, class: "tm-clock-hit" }, hit);
     const num = svgEl("text", { x, y, class: "tm-clock-num" }, hit);
     num.textContent = String(h);
+    hit.addEventListener("mouseenter", () => {
+      hoveredHour = h;
+      if (!flipping) setHourHighlight(h, true);
+    });
+    hit.addEventListener("mouseleave", () => {
+      hoveredHour = null;
+      if (!flipping) setHourHighlight(h, false);
+    });
   }
 
   handEl = svgEl("g", { class: "tm-clock-hand" }, svg);
@@ -352,6 +432,522 @@ function renderClock() {
 
   els.gameBoard.appendChild(wrap);
   setHand();
+}
+
+// --------------------------------------------------------------------------
+// Street graph + driving
+// --------------------------------------------------------------------------
+
+// A routable graph of the streets: nodes at intersections, spots, and street
+// ends; edges run along each street between consecutive nodes, carrying the
+// polyline points between them so trucks follow curves.
+function buildStreetGraph(streets, spots) {
+  const nodePts = [];
+  const nodeIds = new Map();
+  const nodeId = (x, y) => {
+    const k = `${Math.round(x)},${Math.round(y)}`;
+    if (nodeIds.has(k)) return nodeIds.get(k);
+    const id = nodePts.length;
+    nodeIds.set(k, id);
+    nodePts.push([x, y]);
+    return id;
+  };
+  const adj = [];
+  const addEdge = (a, b, w, pts) => {
+    if (a === b) return;
+    (adj[a] ||= []).push({ to: b, w, pts });
+    (adj[b] ||= []).push({ to: a, w, pts: pts.slice().reverse() });
+  };
+
+  const pois = [
+    ...findIntersections(streets).map((p) => [p.x, p.y]),
+    ...spots.map((s) => [s.x, s.y])
+  ];
+
+  for (const street of streets) {
+    const poly = streetToPolyline(street);
+    const cum = [0];
+    for (let i = 1; i < poly.length; i += 1) {
+      cum.push(cum[i - 1] + Math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]));
+    }
+    const consider = [...pois, poly[0], poly[poly.length - 1]];
+    const onStreet = [];
+    for (const [px, py] of consider) {
+      let bestD = Infinity;
+      let bestParam = 0;
+      let bestPt = null;
+      for (let i = 0; i < poly.length - 1; i += 1) {
+        const pr = projectToSegment(px, py, poly[i][0], poly[i][1], poly[i + 1][0], poly[i + 1][1]);
+        if (pr.dist < bestD) {
+          bestD = pr.dist;
+          bestParam = cum[i] + Math.hypot(pr.x - poly[i][0], pr.y - poly[i][1]);
+          bestPt = [pr.x, pr.y];
+        }
+      }
+      if (bestD < 5) onStreet.push({ param: bestParam, pt: bestPt });
+    }
+    onStreet.sort((a, b) => a.param - b.param);
+    const uniq = [];
+    for (const o of onStreet) {
+      if (!uniq.length || o.param - uniq[uniq.length - 1].param > 0.5) uniq.push(o);
+    }
+    for (let i = 0; i < uniq.length - 1; i += 1) {
+      const A = uniq[i];
+      const B = uniq[i + 1];
+      const pts = [A.pt];
+      for (let j = 0; j < poly.length; j += 1) {
+        if (cum[j] > A.param + 0.1 && cum[j] < B.param - 0.1) pts.push(poly[j]);
+      }
+      pts.push(B.pt);
+      addEdge(nodeId(A.pt[0], A.pt[1]), nodeId(B.pt[0], B.pt[1]), B.param - A.param, pts);
+    }
+  }
+  return { nodePts, adj };
+}
+
+function getGraph() {
+  if (!graphCache || graphCache.seed !== mapState.seed) {
+    graphCache = { seed: mapState.seed, graph: buildStreetGraph(mapState.streets, mapState.spots ?? []) };
+  }
+  return graphCache.graph;
+}
+
+function nearestNode(graph, x, y) {
+  let best = -1;
+  let bestD = Infinity;
+  graph.nodePts.forEach((p, i) => {
+    const d = (p[0] - x) ** 2 + (p[1] - y) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  });
+  return best;
+}
+
+// Dijkstra between the graph nodes nearest to the two points; returns the
+// polyline the truck should drive, or a straight fallback if disconnected.
+function findPath(graph, ax, ay, bx, by) {
+  const start = nearestNode(graph, ax, ay);
+  const goal = nearestNode(graph, bx, by);
+  if (start < 0 || goal < 0) return [[ax, ay], [bx, by]];
+
+  const n = graph.nodePts.length;
+  const dist = new Array(n).fill(Infinity);
+  const prev = new Array(n).fill(-1);
+  const prevEdge = new Array(n).fill(null);
+  const done = new Array(n).fill(false);
+  dist[start] = 0;
+
+  for (let iter = 0; iter < n; iter += 1) {
+    let u = -1;
+    let ud = Infinity;
+    for (let i = 0; i < n; i += 1) {
+      if (!done[i] && dist[i] < ud) {
+        ud = dist[i];
+        u = i;
+      }
+    }
+    if (u === -1 || u === goal) break;
+    done[u] = true;
+    for (const e of graph.adj[u] ?? []) {
+      const nd = dist[u] + e.w;
+      if (nd < dist[e.to]) {
+        dist[e.to] = nd;
+        prev[e.to] = u;
+        prevEdge[e.to] = e; // oriented u -> e.to
+      }
+    }
+  }
+  if (dist[goal] === Infinity) return [[ax, ay], [bx, by]];
+
+  const order = [];
+  for (let u = goal; u !== -1; u = prev[u]) order.push(u);
+  order.reverse();
+  const pts = [graph.nodePts[order[0]].slice()];
+  for (let i = 1; i < order.length; i += 1) {
+    const e = prevEdge[order[i]];
+    for (let k = 1; k < e.pts.length; k += 1) pts.push(e.pts[k].slice());
+  }
+  return pts;
+}
+
+// The truck rotates to its heading. When that heading points leftward the
+// naive rotation would put it upside down, so we mirror it vertically in its
+// own frame — nose still points along travel, wheels stay on the underside.
+function truckTransform(id) {
+  const el = truckEls[id];
+  const pos = truckPos[id];
+  if (!el || !pos) return;
+  const flip = Math.cos((pos.angle * Math.PI) / 180) < 0 ? " scale(1 -1)" : "";
+  el.setAttribute("transform", `translate(${pos.x} ${pos.y}) rotate(${pos.angle})${flip}`);
+}
+
+// Side-view flatbed: an open cargo dock at the back, a cab up front, two wheels.
+// Drawn facing right; mirrored via the transform to face left.
+function makeTruckShape(parent, bodyColor) {
+  const g = svgEl("g", { class: "tm-truck" }, parent);
+  const dark = "rgba(18,22,28,0.9)";
+
+  // Open-top cargo dock (back / left).
+  svgEl("rect", { x: -15, y: -8, width: 18, height: 13, rx: 1.5, fill: bodyColor, stroke: dark, "stroke-width": 1.5, class: "tm-truck-body" }, g);
+  svgEl("rect", { x: -12.5, y: -6, width: 13, height: 5.5, rx: 1, fill: "rgba(20,24,30,0.32)" }, g); // open interior
+
+  // Cab (front / right) with a slanted windshield.
+  svgEl("path", { d: "M3 5 L3 -6 L10 -6 L14 -1 L14 5 Z", fill: bodyColor, stroke: dark, "stroke-width": 1.5, class: "tm-truck-body" }, g);
+  svgEl("path", { d: "M9.7 -5 L13 -1 L9.7 -1 Z", fill: "#bfe0f0", stroke: dark, "stroke-width": 0.7 }, g); // windshield
+  svgEl("circle", { cx: 13.6, cy: 3, r: 1.3, fill: "#f5d76e" }, g); // headlight
+
+  // Wheels.
+  for (const cx of [-9, 9]) {
+    svgEl("circle", { cx, cy: 7, r: 4, fill: "#1c2027", stroke: "#000", "stroke-width": 0.6 }, g);
+    svgEl("circle", { cx, cy: 7, r: 1.8, fill: "#5b6472" }, g);
+  }
+  // Cargo rides in the open dock and rotates with the truck.
+  svgEl("g", { class: "tm-cargo" }, g);
+  return g;
+}
+
+function renderTrucks(svg) {
+  const layer = svgEl("g", { class: "tm-trucks" }, svg);
+  Object.keys(truckEls).forEach((k) => delete truckEls[k]);
+  Object.keys(cargoEls).forEach((k) => delete cargoEls[k]);
+  trucksState.forEach((t) => {
+    const g = makeTruckShape(layer, "#f4c542");
+    truckEls[t.id] = g;
+    cargoEls[t.id] = g.querySelector(".tm-cargo");
+    renderCargo(t.id);
+  });
+}
+
+// A parcel: a filled square or circle with a dark outline. Used on buildings,
+// in the dock, and for the fly animation.
+function drawPackage(parent, shape, color, cx, cy, size) {
+  if (shape === "circle") {
+    return svgEl("circle", { cx, cy, r: size / 2, fill: color, class: "tm-pkg-shape" }, parent);
+  }
+  return svgEl("rect", { x: cx - size / 2, y: cy - size / 2, width: size, height: size, rx: 1.5, fill: color, class: "tm-pkg-shape" }, parent);
+}
+
+// Dock slot k, in the truck's local frame: two columns stacking upward.
+function dockSlotLocal(k) {
+  const col = k % 2;
+  const row = Math.floor(k / 2);
+  return [-10 + col * 7.5, 1.5 - row * 7.5];
+}
+
+function truckLocalToWorld(pos, lx, ly) {
+  const rad = (pos.angle * Math.PI) / 180;
+  const y = Math.cos(rad) < 0 ? -ly : ly; // match the vertical flip in the transform
+  return [
+    pos.x + lx * Math.cos(rad) - y * Math.sin(rad),
+    pos.y + lx * Math.sin(rad) + y * Math.cos(rad)
+  ];
+}
+
+function renderCargo(id) {
+  const layer = cargoEls[id];
+  if (!layer) return;
+  layer.innerHTML = "";
+  const truck = trucksState.find((t) => t.id === id);
+  if (!truck) return;
+  let slot = 0;
+  (truck.cargo ?? []).forEach((pkg) => {
+    if (animatingPkgs.has(pkg.id)) return;
+    const [lx, ly] = dockSlotLocal(slot);
+    slot += 1;
+    const shape = drawPackage(layer, pkg.shape, pkg.color, lx, ly, CARGO_SIZE);
+    shape.classList.add("tm-pkg-cargo");
+    shape.setAttribute("data-pkg", pkg.id);
+  });
+}
+
+// World position of the next free dock slot (where a picked-up parcel lands).
+function nextDockWorld(id) {
+  const truck = trucksState.find((t) => t.id === id);
+  const used = (truck?.cargo ?? []).filter((p) => !animatingPkgs.has(p.id)).length;
+  const [lx, ly] = dockSlotLocal(used);
+  return truckLocalToWorld(truckPos[id] ?? { x: 0, y: 0, angle: 0 }, lx, ly);
+}
+
+// Place trucks at their spot (first sight) or drive them to a new one, and keep
+// each truck's cargo stack in sync with server state.
+function syncTrucks(trucks) {
+  trucksState = trucks ?? [];
+  trucksState.forEach((t) => {
+    const spot = mapState.spots?.[t.spot];
+    if (!spot || !truckEls[t.id]) return;
+    const prev = truckSpots[t.id];
+    if (prev == null) {
+      truckPos[t.id] = { x: spot.x, y: spot.y, angle: spot.angle };
+      truckSpots[t.id] = t.spot;
+      truckTransform(t.id);
+    } else if (prev !== t.spot) {
+      truckSpots[t.id] = t.spot;
+      const from = truckPos[t.id] || { x: spot.x, y: spot.y };
+      const path = findPath(getGraph(), from.x, from.y, spot.x, spot.y);
+      driveTruck(t.id, path, spot.angle);
+    }
+    renderCargo(t.id);
+  });
+}
+
+// Animate a truck along a polyline at roughly constant speed, rotating it to
+// each segment's heading. Settles to the destination's street angle at the end.
+function driveTruck(id, path, endAngle) {
+  if (truckAnim[id]) cancelAnimationFrame(truckAnim[id]);
+  const cum = [0];
+  for (let i = 1; i < path.length; i += 1) {
+    cum.push(cum[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
+  }
+  const total = cum[cum.length - 1];
+  const last = path[path.length - 1];
+  if (total < 1) {
+    truckPos[id] = { x: last[0], y: last[1], angle: endAngle };
+    truckTransform(id);
+    return;
+  }
+  const speed = 240; // px per second
+  const duration = Math.min(4200, Math.max(450, (total / speed) * 1000));
+  const start = performance.now();
+
+  const step = (now) => {
+    const p = Math.min(1, (now - start) / duration);
+    const target = p * total;
+    let i = 1;
+    while (i < cum.length && cum[i] < target) i += 1;
+    const a = path[i - 1];
+    const b = path[Math.min(i, path.length - 1)];
+    const segLen = (cum[i] ?? total) - cum[i - 1] || 1;
+    const f = Math.max(0, Math.min(1, (target - cum[i - 1]) / segLen));
+    const x = a[0] + (b[0] - a[0]) * f;
+    const y = a[1] + (b[1] - a[1]) * f;
+    let angle = truckPos[id]?.angle ?? 0;
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 0.5) {
+      angle = (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+    }
+    truckPos[id] = { x, y, angle };
+    truckTransform(id);
+    if (p < 1) {
+      truckAnim[id] = requestAnimationFrame(step);
+    } else {
+      truckPos[id] = { x: last[0], y: last[1], angle };
+      truckTransform(id);
+      truckAnim[id] = null;
+    }
+  };
+  truckAnim[id] = requestAnimationFrame(step);
+}
+
+// --------------------------------------------------------------------------
+// Spots (parking places the player clicks to send a truck)
+// --------------------------------------------------------------------------
+
+function renderSpots(svg) {
+  const layer = svgEl("g", { class: "tm-spots" }, svg);
+  (mapState.spots ?? []).forEach((spot, i) => {
+    const g = svgEl("g", { class: "tm-spot", "data-spot": i }, layer);
+    svgEl("circle", { cx: spot.x, cy: spot.y, r: 9, class: "tm-spot-ring" }, g);
+    svgEl("circle", { cx: spot.x, cy: spot.y, r: 11, class: "tm-spot-hit", fill: "transparent" }, g);
+  });
+}
+
+// --------------------------------------------------------------------------
+// Packages on pickup buildings + pickup/dropoff interactions
+// --------------------------------------------------------------------------
+
+function buildingsByBid() {
+  const map = new Map();
+  (mapState.blocks ?? []).forEach((block) => {
+    (block.buildings ?? []).forEach((b) => map.set(b.bid, b));
+  });
+  return map;
+}
+
+function polyCentroid(points) {
+  let x = 0;
+  let y = 0;
+  points.forEach((p) => {
+    x += p[0];
+    y += p[1];
+  });
+  return [x / points.length, y / points.length];
+}
+
+// Generated maps hold rect buildings (x/y/w/h, no points); edited maps hold
+// polys. Centroid works for both.
+function buildingCentroid(b) {
+  if (b.points) return polyCentroid(b.points);
+  return [b.x + b.w / 2, b.y + b.h / 2];
+}
+
+function drawBuildingPackages(layer) {
+  (mapState.blocks ?? []).forEach((block) => {
+    (block.buildings ?? []).forEach((b) => {
+      const pkgs = (b.packages ?? []).filter((p) => !animatingPkgs.has(p.id));
+      if (!pkgs.length) return;
+      const [cx, cy] = buildingCentroid(b);
+      const span = (pkgs.length - 1) * (BLD_PKG_SIZE + 3);
+      pkgs.forEach((pkg, i) => {
+        const px = cx - span / 2 + i * (BLD_PKG_SIZE + 3);
+        pkgPos[pkg.id] = [px, cy];
+        const g = svgEl("g", { class: "tm-pkg tm-pkg-building", "data-pkg": pkg.id, "data-bid": b.bid }, layer);
+        drawPackage(g, pkg.shape, pkg.color, px, cy, BLD_PKG_SIZE);
+      });
+    });
+  });
+}
+
+function renderBuildingPackages(svg) {
+  drawBuildingPackages(svgEl("g", { class: "tm-bld-pkgs" }, svg));
+}
+
+// The bid of the building the player's truck is currently parked at.
+function truckBuildingBid() {
+  const truck = trucksState[0];
+  const spot = truck ? mapState.spots?.[truck.spot] : null;
+  return spot ? spot.building : null;
+}
+
+// Temp parcel that flies from `from` to `to`, then runs onDone.
+function flyPackage(shape, color, from, to, onDone) {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  if (!svg) {
+    onDone?.();
+    return;
+  }
+  let layer = svg.querySelector(".tm-fly");
+  if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
+  const g = svgEl("g", {}, layer);
+  drawPackage(g, shape, color, 0, 0, CARGO_SIZE + 1);
+  const dur = 360;
+  const start = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / dur);
+    const e = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
+    g.setAttribute("transform", `translate(${from[0] + (to[0] - from[0]) * e} ${from[1] + (to[1] - from[1]) * e})`);
+    if (t < 1) requestAnimationFrame(step);
+    else {
+      g.remove();
+      onDone?.();
+    }
+  };
+  requestAnimationFrame(step);
+}
+
+function attemptPickup(pkgId, bid) {
+  const truck = trucksState[0];
+  if (!truck || truckBuildingBid() !== bid) return;
+  const building = buildingsByBid().get(bid);
+  const pkg = building?.packages?.find((p) => p.id === pkgId);
+  if (!pkg) return;
+  const from = pkgPos[pkgId] || buildingCentroid(building);
+  const to = nextDockWorld(truck.id);
+  animatingPkgs.add(pkgId);
+  renderBuildingPackagesRefresh();
+  socket.emit("truck_mania_pickup", { roomId: app.roomId, truckId: truck.id, packageId: pkgId });
+  flyPackage(pkg.shape, pkg.color, from, to, () => {
+    animatingPkgs.delete(pkgId);
+    renderCargo(truck.id);
+    renderBuildingPackagesRefresh();
+  });
+}
+
+function attemptDropoff(pkgId) {
+  const truck = trucksState[0];
+  if (!truck) return;
+  const building = buildingsByBid().get(truckBuildingBid());
+  if (!building || building.role !== "dropoff") return;
+  const pkg = truck.cargo?.find((p) => p.id === pkgId);
+  if (!pkg || pkg.color !== building.dropoffColor) return;
+  const from = truckLocalToWorld(truckPos[truck.id] ?? { x: 0, y: 0, angle: 0 }, ...dockSlotLocal(truck.cargo.indexOf(pkg)));
+  const to = buildingCentroid(building);
+  animatingPkgs.add(pkgId);
+  renderCargo(truck.id);
+  socket.emit("truck_mania_dropoff", { roomId: app.roomId, truckId: truck.id, packageId: pkgId });
+  flyPackage(pkg.shape, pkg.color, from, to, () => {
+    animatingPkgs.delete(pkgId);
+    renderCargo(truck.id);
+  });
+}
+
+// Redraw just the building-package layer in place (above the buildings layer).
+function renderBuildingPackagesRefresh() {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  if (!svg) return;
+  svg.querySelector(".tm-bld-pkgs")?.remove();
+  const layer = svgEl("g", { class: "tm-bld-pkgs" });
+  const blocks = svg.querySelector(".tm-blocks");
+  if (blocks) blocks.after(layer);
+  else svg.appendChild(layer);
+  drawBuildingPackages(layer);
+}
+
+function onBoardClick(event) {
+  if (editor || !app.roomId) return;
+  const cargoPkg = event.target.closest?.(".tm-pkg-cargo");
+  if (cargoPkg) {
+    attemptDropoff(cargoPkg.dataset.pkg);
+    return;
+  }
+  const bldPkg = event.target.closest?.(".tm-pkg-building");
+  if (bldPkg) {
+    attemptPickup(bldPkg.dataset.pkg, Number(bldPkg.dataset.bid));
+    return;
+  }
+  const spotEl = event.target.closest?.(".tm-spot");
+  if (!spotEl) return;
+  const spot = Number(spotEl.dataset.spot);
+  const truck = trucksState[0];
+  if (!truck || truck.spot === spot) return;
+  socket.emit("truck_mania_move_truck", { roomId: app.roomId, truckId: truck.id, spot });
+}
+
+// --------------------------------------------------------------------------
+// Player board
+// --------------------------------------------------------------------------
+
+function renderPlayerBoard() {
+  els.gameBoard.querySelector(".tm-player-board")?.remove();
+  const me = playersState[app.myPlayerIndex] ?? playersState[0];
+  if (!me) return;
+
+  const board = document.createElement("div");
+  board.className = "tm-player-board";
+
+  const header = document.createElement("div");
+  header.className = "tm-pb-header";
+  header.style.background = me.color;
+  header.textContent = me.name || "Player";
+  board.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.className = "tm-pb-grid";
+  PB_COLUMNS.forEach((col) => {
+    const cur = me.columns?.[col.id] ?? 0;
+    const c = document.createElement("div");
+    c.className = "tm-pb-col";
+
+    const title = document.createElement("div");
+    title.className = "tm-pb-title";
+    title.style.background = col.color;
+    title.textContent = col.title;
+    c.appendChild(title);
+
+    for (let i = 0; i < 6; i += 1) {
+      const cell = document.createElement("div");
+      cell.className = "tm-pb-cell";
+      const val = col.values[i];
+      const isCurrent = val != null && i === cur;
+      cell.style.background = hexToRgba(col.color, isCurrent ? 0.95 : 0.22);
+      if (val != null) cell.textContent = String(val);
+      if (isCurrent) cell.classList.add("tm-pb-current");
+      c.appendChild(cell);
+    }
+    grid.appendChild(c);
+  });
+  board.appendChild(grid);
+  els.gameBoard.appendChild(board);
 }
 
 // --------------------------------------------------------------------------
@@ -411,9 +1007,15 @@ function renderMap() {
     block.buildings.forEach((building) => appendBuilding(buildingsLayer, building));
   });
 
+  renderBuildingPackages(svg);
+  renderSpots(svg);
   renderOctagons(svg);
+  renderTrucks(svg);
+  svg.addEventListener("click", onBoardClick);
   els.gameBoard.appendChild(svg);
+  syncTrucks(trucksState);
   renderClock();
+  renderPlayerBoard();
 }
 
 // --------------------------------------------------------------------------
@@ -1030,7 +1632,9 @@ export const truckMania = {
     if (!payload.truckMania?.map) return false;
     resetGameUi();
     const tm = payload.truckMania;
+    const prevHour = hourState;
     hourState = tm.hour ?? null;
+    playersState = tm.players ?? [];
 
     if (editor && mapState && tm.map.seed === mapState.seed) {
       // Keep editing; the layout under edit hasn't been replaced.
@@ -1053,11 +1657,25 @@ export const truckMania = {
         return !n || n.x !== o.x || n.y !== o.y || n.number !== o.number;
       });
       mapState = tm.map;
-      if (octLayoutChanged) refreshOctagonsHard();
-      else updateOctagons(tm.map);
-      setHand();
+      if (octLayoutChanged) {
+        refreshOctagonsHard();
+        setHand();
+      } else if (hourState != null && hourState !== prevHour) {
+        stagedTimeChange(hourState); // moves the hand, then flips one at a time
+      } else {
+        updateOctagons(tm.map);
+        setHand();
+      }
+      syncTrucks(tm.trucks);
+      renderBuildingPackagesRefresh();
+      renderPlayerBoard();
     } else {
       mapState = tm.map;
+      Object.keys(truckSpots).forEach((k) => delete truckSpots[k]);
+      Object.keys(truckPos).forEach((k) => delete truckPos[k]);
+      Object.keys(pkgPos).forEach((k) => delete pkgPos[k]);
+      animatingPkgs.clear();
+      trucksState = tm.trucks ?? [];
       renderMap();
       renderControls();
     }
@@ -1077,6 +1695,17 @@ export const truckMania = {
     editor = null;
     dragCtx = null;
     boardMode = "play";
+    trucksState = [];
+    playersState = [];
+    graphCache = null;
+    hoveredHour = null;
+    flipping = false;
+    animatingPkgs.clear();
+    [truckEls, cargoEls, truckPos, truckSpots, pkgPos].forEach((o) =>
+      Object.keys(o).forEach((k) => delete o[k])
+    );
+    Object.values(truckAnim).forEach((h) => h && cancelAnimationFrame(h));
+    Object.keys(truckAnim).forEach((k) => delete truckAnim[k]);
   },
 
   onOpponentLeft() {},

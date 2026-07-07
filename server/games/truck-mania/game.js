@@ -1,7 +1,7 @@
 // Truck Mania — city map, the clock, octagon signals, and saved custom maps.
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { generateCityMap, randomizeOctagons } from "./map.js";
+import { generateCityMap, randomizeOctagons, deriveSpots } from "./map.js";
 
 const MAPS_FILE = fileURLToPath(new URL("./saved-maps.json", import.meta.url));
 const MAP_W = 960;
@@ -98,6 +98,7 @@ function sanitizeMap(raw) {
     }
   }
 
+  const blocks = [{ id: "custom", area: 0, buildings }];
   return {
     seed: `custom-${Date.now()}`,
     width: MAP_W,
@@ -106,7 +107,8 @@ function sanitizeMap(raw) {
     rounded,
     intersections,
     streets,
-    blocks: [{ id: "custom", area: 0, buildings }]
+    blocks,
+    spots: deriveSpots({ streets, blocks })
   };
 }
 
@@ -116,6 +118,111 @@ function sanitizeMap(raw) {
 // read-only: the editor still works, but "Save map" is hidden and rejected.
 const savingEnabled = process.env.TRUCK_MANIA_SAVES !== "off";
 
+// The seven package/dropoff colors: the six primary/secondary colors + brown.
+const LOC_COLORS = ["#cf4a3c", "#e08a3c", "#e8c33c", "#4f9d57", "#4a72b0", "#8a5bb0", "#8f6b52"];
+const GREY = "#aeb3ba"; // pickup buildings
+const WHITE = "#f4f1ea"; // empty buildings
+
+// Each dropoff color advances one column on the player board. Orange and brown
+// (Locations / Abilities) are intentionally inert for now.
+const COLOR_COLUMN = {
+  "#e8c33c": "capacity",   // yellow
+  "#4a72b0": "variety",    // blue
+  "#4f9d57": "aversion",   // green
+  "#cf4a3c": "agression",  // red
+  "#8a5bb0": "timestones", // purple
+  "#e08a3c": "locations",  // orange — inert
+  "#8f6b52": "abilities"   // brown — inert
+};
+const ADVANCING = new Set(["capacity", "variety", "aversion", "agression", "timestones"]);
+const PLAYER_COLORS = ["#3ac0c0", "#e0559c"]; // player identity colors (teal, pink)
+
+const emptyColumns = () => ({
+  capacity: 0, variety: 0, aversion: 0, agression: 0, timestones: 0, locations: 0, abilities: 0
+});
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i -= 1) {
+    const k = Math.floor(Math.random() * (i + 1));
+    [a[i], a[k]] = [a[k], a[i]];
+  }
+  return a;
+}
+
+const randColor = () => LOC_COLORS[Math.floor(Math.random() * LOC_COLORS.length)];
+
+// Twelve dropoff colors: five colors appear twice, two appear once (all 7 used).
+function dropoffColorBag() {
+  const cols = shuffle(LOC_COLORS);
+  const bag = [...cols.slice(0, 5), ...cols.slice(0, 5), cols[5], cols[6]];
+  return shuffle(bag);
+}
+
+// Assign every building a role and recolor it: 12 dropoffs (colored, some colors
+// shared), 15 pickups (grey; 6 "protected" with circle packages, the rest with
+// square packages), the remainder empty white. Mutates the map in place.
+let pkgSeq = 0;
+function assignLocations(map) {
+  const buildings = (map.blocks ?? []).flatMap((b) => b.buildings ?? []);
+  buildings.forEach((b) => {
+    b.role = "empty";
+    b.color = WHITE;
+    delete b.dropoffColor;
+    delete b.protected;
+    delete b.packages;
+  });
+
+  const order = shuffle(buildings);
+  let cursor = 0;
+
+  const dropoffN = Math.min(12, order.length);
+  const bag = dropoffColorBag();
+  for (let i = 0; i < dropoffN; i += 1) {
+    const b = order[cursor++];
+    b.role = "dropoff";
+    b.dropoffColor = bag[i];
+    b.color = bag[i];
+  }
+
+  const pickupN = Math.min(15, order.length - cursor);
+  const pickups = order.slice(cursor, cursor + pickupN);
+  cursor += pickupN;
+  const protectedN = Math.min(6, pickupN);
+  pickups.forEach((b, i) => {
+    b.role = "pickup";
+    b.color = GREY;
+    b.protected = i < protectedN;
+    b.packages = [];
+  });
+
+  // 6 circles: one on each protected pickup.
+  for (let i = 0; i < protectedN; i += 1) {
+    pickups[i].packages.push({ id: `pkg${pkgSeq++}`, shape: "circle", color: randColor() });
+  }
+  // 6 squares: on six random normal pickups (one each).
+  const normals = shuffle(pickups.slice(protectedN));
+  for (let i = 0; i < Math.min(6, normals.length); i += 1) {
+    normals[i].packages.push({ id: `pkg${pkgSeq++}`, shape: "square", color: randColor() });
+  }
+}
+
+function buildingByBid(map, bid) {
+  for (const block of map.blocks ?? []) {
+    for (const b of block.buildings ?? []) {
+      if (b.bid === bid) return b;
+    }
+  }
+  return null;
+}
+
+// The building the truck is currently parked at (via its spot), or null.
+function truckBuilding(map, truck) {
+  const spot = map.spots?.[truck?.spot];
+  if (!spot) return null;
+  return buildingByBid(map, spot.building);
+}
+
 export function createTruckManiaGame({ io, rooms }) {
   let savedMaps = loadSavedMaps();
   const mapsPayload = () => ({
@@ -123,20 +230,42 @@ export function createTruckManiaGame({ io, rooms }) {
     canSave: savingEnabled
   });
 
-  // Playable copy of a saved layout: fresh stoplights every time.
+  // Playable copy of a saved layout: fresh stoplights every time. Spots are
+  // re-derived so maps saved before spots existed still get parking places.
   let hydrateCount = 0;
   function hydrate(savedMap) {
     const map = JSON.parse(JSON.stringify(savedMap));
     map.seed = `${map.seed}-${(hydrateCount += 1)}-${Date.now()}`;
     map.intersections = randomizeOctagons(map.intersections);
+    map.spots = deriveSpots(map);
     return map;
+  }
+
+  // One truck for now (solo). Starts on a random parking spot, empty.
+  function placeTrucks(map) {
+    const spots = map.spots ?? [];
+    if (!spots.length) return [];
+    return [{ id: 0, player: 0, spot: Math.floor(Math.random() * spots.length), cargo: [] }];
+  }
+
+  // Assign fresh locations/packages, drop trucks, and reset the player boards.
+  function setupBoard(room) {
+    assignLocations(room.truckMania.map);
+    room.truckMania.trucks = placeTrucks(room.truckMania.map);
+    room.truckMania.players = room.truckMania.trucks.map((t, i) => ({
+      color: PLAYER_COLORS[i % PLAYER_COLORS.length],
+      name: `Player ${i + 1}`,
+      columns: emptyColumns()
+    }));
   }
 
   function emitState(roomId, room) {
     io.to(roomId).emit("state_update", {
       truckMania: {
         map: room.truckMania.map,
-        hour: room.truckMania.hour
+        hour: room.truckMania.hour,
+        trucks: room.truckMania.trucks,
+        players: room.truckMania.players
       },
       turn: room.turn
     });
@@ -153,12 +282,10 @@ export function createTruckManiaGame({ io, rooms }) {
     id: "truck-mania",
 
     createRoomState() {
-      return {
-        truckMania: {
-          map: generateCityMap(),
-          hour: null
-        }
-      };
+      const map = generateCityMap();
+      const state = { truckMania: { map, hour: null, trucks: [] } };
+      setupBoard(state);
+      return state;
     },
 
     emitState,
@@ -173,6 +300,7 @@ export function createTruckManiaGame({ io, rooms }) {
         if (!room) return;
         room.truckMania.map = generateCityMap();
         room.truckMania.hour = null;
+        setupBoard(room);
         emitState(roomId, room);
       });
 
@@ -200,6 +328,7 @@ export function createTruckManiaGame({ io, rooms }) {
         persistSavedMaps(savedMaps);
         room.truckMania.map = hydrate(entry.map);
         room.truckMania.hour = null;
+        setupBoard(room);
         emitState(roomId, room);
         io.to(roomId).emit("truck_mania_maps", mapsPayload());
       });
@@ -211,6 +340,60 @@ export function createTruckManiaGame({ io, rooms }) {
         if (!entry) return;
         room.truckMania.map = hydrate(entry.map);
         room.truckMania.hour = null;
+        setupBoard(room);
+        emitState(roomId, room);
+      });
+
+      // Drive a truck to a new spot. Reachability rules come later; for now any
+      // spot is a valid destination.
+      socket.on("truck_mania_move_truck", ({ roomId, truckId = 0, spot } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        const trucks = room.truckMania.trucks ?? [];
+        const truck = trucks.find((t) => t.id === truckId);
+        const spotCount = room.truckMania.map.spots?.length ?? 0;
+        if (!truck || !Number.isInteger(spot) || spot < 0 || spot >= spotCount) return;
+        if (truck.spot === spot) return;
+        truck.spot = spot;
+        emitState(roomId, room);
+      });
+
+      // Load a package: the truck must be parked at the pickup building holding
+      // it; the package moves from the building onto the truck.
+      socket.on("truck_mania_pickup", ({ roomId, truckId = 0, packageId } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        const truck = (room.truckMania.trucks ?? []).find((t) => t.id === truckId);
+        if (!truck) return;
+        const building = truckBuilding(room.truckMania.map, truck);
+        if (!building || building.role !== "pickup") return;
+        const idx = (building.packages ?? []).findIndex((p) => p.id === packageId);
+        if (idx === -1) return;
+        const [pkg] = building.packages.splice(idx, 1);
+        truck.cargo.push(pkg);
+        emitState(roomId, room);
+      });
+
+      // Drop off a package: the truck must be at a dropoff whose color matches
+      // the package; the package leaves the truck (delivered).
+      socket.on("truck_mania_dropoff", ({ roomId, truckId = 0, packageId } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        const truck = (room.truckMania.trucks ?? []).find((t) => t.id === truckId);
+        if (!truck) return;
+        const building = truckBuilding(room.truckMania.map, truck);
+        if (!building || building.role !== "dropoff") return;
+        const idx = (truck.cargo ?? []).findIndex((p) => p.id === packageId);
+        if (idx === -1) return;
+        if (truck.cargo[idx].color !== building.dropoffColor) return;
+        truck.cargo.splice(idx, 1);
+
+        // Advance the matching player-board column (orange/brown stay inert).
+        const col = COLOR_COLUMN[building.dropoffColor];
+        const player = room.truckMania.players?.[truck.player];
+        if (player && ADVANCING.has(col)) {
+          player.columns[col] = Math.min(5, player.columns[col] + 1);
+        }
         emitState(roomId, room);
       });
 
