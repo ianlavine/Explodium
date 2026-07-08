@@ -226,9 +226,10 @@ function polyDir(pts, fromEnd = false) {
 const UTURN_COS = -0.966; // turns sharper than ~165° count as U-turns
 
 // Directed, no-U-turn route from a heading to a goal, minimizing red lights then
-// distance (same rules the human's client uses). Returns { path, reds, endAngle }
-// or null if the goal can't be reached without a U-turn.
-export function findRouteDirected(graph, intersections, ax, ay, headingDeg, bx, by) {
+// distance (same rules the human's client uses). `canUturn` (the U-turn ability)
+// lifts the reversing rule. Returns { path, reds, endAngle } or null if the
+// goal can't be reached.
+export function findRouteDirected(graph, intersections, ax, ay, headingDeg, bx, by, canUturn = false) {
   const start = nearestNode(graph, ax, ay);
   const goal = nearestNode(graph, bx, by);
   if (start < 0 || goal < 0 || start === goal) return null;
@@ -260,8 +261,10 @@ export function findRouteDirected(graph, intersections, ax, ay, headingDeg, bx, 
   const hx = Math.cos((headingDeg * Math.PI) / 180);
   const hy = Math.sin((headingDeg * Math.PI) / 180);
   (graph.adj[start] ?? []).forEach((e, k) => {
-    const [dx, dy] = polyDir(e.pts);
-    if (dx * hx + dy * hy <= 0) return; // can't reverse out of the spot
+    if (!canUturn) {
+      const [dx, dy] = polyDir(e.pts);
+      if (dx * hx + dy * hy <= 0) return; // can't reverse out of the spot
+    }
     states.set(`${start}:${k}`, { e, key: `${start}:${k}`, reds: arcReds(e), dist: e.w, prevKey: null, done: false });
   });
 
@@ -275,8 +278,10 @@ export function findRouteDirected(graph, intersections, ax, ay, headingDeg, bx, 
     const v = cur.e.to;
     const inDir = polyDir(cur.e.pts, true);
     (graph.adj[v] ?? []).forEach((e2, k2) => {
-      const outDir = polyDir(e2.pts);
-      if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
+      if (!canUturn) {
+        const outDir = polyDir(e2.pts);
+        if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
+      }
       const key2 = `${v}:${k2}`;
       const old = states.get(key2);
       const cand = { e: e2, key: key2, reds: cur.reds + arcReds(e2), dist: cur.dist + e2.w, prevKey: cur.key, done: false };
@@ -299,14 +304,16 @@ export function findRouteDirected(graph, intersections, ax, ay, headingDeg, bx, 
   return { path: pts, reds: best.reds, endAngle: (Math.atan2(endDir[1], endDir[0]) * 180) / Math.PI };
 }
 
-// Red lights the path crosses (within an octagon radius of the polyline),
-// ignoring any beside the start/end spot. Returns the total count plus the
-// hour numbers of the numbered ones (which a clock change could flip).
+// Lights the path crosses (within an octagon radius of the polyline), ignoring
+// any beside the start/end spot. Returns the red count, the hour numbers of the
+// numbered reds (which a clock change could flip green), and the hour numbers
+// of the greens on the path (which the same change would flip red — a flip
+// only pays off when it nets fewer reds).
 export function redsOnPath(path, intersections, startPt, endPt) {
-  const reds = (intersections ?? []).filter((o) => o.color === "red");
   let count = 0;
   const numbers = [];
-  for (const o of reds) {
+  const greens = [];
+  for (const o of intersections ?? []) {
     if (Math.hypot(o.x - startPt[0], o.y - startPt[1]) < OCT_RADIUS) continue;
     if (Math.hypot(o.x - endPt[0], o.y - endPt[1]) < OCT_RADIUS) continue;
     let hit = false;
@@ -317,10 +324,13 @@ export function redsOnPath(path, intersections, startPt, endPt) {
         break;
       }
     }
-    if (hit) {
+    if (!hit) continue;
+    if (o.color === "red") {
       count += 1;
       if (o.number != null) numbers.push(o.number);
+    } else if (o.number != null) {
+      greens.push(o.number);
     }
   }
-  return { count, numbers };
+  return { count, numbers, greens };
 }

@@ -1,0 +1,354 @@
+[
+  {
+    "id": "s178354393153850",
+    "name": "Settings 4",
+    "settings": {
+      "columns": {
+        "capacity": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "variety": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "aversion": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "agression": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "timestones": [
+          2,
+          3,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7
+        ]
+      },
+      "packages": {
+        "#cf4a3c": {
+          "square": 5,
+          "circle": 5
+        },
+        "#e08a3c": {
+          "square": 12,
+          "circle": 0
+        },
+        "#e8c33c": {
+          "square": 9,
+          "circle": 6
+        },
+        "#4f9d57": {
+          "square": 9,
+          "circle": 6
+        },
+        "#4a72b0": {
+          "square": 5,
+          "circle": 5
+        },
+        "#8a5bb0": {
+          "square": 10,
+          "circle": 8
+        },
+        "#8f6b52": {
+          "square": 4,
+          "circle": 6
+        }
+      },
+      "protectedCount": 6,
+      "startingTimeStones": 6,
+      "points": {
+        "square": 1,
+        "circle": 2,
+        "ticket": 1,
+        "rushTicket": 2
+      }
+    }
+  },
+  {
+    "id": "s1783543968339669",
+    "name": "Settings 5",
+    "settings": {
+      "columns": {
+        "capacity": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "variety": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "aversion": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "agression": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "timestones": [
+          2,
+          3,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7
+        ]
+      },
+      "packages": {
+        "#cf4a3c": {
+          "square": 5,
+          "circle": 5
+        },
+        "#e08a3c": {
+          "square": 12,
+          "circle": 0
+        },
+        "#e8c33c": {
+          "square": 9,
+          "circle": 6
+        },
+        "#4f9d57": {
+          "square": 9,
+          "circle": 6
+        },
+        "#4a72b0": {
+          "square": 5,
+          "circle": 5
+        },
+        "#8a5bb0": {
+          "square": 10,
+          "circle": 8
+        },
+        "#8f6b52": {
+          "square": 4,
+          "circle": 6
+        }
+      },
+      "protectedCount": 6,
+      "startingTimeStones": 6,
+      "points": {
+        "square": 1,
+        "circle": 2,
+        "ticket": 1,
+        "rushTicket": 2
+      }
+    }
+  },
+  {
+    "id": "s1783544686634234",
+    "name": "Settings 6",
+    "settings": {
+      "columns": {
+        "capacity": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "variety": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "aversion": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "agression": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "timestones": [
+          2,
+          3,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7
+        ]
+      },
+      "packages": {
+        "#cf4a3c": {
+          "square": 6,
+          "circle": 6
+        },
+        "#e08a3c": {
+          "square": 10,
+          "circle": 0
+        },
+        "#e8c33c": {
+          "square": 10,
+          "circle": 5
+        },
+        "#4f9d57": {
+          "square": 10,
+          "circle": 5
+        },
+        "#4a72b0": {
+          "square": 8,
+          "circle": 2
+        },
+        "#8a5bb0": {
+          "square": 12,
+          "circle": 6
+        },
+        "#8f6b52": {
+          "square": 4,
+          "circle": 6
+        }
+      },
+      "protectedCount": 5,
+      "startingTimeStones": 5,
+      "points": {
+        "square": 1,
+        "circle": 2,
+        "ticket": 1,
+        "rushTicket": 2
+      }
+    }
+  },
+  {
+    "id": "s1783544714415895",
+    "name": "Settings 7",
+    "settings": {
+      "columns": {
+        "capacity": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "variety": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "aversion": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "agression": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "timestones": [
+          2,
+          3,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7
+        ]
+      },
+      "packages": {
+        "#cf4a3c": {
+          "square": 5,
+          "circle": 5
+        },
+        "#e08a3c": {
+          "square": 12,
+          "circle": 0
+        },
+        "#e8c33c": {
+          "square": 9,
+          "circle": 6
+        },
+        "#4f9d57": {
+          "square": 9,
+          "circle": 6
+        },
+        "#4a72b0": {
+          "square": 5,
+          "circle": 5
+        },
+        "#8a5bb0": {
+          "square": 10,
+          "circle": 8
+        },
+        "#8f6b52": {
+          "square": 4,
+          "circle": 6
+        }
+      },
+      "protectedCount": 6,
+      "startingTimeStones": 6,
+      "points": {
+        "square": 1,
+        "circle": 2,
+        "ticket": 1,
+        "rushTicket": 2
+      }
+    }
+  }
+]

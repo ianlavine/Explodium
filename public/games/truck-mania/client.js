@@ -6,6 +6,8 @@ const GREEN = "#3d9a5f";
 const RED = "#cf4a3c";
 const OCT_RADIUS = 13;
 const PALETTE = ["#c97b63", "#6b8f71", "#d4a056", "#7d8aa5", "#b8849f", "#8f7e6b"];
+const TRUCK_SCALE = 1.45; // trucks (and the cargo riding in them) render this much larger
+const TRUCK_SPEED = 200; // px per second — constant, regardless of route length
 
 let mapState = null;
 let hourState = null;
@@ -55,6 +57,21 @@ let aiMoveState = null; // { truckId, path, endAngle } — an AI's chosen drive 
 let turnTruck = null;
 let selectedTruckId = 0;
 
+// Movement-selection mode: "auto" previews server-style routes to a clicked
+// spot; "build" has the player click stop lights one at a time to hand-build
+// the route. Purely a local UX choice — the move sent to the server is the
+// same either way — so it can be flipped at any point, mid-match included.
+let moveMode = "auto";
+let builder = null; // build-mode session; see refreshBuilder()
+let lastTurnSeen = null; // last turn index we showed a toast for
+
+// Global animation speed (×1 normal … ×3 fast), a room setting everyone
+// shares. All JS durations divide by it; CSS transitions read --tm-mult.
+let speedMult = 1;
+let turnPickups = []; // this turn's pickups [{pkg, bid}] — the put-back rights
+let clockQueue = []; // work (e.g. a dice roll) queued until the clock-flip animation ends
+const STEAL_GAP = 44; // px a thief parks short of its victim (about a truck length)
+
 function hasAbil(id) {
   return !!myPlayer()?.abilities?.includes(id);
 }
@@ -99,6 +116,11 @@ const BLD_PKG_SIZE = 11;
 let playersState = [];
 let lastRollState = null; // most recent ticket roll: { player, dice, aversion, tickets }
 let decksState = null; // { locations:{shown,remaining}, abilities:{shown,remaining} }
+let winnerState = null; // player index who has reached the winning score, or null
+let settingsState = null; // the room's tunable numbers (columns, packages, points…)
+let savedSettingsList = []; // presets + saved versions, for the tuning menu
+let canSaveSettings = true;
+let tuneDraft = null; // string-field working copy while the tuning panel is open
 
 const ABILITY_LABELS = {
   uturn: "U-turn",
@@ -421,9 +443,12 @@ function octagonPoints(r) {
 function renderOctagons(parent) {
   octEls = [];
   const layer = svgEl("g", { class: "tm-octagons" }, parent);
-  mapState.intersections.forEach((oct) => {
-    const g = svgEl("g", { class: "tm-oct", transform: `translate(${oct.x} ${oct.y})` }, layer);
-    const flip = svgEl("g", { class: "tm-oct-flip" }, g);
+  mapState.intersections.forEach((oct, i) => {
+    const g = svgEl("g", { class: "tm-oct", "data-oct": i, transform: `translate(${oct.x} ${oct.y})` }, layer);
+    // Zoom wrapper: highlighted signs grow via CSS without disturbing the
+    // translate above or the fold transform below.
+    const zoom = svgEl("g", { class: "tm-oct-zoom" }, g);
+    const flip = svgEl("g", { class: "tm-oct-flip" }, zoom);
     const shape = svgEl("polygon", {
       points: octagonPoints(OCT_RADIUS),
       fill: oct.color === "green" ? GREEN : RED
@@ -436,15 +461,18 @@ function renderOctagons(parent) {
   });
 }
 
-function flipOctagon(entry, color) {
+function flipOctagon(entry, color, slow = false) {
+  const dur = (slow ? 500 : 300) / speedMult;
+  if (slow) entry.flip.classList.add("tm-oct-slow");
   const apply = () => {
     entry.flip.removeEventListener("transitionend", apply);
     entry.shape.setAttribute("fill", color === "green" ? GREEN : RED);
     entry.flip.classList.remove("tm-oct-folding");
+    if (slow) setTimeout(() => entry.flip.classList.remove("tm-oct-slow"), dur + 80);
   };
   entry.flip.addEventListener("transitionend", apply);
   entry.flip.classList.add("tm-oct-folding");
-  setTimeout(apply, 300);
+  setTimeout(apply, dur);
 }
 
 function updateOctagons(newMap) {
@@ -498,8 +526,9 @@ function setHourHighlight(hour, on) {
   });
 }
 
-// A time change: the hand swings first, then the two matching octagons flip
-// one at a time, with the highlight held through the whole sequence.
+// A time change: the matching octagons grow (they already grew on hover), the
+// hand swings, then — still big — each sign folds over slowly, one at a time,
+// and only then do they shrink back to normal size.
 function stagedTimeChange(hour) {
   flipping = true;
   const idx = [];
@@ -515,16 +544,25 @@ function stagedTimeChange(hour) {
       setTimeout(() => {
         const entry = octEls[i];
         if (!entry) return;
-        flipOctagon(entry, mapState.intersections[i].color);
+        flipOctagon(entry, mapState.intersections[i].color, true);
         entry.color = mapState.intersections[i].color;
       }, delay);
-      delay += 520;
+      delay += 1050 / speedMult;
     });
     setTimeout(() => {
       flipping = false;
       if (hoveredHour !== hour) idx.forEach((i) => octEls[i]?.g.classList.remove("tm-oct-hi"));
-    }, delay + 380);
-  }, 540);
+      // Release whatever waited on the clock: a queued dice roll, then any
+      // drives held back so the truck doesn't move mid-flip.
+      const q = clockQueue;
+      clockQueue = [];
+      q.forEach((fn) => fn());
+      if (!diceAnimating) runDeferredDrives();
+      flushIdleFlies();
+      updateTurnControls();
+      refreshBuilder();
+    }, delay + 650 / speedMult);
+  }, 800 / speedMult);
 }
 
 // Each hour of clockwise sweep costs one time stone. Reverse-time lets a player
@@ -903,8 +941,8 @@ function truckTransform(id) {
   const el = truckEls[id];
   const pos = truckPos[id];
   if (!el || !pos) return;
-  const flip = Math.cos((pos.angle * Math.PI) / 180) < 0 ? " scale(1 -1)" : "";
-  el.setAttribute("transform", `translate(${pos.x} ${pos.y}) rotate(${pos.angle})${flip}`);
+  const flipY = Math.cos((pos.angle * Math.PI) / 180) < 0 ? -TRUCK_SCALE : TRUCK_SCALE;
+  el.setAttribute("transform", `translate(${pos.x} ${pos.y}) rotate(${pos.angle}) scale(${TRUCK_SCALE} ${flipY})`);
 }
 
 // Side-view flatbed: an open cargo dock at the back, a cab up front, two wheels.
@@ -932,20 +970,45 @@ function makeTruckShape(parent, bodyColor) {
   return g;
 }
 
+// Build one truck's SVG element into the trucks layer.
+function addTruckEl(layer, t) {
+  const color = playersState[t.player]?.color ?? "#f4c542";
+  const g = makeTruckShape(layer, color);
+  g.setAttribute("data-truck", t.id);
+  if (t.player !== myIndex()) g.classList.add("tm-truck-foe"); // clickable steal target
+  truckEls[t.id] = g;
+  cargoEls[t.id] = g.querySelector(".tm-cargo");
+  renderCargo(t.id);
+  // Hovering a truck flashes its owner's aggression as a red number above it.
+  g.addEventListener("mouseenter", () => showTruckAggr(t, layer));
+  g.addEventListener("mouseleave", hideTruckAggr);
+}
+
 function renderTrucks(svg) {
   const layer = svgEl("g", { class: "tm-trucks" }, svg);
   Object.keys(truckEls).forEach((k) => delete truckEls[k]);
   Object.keys(cargoEls).forEach((k) => delete cargoEls[k]);
-  trucksState.forEach((t) => {
-    const color = playersState[t.player]?.color ?? "#f4c542";
-    const g = makeTruckShape(layer, color);
-    g.setAttribute("data-truck", t.id);
-    if (t.player !== myIndex()) g.classList.add("tm-truck-foe"); // clickable steal target
-    truckEls[t.id] = g;
-    cargoEls[t.id] = g.querySelector(".tm-cargo");
-    renderCargo(t.id);
-  });
+  trucksState.forEach((t) => addTruckEl(layer, t));
   renderTruckHighlight();
+}
+
+// Red aggression badge floating above a hovered truck.
+function showTruckAggr(truck, layer) {
+  hideTruckAggr();
+  const pos = truckPos[truck.id];
+  if (!pos) return;
+  const aggr = columnValue("agression", playersState[truck.player]) ?? 0;
+  const label = svgEl("text", {
+    class: "tm-truck-aggr",
+    x: pos.x,
+    y: pos.y - 22,
+    "text-anchor": "middle"
+  }, layer);
+  label.textContent = String(aggr);
+}
+
+function hideTruckAggr() {
+  document.querySelector(".tm-truck-aggr")?.remove();
 }
 
 // When the human owns two trucks, glow the one they're currently aiming.
@@ -970,6 +1033,13 @@ function cumLengths(pts) {
     cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
   }
   return cum;
+}
+
+// Total length of a polyline.
+function pathLength(pts) {
+  if (!pts || pts.length < 2) return 0;
+  const cum = cumLengths(pts);
+  return cum[cum.length - 1];
 }
 
 // Position + heading a distance d along the polyline.
@@ -1046,10 +1116,12 @@ function dressPath(pts) {
   return chaikin(offsetPath(pts, ROUTE_OFFSET), 2);
 }
 
-function drawRouteLine(layer, pts, color, routeIdx) {
+function drawRouteLine(layer, pts, color, routeIdx, isStem = false) {
   if (pts.length < 2) return;
   const str = polylineStr(pts);
-  svgEl("polyline", { points: str, class: "tm-route-line", stroke: color }, layer);
+  const line = svgEl("polyline", { points: str, class: "tm-route-line", stroke: color }, layer);
+  if (routeIdx != null) line.setAttribute("data-route-line", routeIdx);
+  if (isStem) line.classList.add("tm-route-stem"); // shared approach: lights up for either route
   const hit = svgEl("polyline", { points: str, class: "tm-route-hit" }, layer);
   if (routeIdx != null) hit.setAttribute("data-route", routeIdx);
 }
@@ -1068,14 +1140,37 @@ function drawChevrons(layer, pts, color) {
 }
 
 // Red badge = how many red lights this route crosses, placed a little way into
-// the route's own (post-fork) portion.
-function drawRedBadge(layer, pts, reds) {
+// the route's own (post-fork) portion. The inner group scales on hover (the
+// outer group owns the translate, so CSS can't scale it directly).
+function drawRedBadge(layer, pts, reds, routeIdx) {
   const cum = cumLengths(pts);
   const at = sampleAlong(pts, cum, Math.min(22, cum[cum.length - 1] * 0.45));
   const g = svgEl("g", { class: "tm-route-badge", transform: `translate(${r1(at.x)} ${r1(at.y)})` }, layer);
-  svgEl("circle", { cx: 0, cy: 0, r: 9, class: "tm-route-badge-bg" }, g);
-  const t = svgEl("text", { x: 0, y: 0, class: "tm-route-badge-num" }, g);
+  const inner = svgEl("g", { class: "tm-route-badge-inner" }, g);
+  if (routeIdx != null) inner.setAttribute("data-route-badge", routeIdx);
+  svgEl("circle", { cx: 0, cy: 0, r: 9, class: "tm-route-badge-bg" }, inner);
+  const t = svgEl("text", { x: 0, y: 0, class: "tm-route-badge-num" }, inner);
   t.textContent = String(reds);
+}
+
+// Hovering a route's hit area lights up its line, the shared stem, and its
+// red-count badge, so it's clear which option a click would take.
+function setRouteHover(layer, idx, on) {
+  layer.querySelectorAll(`[data-route-line="${idx}"], .tm-route-stem`).forEach((el) =>
+    el.classList.toggle("tm-route-hover", on)
+  );
+  layer.querySelectorAll(`[data-route-badge="${idx}"]`).forEach((el) =>
+    el.classList.toggle("tm-route-badge-hover", on)
+  );
+}
+
+function wireRouteHover(layer) {
+  layer.querySelectorAll(".tm-route-hit").forEach((hit) => {
+    const idx = hit.dataset.route;
+    if (idx == null) return;
+    hit.addEventListener("mouseenter", () => setRouteHover(layer, idx, true));
+    hit.addEventListener("mouseleave", () => setRouteHover(layer, idx, false));
+  });
 }
 
 function clearPreview() {
@@ -1102,8 +1197,13 @@ function renderRoutePreview() {
     const tail0 = dressPath(p0.slice(connect));
     const tail1 = dressPath(p1.slice(connect));
 
+    // Clicking the shared stem (before the fork) is otherwise ambiguous —
+    // default it to the shorter route. This is the only way to pick the short
+    // route when the two paths don't fork until after the destination.
+    const shorterIdx = pathLength(p0) <= pathLength(p1) ? 0 : 1;
+
     if (shared.length >= 2) {
-      drawRouteLine(layer, shared, color, null);
+      drawRouteLine(layer, shared, color, shorterIdx, true);
       drawChevrons(layer, shared, color);
     }
     drawRouteLine(layer, tail0, color, 0);
@@ -1112,14 +1212,15 @@ function renderRoutePreview() {
     drawChevrons(layer, tail1, color);
     // Badge sits on each fork; if there's no real fork (identical tails) both
     // still render, offset by their own geometry.
-    drawRedBadge(layer, tail0.length >= 2 ? tail0 : dressPath(p0), routes[0].reds);
-    drawRedBadge(layer, tail1.length >= 2 ? tail1 : dressPath(p1), routes[1].reds);
+    drawRedBadge(layer, tail0.length >= 2 ? tail0 : dressPath(p0), routes[0].reds, 0);
+    drawRedBadge(layer, tail1.length >= 2 ? tail1 : dressPath(p1), routes[1].reds, 1);
   } else if (routes.length === 1) {
     const dressed = dressPath(routes[0].path);
     drawRouteLine(layer, dressed, color, 0);
     drawChevrons(layer, dressed, color);
-    drawRedBadge(layer, dressed, routes[0].reds);
+    drawRedBadge(layer, dressed, routes[0].reds, 0);
   }
+  wireRouteHover(layer);
 }
 
 // Commit the chosen preview route: hand the truck the exact approved path (and
@@ -1139,6 +1240,303 @@ function commitRoute(routeIdx) {
   socket.emit("truck_mania_move_truck", { roomId: app.roomId, truckId: truck.id, spot, reds });
 }
 
+// --------------------------------------------------------------------------
+// Build mode: the player hand-builds a route by clicking stop lights one at a
+// time, then ends it on a parking dot and hits Go. Only the final move is sent
+// (and seen by others); every red light clicked adds a ticket die.
+// --------------------------------------------------------------------------
+
+// From a position + heading, the stop lights and parking dots reachable *next*:
+// a Dijkstra over directed arcs (no U-turns, unless the player has the ability)
+// that stops expanding at the first stop light it meets — you must click that
+// light before going further — but passes straight through parking dots.
+// `firstLeg` applies the strict leaving-a-parking-spot rule (no reversing out);
+// later legs start at a junction, where left/right turns are legal — only true
+// U-turns are barred. Returns { octs: [{index, path, endAngle}], spots: [...] }.
+function manualChoices(px, py, headingDeg, canUturn, firstLeg = true) {
+  const graph = getGraph();
+  const res = { octs: [], spots: [] };
+  const start = nearestNode(graph, px, py);
+  if (start < 0) return res;
+
+  const octs = mapState.intersections ?? [];
+  const spots = mapState.spots ?? [];
+  const octAtNode = graph.nodePts.map(([x, y]) => {
+    for (let i = 0; i < octs.length; i += 1) {
+      if (Math.hypot(octs[i].x - x, octs[i].y - y) < 15) return i;
+    }
+    return -1;
+  });
+  const spotAtNode = graph.nodePts.map(([x, y]) => {
+    for (let i = 0; i < spots.length; i += 1) {
+      if (Math.hypot(spots[i].x - x, spots[i].y - y) < 8) return i;
+    }
+    return -1;
+  });
+
+  const states = new Map(); // "node:arcIndex" -> best way to finish that arc
+  const hx = Math.cos((headingDeg * Math.PI) / 180);
+  const hy = Math.sin((headingDeg * Math.PI) / 180);
+  (graph.adj[start] ?? []).forEach((e, k) => {
+    if (!canUturn) {
+      const [dx, dy] = polyDir(e.pts);
+      const dot = dx * hx + dy * hy;
+      // First leg: can't reverse out of the spot. Later legs start at a
+      // junction, where turning left/right is fine — only U-turns are barred.
+      if (firstLeg ? dot <= 0 : dot < UTURN_COS) return;
+    }
+    states.set(`${start}:${k}`, { e, key: `${start}:${k}`, dist: e.w, prevKey: null, done: false });
+  });
+
+  const octBest = new Map(); // octagon index -> first (shortest) arrival state
+  const spotBest = new Map();
+  for (;;) {
+    let cur = null;
+    for (const s of states.values()) {
+      if (!s.done && (!cur || s.dist < cur.dist)) cur = s;
+    }
+    if (!cur) break;
+    cur.done = true;
+    const v = cur.e.to;
+    const oi = octAtNode[v];
+    if (oi !== -1) {
+      if (!octBest.has(oi)) octBest.set(oi, cur);
+      continue; // a stop light gates the way — no expanding past it
+    }
+    const si = spotAtNode[v];
+    if (si !== -1 && !spotBest.has(si)) spotBest.set(si, cur); // dots are passable
+    const inDir = polyDir(cur.e.pts, true);
+    (graph.adj[v] ?? []).forEach((e2, k2) => {
+      if (!canUturn) {
+        const outDir = polyDir(e2.pts);
+        if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
+      }
+      const key2 = `${v}:${k2}`;
+      const old = states.get(key2);
+      const cand = { e: e2, key: key2, dist: cur.dist + e2.w, prevKey: cur.key, done: false };
+      if (!old || (!old.done && cand.dist < old.dist)) states.set(key2, cand);
+    });
+  }
+
+  const buildLeg = (s) => {
+    const chain = [];
+    for (let st = s; st; st = st.prevKey ? states.get(st.prevKey) : null) chain.push(st);
+    chain.reverse();
+    const pts = [chain[0].e.pts[0].slice()];
+    for (const st of chain) {
+      for (let i = 1; i < st.e.pts.length; i += 1) pts.push(st.e.pts[i].slice());
+    }
+    const d = polyDir(s.e.pts, true);
+    return { path: pts, endAngle: (Math.atan2(d[1], d[0]) * 180) / Math.PI };
+  };
+
+  octBest.forEach((s, i) => res.octs.push({ index: i, ...buildLeg(s) }));
+  spotBest.forEach((s, i) => res.spots.push({ index: i, ...buildLeg(s) }));
+  return res;
+}
+
+// Where the path-under-construction currently ends (position + heading).
+function builderHead() {
+  const w = builder.waypoints[builder.waypoints.length - 1];
+  if (!w) {
+    const p = truckPos[builder.truckId];
+    return { x: p.x, y: p.y, angle: p.angle };
+  }
+  const last = w.path[w.path.length - 1];
+  return { x: last[0], y: last[1], angle: w.endAngle };
+}
+
+// Next-step choices from the head, with unpickable spots filtered out: the
+// truck's own spot, and occupied spots unless the occupant is stealable.
+function computeBuilderChoices() {
+  const head = builderHead();
+  const c = manualChoices(head.x, head.y, head.angle, hasAbil("uturn"), builder.waypoints.length === 0);
+  const truck = trucksState.find((t) => t.id === builder.truckId);
+  c.spots = c.spots.filter(({ index }) => {
+    if (truck && index === truck.spot) return false;
+    const occ = trucksState.find((t) => t.id !== builder.truckId && t.spot === index);
+    if (!occ) return true;
+    return occ.player !== myIndex() && canStealTarget(occ.id);
+  });
+  return c;
+}
+
+function builderFullPath() {
+  let pts = [];
+  builder.waypoints.forEach((w, k) => {
+    pts = pts.concat(k === 0 ? w.path : w.path.slice(1));
+  });
+  return pts;
+}
+
+// Ticket dice the built path would roll: the red lights among the clicked
+// ones, counted against current colors (a mid-build time change updates it).
+function builderReds() {
+  return builder.waypoints.filter(
+    (w) => w.kind === "oct" && mapState.intersections[w.index]?.color === "red"
+  ).length;
+}
+
+function builderAddOct(index) {
+  const choice = builder.choices.octs.find((c) => c.index === index);
+  if (!choice) return;
+  builder.waypoints.push({ kind: "oct", index, path: choice.path, endAngle: choice.endAngle });
+  builder.choices = computeBuilderChoices();
+  renderBuild();
+}
+
+function builderAddSpot(index) {
+  const choice = builder.choices.spots.find((c) => c.index === index);
+  if (!choice) return;
+  builder.waypoints.push({ kind: "spot", index, path: choice.path, endAngle: choice.endAngle });
+  builder.done = true;
+  builder.choices = { octs: [], spots: [] };
+  renderBuild();
+}
+
+function builderUndo() {
+  if (!builder?.waypoints.length) return;
+  builder.waypoints.pop();
+  builder.done = false;
+  builder.choices = computeBuilderChoices();
+  renderBuild();
+}
+
+function builderRestart() {
+  if (!builder) return;
+  builder.waypoints = [];
+  builder.done = false;
+  builder.choices = computeBuilderChoices();
+  renderBuild();
+}
+
+function builderGo() {
+  if (!builder?.done) return;
+  const last = builder.waypoints[builder.waypoints.length - 1];
+  const path = builderFullPath();
+  const reds = Math.min(12, builderReds());
+  pendingRoutes[builder.truckId] = { spot: last.index, path, endAngle: last.endAngle };
+  const truckId = builder.truckId;
+  builder = null;
+  renderBuild();
+  socket.emit("truck_mania_move_truck", { roomId: app.roomId, truckId, spot: last.index, reds });
+}
+
+// (Re)open the build session when it applies: build mode, our turn, movement
+// still allowed, truck parked. Cleared otherwise. Safe to call at any point.
+function refreshBuilder() {
+  const truck = activeTruck();
+  const eligible =
+    moveMode === "build" && isActive() && !editor && app.roomId && boardMode === "play" &&
+    isMyTurn() && !turnActed && winnerState == null &&
+    truck && truckPos[truck.id] && truckAnim[truck.id] == null && !diceAnimating;
+  if (!eligible) {
+    builder = null;
+    renderBuild();
+    return;
+  }
+  if (!builder || builder.truckId !== truck.id || builder.baseSpot !== truck.spot) {
+    builder = {
+      truckId: truck.id,
+      baseSpot: truck.spot,
+      waypoints: [],
+      done: false,
+      choices: null
+    };
+    builder.choices = computeBuilderChoices();
+  }
+  renderBuild();
+}
+
+// Draw the build state: the growing arrow along the path so far, highlights on
+// the currently clickable lights/dots, and the Undo / Restart / Go panel.
+function renderBuild() {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  els.gameBoard.querySelector(".tm-build-panel")?.remove();
+  if (!svg) return;
+  svg.querySelector(".tm-build")?.remove();
+  svg.querySelectorAll(".tm-oct-choice").forEach((el) => el.classList.remove("tm-oct-choice"));
+  svg.querySelectorAll(".tm-spot-choice").forEach((el) => el.classList.remove("tm-spot-choice"));
+  svg.querySelectorAll(".tm-spot-picked").forEach((el) => el.classList.remove("tm-spot-picked"));
+  if (!builder || boardMode !== "play") return;
+
+  const color = myPlayer()?.color ?? "#3ac0c0";
+  const layer = svgEl("g", { class: "tm-build" }, svg);
+
+  const full = builderFullPath();
+  if (full.length >= 2) {
+    const dressed = dressPath(full);
+    svgEl("polyline", { points: polylineStr(dressed), class: "tm-build-line", stroke: color }, layer);
+    drawChevrons(layer, dressed, color);
+    const end = dressed[dressed.length - 1];
+    const cum = cumLengths(dressed);
+    const tip = sampleAlong(dressed, cum, Math.max(0, cum[cum.length - 1] - 0.5));
+    const g = svgEl("g", {
+      class: "tm-build-arrow",
+      transform: `translate(${r1(end[0])} ${r1(end[1])}) rotate(${Math.round(tip.angle)})`
+    }, layer);
+    svgEl("polygon", {
+      points: "-2,-6.5 11,0 -2,6.5",
+      fill: color,
+      stroke: "rgba(18,22,28,0.6)",
+      "stroke-width": 1
+    }, g);
+  }
+
+  if (builder.done) {
+    const last = builder.waypoints[builder.waypoints.length - 1];
+    svg.querySelector(`.tm-spot[data-spot="${last.index}"]`)?.classList.add("tm-spot-picked");
+  } else {
+    builder.choices.octs.forEach((c) => octEls[c.index]?.g.classList.add("tm-oct-choice"));
+    builder.choices.spots.forEach((c) =>
+      svg.querySelector(`.tm-spot[data-spot="${c.index}"]`)?.classList.add("tm-spot-choice")
+    );
+  }
+  renderBuildPanel();
+}
+
+function renderBuildPanel() {
+  const panel = document.createElement("div");
+  panel.className = "tm-build-panel";
+
+  const dice = document.createElement("div");
+  dice.className = "tm-build-dice";
+  const reds = builderReds();
+  for (let i = 0; i < Math.min(12, reds); i += 1) {
+    const d = document.createElement("span");
+    d.className = "tm-build-die";
+    dice.appendChild(d);
+  }
+  panel.appendChild(dice);
+
+  const hint = document.createElement("span");
+  hint.className = "tm-build-hint";
+  hint.textContent = builder.done
+    ? "Route set — hit Go to roll and drive"
+    : builder.waypoints.length
+      ? "Next stop light… or a parking dot to finish"
+      : "Click the stop light you're facing";
+  panel.appendChild(hint);
+
+  const undoBtn = button("Undo", "");
+  undoBtn.disabled = !builder.waypoints.length;
+  undoBtn.addEventListener("click", builderUndo);
+  panel.appendChild(undoBtn);
+
+  const restartBtn = button("Restart", "");
+  restartBtn.disabled = !builder.waypoints.length;
+  restartBtn.addEventListener("click", builderRestart);
+  panel.appendChild(restartBtn);
+
+  if (builder.done) {
+    const goBtn = button("Go", "", "primary-btn");
+    goBtn.classList.add("tm-build-go");
+    goBtn.addEventListener("click", builderGo);
+    panel.appendChild(goBtn);
+  }
+  els.gameBoard.appendChild(panel);
+}
+
 // A parcel: a filled square or circle with a dark outline. Used on buildings,
 // in the dock, and for the fly animation.
 function drawPackage(parent, shape, color, cx, cy, size) {
@@ -1156,6 +1554,8 @@ function dockSlotLocal(k) {
 }
 
 function truckLocalToWorld(pos, lx, ly) {
+  lx *= TRUCK_SCALE; // match the scale in truckTransform
+  ly *= TRUCK_SCALE;
   const rad = (pos.angle * Math.PI) / 180;
   const y = Math.cos(rad) < 0 ? -ly : ly; // match the vertical flip in the transform
   return [
@@ -1170,7 +1570,6 @@ function renderCargo(id) {
   layer.innerHTML = "";
   const truck = trucksState.find((t) => t.id === id);
   if (!truck) return;
-  const isVictim = stealSession?.victimId === id && stealSession.remaining > 0;
   let slot = 0;
   (truck.cargo ?? []).forEach((pkg) => {
     if (animatingPkgs.has(pkg.id)) return;
@@ -1180,7 +1579,6 @@ function renderCargo(id) {
     shape.classList.add("tm-pkg-cargo");
     shape.setAttribute("data-pkg", pkg.id);
     shape.setAttribute("data-truck", id);
-    if (isVictim) shape.classList.add("tm-steal-target");
   });
 }
 
@@ -1196,12 +1594,29 @@ function nextDockWorld(id) {
 // each truck's cargo stack in sync with server state.
 function syncTrucks(trucks) {
   trucksState = trucks ?? [];
+  // A truck that appeared mid-game (the Extra-truck card) has no element yet —
+  // build one in place so it shows up without a full board rebuild.
+  const layer = els.gameBoard.querySelector(".tm-map .tm-trucks");
+  if (layer) {
+    trucksState.forEach((t) => {
+      if (!truckEls[t.id]) addTruckEl(layer, t);
+    });
+  }
   trucksState.forEach((t) => {
     const spot = mapState.spots?.[t.spot];
     if (!spot || !truckEls[t.id]) return;
+    // Sharing a spot means a robbery in progress: the newcomer sits shy of the
+    // occupant instead of stacking on top of it.
+    const sharing = trucksState.some((o) => o.id !== t.id && o.spot === t.spot && o.id < t.id);
     const prev = truckSpots[t.id];
     if (prev == null) {
-      truckPos[t.id] = { x: spot.x, y: spot.y, angle: spot.angle };
+      let { x, y } = spot;
+      if (sharing) {
+        const rad = (spot.angle * Math.PI) / 180;
+        x -= Math.cos(rad) * STEAL_GAP;
+        y -= Math.sin(rad) * STEAL_GAP;
+      }
+      truckPos[t.id] = { x, y, angle: spot.angle };
       truckSpots[t.id] = t.spot;
       truckTransform(t.id);
     } else if (prev !== t.spot) {
@@ -1225,26 +1640,29 @@ function syncTrucks(trucks) {
         path = findPath(getGraph(), from.x, from.y, spot.x, spot.y);
         endAngle = lastPathAngle(path, spot.angle);
       }
-      startDrive(t.id, path, endAngle);
+      const occupied = trucksState.some((o) => o.id !== t.id && o.spot === t.spot);
+      startDrive(t.id, path, endAngle, occupied ? STEAL_GAP : 0);
     }
     renderCargo(t.id);
   });
 }
 
-// Start a truck's drive, or hold it until the dice animation finishes so the
-// truck doesn't move until the roll is over.
-function startDrive(id, path, endAngle) {
-  if (diceAnimating) {
-    deferredDrives.push({ id, path, endAngle });
+// Start a truck's drive, or hold it while the dice roll / clock flip plays out
+// so the truck doesn't move until those animations are over.
+function startDrive(id, path, endAngle, stopShort = 0) {
+  if (diceAnimating || flipping) {
+    deferredDrives.push({ id, path, endAngle, stopShort });
     return;
   }
-  driveTruck(id, path, endAngle, { onArrive: () => onTruckArrive(id) });
+  driveTruck(id, path, endAngle, { stopShort, onArrive: () => onTruckArrive(id) });
 }
 
 function runDeferredDrives() {
   const list = deferredDrives;
   deferredDrives = [];
-  list.forEach((d) => driveTruck(d.id, d.path, d.endAngle, { onArrive: () => onTruckArrive(d.id) }));
+  list.forEach((d) =>
+    driveTruck(d.id, d.path, d.endAngle, { stopShort: d.stopShort, onArrive: () => onTruckArrive(d.id) })
+  );
 }
 
 // On arrival: fly in any packages this truck picked up/delivered mid-drive, and
@@ -1256,6 +1674,8 @@ function onTruckArrive(id) {
     runPkgFlies(evs);
   }
   if (id === activeTruckId()) maybeOpenSteal();
+  updateTurnControls(); // End turn re-enables once nothing is driving
+  refreshBuilder();
 }
 
 // Travel direction at the end of a path (the truck's true arrival facing).
@@ -1295,10 +1715,11 @@ function clearSteal() {
   const victimId = stealSession.victimId;
   stealSession = null;
   els.gameBoard.querySelector(".tm-map .tm-steal")?.remove();
-  if (trucksState.some((t) => t.id === victimId)) renderCargo(victimId);
+  truckEls[victimId]?.classList.remove("tm-steal-victim");
 }
 
-// A label above the victim showing steals left; the player leaves by moving.
+// The victim truck glows and a label above it shows steals left; clicking the
+// truck (or a package in its dock) takes a package. The player leaves by moving.
 function renderStealOverlay() {
   const svg = els.gameBoard.querySelector(".tm-map");
   if (!svg) return;
@@ -1306,8 +1727,9 @@ function renderStealOverlay() {
   if (!stealSession) return;
   const vp = truckPos[stealSession.victimId];
   if (!vp) return;
+  truckEls[stealSession.victimId]?.classList.toggle("tm-steal-victim", stealSession.remaining > 0);
   const layer = svgEl("g", { class: "tm-steal" }, svg);
-  const label = svgEl("g", { transform: `translate(${r1(vp.x)} ${r1(vp.y - 24)})` }, layer);
+  const label = svgEl("g", { transform: `translate(${r1(vp.x)} ${r1(vp.y - 28)})` }, layer);
   svgEl("rect", { x: -46, y: -9, width: 92, height: 17, rx: 8, class: "tm-steal-label-bg" }, label);
   const lt = svgEl("text", { x: 0, y: 0, class: "tm-steal-label-text" }, label);
   lt.textContent = stealSession.remaining > 0 ? `Steal up to ${stealSession.remaining}` : "Move to continue";
@@ -1338,6 +1760,21 @@ function attemptSteal(pkgId) {
   renderStealOverlay();
 }
 
+// Clicking the glowing victim truck steals the first package we can hold.
+function stealNextFromVictim() {
+  if (!stealSession || stealSession.remaining <= 0) return;
+  const me = activeTruck();
+  const victim = trucksState.find((t) => t.id === stealSession.victimId);
+  if (!me || !victim) return;
+  const player = myPlayer();
+  if ((me.cargo?.length ?? 0) >= columnValue("capacity", player)) return;
+  const colors = new Set((me.cargo ?? []).map((p) => p.color));
+  const pkg = (victim.cargo ?? []).find(
+    (p) => colors.has(p.color) || colors.size < columnValue("variety", player)
+  );
+  if (pkg) attemptSteal(pkg.id);
+}
+
 // Signed shortest angular difference a→b, in degrees (−180..180].
 function angleDelta(a, b) {
   return ((b - a + 540) % 360) - 180;
@@ -1345,7 +1782,8 @@ function angleDelta(a, b) {
 
 // Animate a truck along a polyline at roughly constant speed. The heading eases
 // toward the travel direction instead of snapping, so corners are taken as a
-// gentle turn. Calls opts.onArrive when it parks.
+// gentle turn. opts.stopShort parks it that many px shy of the path's end (used
+// to pull up behind a truck it's about to rob). Calls opts.onArrive on parking.
 function driveTruck(id, path, endAngle, opts = {}) {
   if (truckAnim[id]) cancelAnimationFrame(truckAnim[id]);
   const cum = [0];
@@ -1353,19 +1791,30 @@ function driveTruck(id, path, endAngle, opts = {}) {
     cum.push(cum[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
   }
   const total = cum[cum.length - 1];
+  const stopAt = Math.max(0, total - (opts.stopShort ?? 0));
   const last = path[path.length - 1];
-  if (total < 1) {
-    truckPos[id] = { x: last[0], y: last[1], angle: endAngle };
+  const park = () => {
+    if (stopAt < total) {
+      const s = sampleAlong(path, cum, stopAt);
+      truckPos[id] = { x: s.x, y: s.y, angle: s.angle };
+    } else {
+      truckPos[id] = { x: last[0], y: last[1], angle: endAngle };
+    }
     truckTransform(id);
+  };
+  if (stopAt < 1) {
+    park();
+    truckAnim[id] = null;
     opts.onArrive?.();
     return;
   }
-  const speed = 240; // px per second
-  const duration = Math.min(4200, Math.max(450, (total / speed) * 1000));
+  // Constant speed: no duration cap, so long routes take proportionally longer
+  // instead of the truck silently speeding up.
+  const duration = Math.max(250, (stopAt / TRUCK_SPEED) * 1000) / speedMult;
   const start = performance.now();
 
   const step = (now) => {
-    const target = Math.min(total, ((now - start) / duration) * total);
+    const target = Math.min(stopAt, ((now - start) / duration) * stopAt);
     let i = 1;
     while (i < cum.length && cum[i] < target) i += 1;
     const a = path[i - 1];
@@ -1380,11 +1829,10 @@ function driveTruck(id, path, endAngle, opts = {}) {
     }
     truckPos[id] = { x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f, angle };
     truckTransform(id);
-    if (target < total) {
+    if (target < stopAt) {
       truckAnim[id] = requestAnimationFrame(step);
     } else {
-      truckPos[id] = { x: last[0], y: last[1], angle: endAngle };
-      truckTransform(id);
+      park();
       truckAnim[id] = null;
       opts.onArrive?.();
     }
@@ -1516,7 +1964,7 @@ function flyPackage(shape, color, from, to, onDone) {
   if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
   const g = svgEl("g", {}, layer);
   drawPackage(g, shape, color, 0, 0, CARGO_SIZE + 1);
-  const dur = 360;
+  const dur = 360 / speedMult;
   const start = performance.now();
   const step = (now) => {
     const t = Math.min(1, (now - start) / dur);
@@ -1531,10 +1979,19 @@ function flyPackage(shape, color, from, to, onDone) {
   requestAnimationFrame(step);
 }
 
+// The value list for a column — from the room's tunable settings when present,
+// else the classic defaults baked into PB_COLUMNS.
+function columnValuesFor(colId) {
+  const vals = settingsState?.columns?.[colId];
+  if (Array.isArray(vals) && vals.length) return vals;
+  return PB_COLUMNS.find((c) => c.id === colId)?.values ?? [];
+}
+
 // Current value of a player-board column (e.g. capacity 2→7), by its level.
 function columnValue(colId, player) {
-  const col = PB_COLUMNS.find((c) => c.id === colId);
-  return col?.values[player?.columns?.[colId] ?? 0];
+  const vals = columnValuesFor(colId);
+  if (!vals.length) return undefined;
+  return vals[Math.min(player?.columns?.[colId] ?? 0, vals.length - 1)];
 }
 
 function attemptPickup(pkgId, bid) {
@@ -1576,8 +2033,8 @@ function animateDropoff(pkg, from, to, onDone) {
   if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
   const g = svgEl("g", {}, layer);
   const shapeEl = drawPackage(g, pkg.shape, pkg.color, 0, 0, BLD_PKG_SIZE);
-  const flyDur = 360;
-  const flipDur = 300;
+  const flyDur = 360 / speedMult;
+  const flipDur = 300 / speedMult;
   const start = performance.now();
   let flipped = false;
 
@@ -1606,13 +2063,13 @@ function animateDropoff(pkg, from, to, onDone) {
 
 function attemptDropoff(pkgId) {
   const truck = activeTruck();
-  if (!truck || truckShares(truck)) return;
+  if (!truck || truckShares(truck)) return false;
   const pkg = truck.cargo?.find((p) => p.id === pkgId);
-  if (!pkg) return;
+  if (!pkg) return false;
   const building = usableBuildingsClient().find((b) =>
     b.role === "dropoff" && b.dropoffColor === pkg.color &&
     (b.delivered?.length ?? 0) < (b.dropoffLimit ?? Infinity));
-  if (!building) return;
+  if (!building) return false;
   const from = truckLocalToWorld(truckPos[truck.id] ?? { x: 0, y: 0, angle: 0 }, ...dockSlotLocal(truck.cargo.indexOf(pkg)));
   const [cx, cy] = buildingCentroid(building);
   const slot = (building.delivered ?? []).filter((p) => !animatingPkgs.has(p.id)).length;
@@ -1621,6 +2078,32 @@ function attemptDropoff(pkgId) {
   renderCargo(truck.id);
   socket.emit("truck_mania_dropoff", { roomId: app.roomId, truckId: truck.id, packageId: pkgId });
   animateDropoff(pkg, from, to, () => {
+    animatingPkgs.delete(pkgId);
+    renderCargo(truck.id);
+    renderBuildingPackagesRefresh();
+  });
+  return true;
+}
+
+// Regret a pickup: fly the package back onto the building it was just taken
+// from. Only packages picked up this turn, and only while still parked there.
+function attemptPutback(pkgId) {
+  const truck = activeTruck();
+  if (!truck || truckShares(truck)) return;
+  const entry = turnPickups.find((e) => e.pkg === pkgId);
+  if (!entry) return;
+  const pkg = truck.cargo?.find((p) => p.id === pkgId);
+  if (!pkg) return;
+  const building = usableBuildingsClient().find((b) => b.bid === entry.bid && b.role === "pickup");
+  if (!building) return;
+  const from = truckLocalToWorld(truckPos[truck.id] ?? { x: 0, y: 0, angle: 0 }, ...dockSlotLocal(truck.cargo.indexOf(pkg)));
+  const [cx, cy] = buildingCentroid(building);
+  const slot = (building.packages ?? []).filter((p) => !animatingPkgs.has(p.id)).length;
+  const to = bldPkgSlot(cx, cy, slot);
+  animatingPkgs.add(pkgId);
+  renderCargo(truck.id);
+  socket.emit("truck_mania_putback", { roomId: app.roomId, truckId: truck.id, packageId: pkgId });
+  flyPackage(pkg.shape, pkg.color, from, to, () => {
     animatingPkgs.delete(pkgId);
     renderCargo(truck.id);
     renderBuildingPackagesRefresh();
@@ -1675,10 +2158,25 @@ function dispatchFlies(events) {
   events.forEach((e) => (byTruck[e.truckId] ??= []).push(e));
   Object.entries(byTruck).forEach(([tid, evs]) => {
     const id = Number(tid);
-    const moving = truckAnim[id] != null || diceAnimating ||
+    const moving = truckAnim[id] != null || diceAnimating || flipping ||
       deferredDrives.some((d) => d.id === id) || pendingFlies[id];
     if (moving) (pendingFlies[id] ??= []).push(...evs);
     else runPkgFlies(evs);
+  });
+}
+
+// Flies held for a truck that isn't actually going to move (e.g. an AI that
+// changed the clock, then acted in place): release them once the blocking
+// animation ends.
+function flushIdleFlies() {
+  Object.keys(pendingFlies).forEach((k) => {
+    const id = Number(k);
+    if (truckAnim[id] == null && !deferredDrives.some((d) => d.id === id) &&
+      !diceAnimating && !flipping) {
+      const evs = pendingFlies[id];
+      delete pendingFlies[id];
+      runPkgFlies(evs);
+    }
   });
 }
 
@@ -1706,7 +2204,7 @@ function runPkgFlies(events) {
           renderBuildingPackagesRefresh();
         });
       }
-    }, i * 130);
+    }, (i * 130) / speedMult);
   });
 }
 
@@ -1750,27 +2248,74 @@ function previewTo(spotIndex) {
   renderRoutePreview();
 }
 
-function onBoardClick(event) {
-  if (editor || !app.roomId || !isMyTurn() || diceAnimating) return;
+function anyTruckAnimating() {
+  return Object.values(truckAnim).some((h) => h != null);
+}
 
-  // Steal from the truck we're parked on.
+function onBoardClick(event) {
+  if (editor || !app.roomId || !isMyTurn() || diceAnimating || anyTruckAnimating()) return;
+
+  // Steal from the truck we've pulled up behind: click the glowing truck to
+  // take its next package, or a specific package in its dock.
   if (stealSession) {
     const victimPkg = event.target.closest?.(".tm-pkg-cargo");
     if (victimPkg && Number(victimPkg.dataset.truck) === stealSession.victimId) {
       attemptSteal(victimPkg.dataset.pkg);
       return;
     }
+    const victimTruck = event.target.closest?.(".tm-truck");
+    if (victimTruck && Number(victimTruck.dataset.truck) === stealSession.victimId) {
+      stealNextFromVictim();
+      return;
+    }
   }
 
-  // Deliver from the active truck's dock.
+  // Deliver from the active truck's dock — or, if nothing here takes the
+  // package, put a just-picked-up one back where it came from.
   const cargoPkg = event.target.closest?.(".tm-pkg-cargo");
   if (cargoPkg && Number(cargoPkg.dataset.truck) === activeTruckId()) {
-    attemptDropoff(cargoPkg.dataset.pkg);
+    if (!attemptDropoff(cargoPkg.dataset.pkg)) attemptPutback(cargoPkg.dataset.pkg);
     return;
   }
   const bldPkg = event.target.closest?.(".tm-pkg-building");
   if (bldPkg) {
     attemptPickup(bldPkg.dataset.pkg, Number(bldPkg.dataset.bid));
+    return;
+  }
+
+  // Build mode: clicks add to the path under construction. Anything that isn't
+  // a legal next light/dot is ignored — a stray click never kills the path.
+  if (moveMode === "build") {
+    if (!builder || turnActed) return;
+    const octG = event.target.closest?.(".tm-oct");
+    if (octG && octG.dataset.oct != null) {
+      const i = Number(octG.dataset.oct);
+      if (!builder.done && builder.choices.octs.some((c) => c.index === i)) builderAddOct(i);
+      return;
+    }
+    const truckEl = event.target.closest?.(".tm-truck");
+    if (truckEl && truckEl.dataset.truck != null) {
+      const tid = Number(truckEl.dataset.truck);
+      const clicked = trucksState.find((t) => t.id === tid);
+      if (clicked?.player === myIndex()) {
+        if ((turnTruck == null || turnTruck === tid) && tid !== selectedTruckId) {
+          selectedTruckId = tid;
+          renderTruckHighlight();
+          refreshBuilder();
+        }
+        return;
+      }
+      // Clicking a robbable truck ends the path on its spot (the steal setup).
+      if (!builder.done && clicked && builder.choices.spots.some((c) => c.index === clicked.spot)) {
+        builderAddSpot(clicked.spot);
+      }
+      return;
+    }
+    const spotEl = event.target.closest?.(".tm-spot");
+    if (spotEl && !builder.done) {
+      const i = Number(spotEl.dataset.spot);
+      if (builder.choices.spots.some((c) => c.index === i)) builderAddSpot(i);
+    }
     return;
   }
 
@@ -1829,16 +2374,43 @@ function myPlayer() {
   return playersState[app.myPlayerIndex] ?? playersState[0];
 }
 
+// Floating preview of a player's full board, shown while hovering their chip.
+function showPlayerStatsTip(player, anchor) {
+  hidePlayerStatsTip();
+  const tip = document.createElement("div");
+  tip.className = "tm-stats-tip";
+  renderTimeStones(tip, player.timeStones ?? 0);
+  tip.appendChild(buildPlayerBoard(player));
+  document.body.appendChild(tip);
+  const r = anchor.getBoundingClientRect();
+  const tw = tip.offsetWidth;
+  let left = r.left + r.width / 2 - tw / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  tip.style.left = `${left}px`;
+  tip.style.top = `${r.bottom + 8}px`;
+}
+
+function hidePlayerStatsTip() {
+  document.querySelector(".tm-stats-tip")?.remove();
+}
+
 // Scoreboard in the game header: every player as a color chip with their score.
+// Hovering a chip previews that player's full board (stats).
 function renderScoreboard() {
   const header = document.querySelector(".game-header");
   header?.querySelector(".tm-scoreboard")?.remove();
+  hidePlayerStatsTip();
   if (!header || !playersState.length) return;
   const bar = document.createElement("div");
   bar.className = "tm-scoreboard";
-  playersState.forEach((p) => {
+  playersState.forEach((p, i) => {
     const chip = document.createElement("div");
     chip.className = "tm-score";
+    chip.dataset.player = i;
+    chip.style.setProperty("--pcolor", p.color);
+    if (winnerState === i) chip.classList.add("tm-score-winner");
+    // Light up whoever's turn it is, so it's obvious who is acting.
+    if (winnerState == null && turnWhose === i) chip.classList.add("tm-score-turn");
     const dot = document.createElement("span");
     dot.className = "tm-score-dot";
     dot.style.background = p.color;
@@ -1846,6 +2418,8 @@ function renderScoreboard() {
     val.className = "tm-score-val";
     val.textContent = String(p.points ?? 0);
     chip.append(dot, val);
+    chip.addEventListener("mouseenter", () => showPlayerStatsTip(p, chip));
+    chip.addEventListener("mouseleave", hidePlayerStatsTip);
     bar.appendChild(chip);
   });
   header.appendChild(bar);
@@ -1857,17 +2431,21 @@ const DIE_PIPS = {
   5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8]
 };
 
-// Draw the dice panel under the clock. `faces` are the pip counts to show;
-// while `settled` is false the dice are mid-roll (no ticket/safe coloring yet).
-// Shown for whoever rolled, to everyone.
-function renderDicePanel(roll, faces, settled) {
-  els.gameBoard.querySelector(".tm-dice")?.remove();
-  if (!roll || !faces?.length) return;
-  const who = playersState[roll.player]?.name ?? "Player";
+function makeDieEl(d, settled, aversion) {
+  const die = document.createElement("div");
+  if (!settled) die.className = "tm-die tm-die-rolling";
+  else die.className = `tm-die ${d > aversion ? "tm-die-ticket" : "tm-die-safe"}`;
+  (DIE_PIPS[d] ?? []).forEach((pos) => {
+    const pip = document.createElement("span");
+    pip.className = "tm-pip";
+    pip.style.gridArea = `${Math.floor(pos / 3) + 1} / ${(pos % 3) + 1}`;
+    die.appendChild(pip);
+  });
+  return die;
+}
 
-  const wrap = document.createElement("div");
-  wrap.className = "tm-dice";
-  const head = document.createElement("div");
+function setDiceHead(head, roll, settled) {
+  const who = playersState[roll.player]?.name ?? "Player";
   head.className = "tm-dice-head";
   if (!settled) {
     head.textContent = `${who} rolling…`;
@@ -1879,22 +2457,30 @@ function renderDicePanel(roll, faces, settled) {
     head.textContent = `${who}: no tickets`;
     head.classList.add("tm-dice-good");
   }
+}
+
+function setDiceFaces(row, roll, faces, settled) {
+  row.innerHTML = "";
+  faces.forEach((d) => row.appendChild(makeDieEl(d, settled, roll.aversion)));
+}
+
+// Draw the dice panel under the clock. `faces` are the pip counts to show;
+// while `settled` is false the dice are mid-roll (no ticket/safe coloring yet).
+// `big` scales the whole panel up for the roll sequence. Shown for whoever
+// rolled, to everyone.
+function renderDicePanel(roll, faces, settled, big = false) {
+  els.gameBoard.querySelector(".tm-dice")?.remove();
+  if (!roll || !faces?.length) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = `tm-dice${big ? " tm-dice-big" : ""}`;
+  const head = document.createElement("div");
+  setDiceHead(head, roll, settled);
   wrap.appendChild(head);
 
   const row = document.createElement("div");
   row.className = "tm-dice-row";
-  faces.forEach((d) => {
-    const die = document.createElement("div");
-    if (!settled) die.className = "tm-die tm-die-rolling";
-    else die.className = `tm-die ${d > roll.aversion ? "tm-die-ticket" : "tm-die-safe"}`;
-    (DIE_PIPS[d] ?? []).forEach((pos) => {
-      const pip = document.createElement("span");
-      pip.className = "tm-pip";
-      pip.style.gridArea = `${Math.floor(pos / 3) + 1} / ${(pos % 3) + 1}`;
-      die.appendChild(pip);
-    });
-    row.appendChild(die);
-  });
+  setDiceFaces(row, roll, faces, settled);
   wrap.appendChild(row);
   els.gameBoard.appendChild(wrap);
 }
@@ -1910,22 +2496,61 @@ function renderDice() {
   renderDicePanel(roll, roll.dice, true);
 }
 
-// Tumble the dice for ~1s, then settle on the real faces and call onDone.
+// The roll sequence, in beats: the dice grow and shake while tumbling, settle
+// on the real faces (still big), then — if points were lost — a clear "−N"
+// beat on the panel and the roller's score chip, and only then does onDone run
+// (which releases the deferred truck drive). Keep the totals here in sync with
+// the server's AI turn delays (game.js DICE_MS_*).
 function animateDiceRoll(roll, onDone) {
   const n = roll.dice.length;
   const rnd = () => Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6));
-  renderDicePanel(roll, rnd(), false);
+  renderDicePanel(roll, rnd(), false, true); // panel built once, faces updated in place
+  const wrap = els.gameBoard.querySelector(".tm-dice");
+  const head = wrap?.querySelector(".tm-dice-head");
+  const row = wrap?.querySelector(".tm-dice-row");
   let elapsed = 0;
   const iv = setInterval(() => {
     elapsed += 90;
-    if (elapsed < 1000) {
-      renderDicePanel(roll, rnd(), false);
+    if (elapsed < 1300 / speedMult) {
+      if (row) setDiceFaces(row, roll, rnd(), false);
     } else {
       clearInterval(iv);
-      renderDicePanel(roll, roll.dice, true);
-      setTimeout(onDone, 450);
+      if (row) setDiceFaces(row, roll, roll.dice, true);
+      if (head) setDiceHead(head, roll, true);
+      const hasLoss = roll.tickets > 0;
+      if (hasLoss) setTimeout(() => flashLoss(roll), 250 / speedMult);
+      setTimeout(() => {
+        els.gameBoard.querySelector(".tm-dice")?.classList.remove("tm-dice-big");
+        onDone();
+      }, (hasLoss ? 2100 : 900) / speedMult);
     }
   }, 90);
+}
+
+// The point-loss beat: a big "−N" popping off the dice panel, and the same
+// figure flashing on the roller's scoreboard chip.
+function flashLoss(roll) {
+  const amount = `−${roll.loss ?? roll.tickets}`;
+  const wrap = els.gameBoard.querySelector(".tm-dice");
+  if (wrap) {
+    const loss = document.createElement("div");
+    loss.className = "tm-dice-loss";
+    loss.textContent = amount;
+    wrap.appendChild(loss);
+    setTimeout(() => loss.remove(), 1900);
+  }
+  const chip = document.querySelector(`.tm-scoreboard .tm-score[data-player="${roll.player}"]`);
+  if (chip) {
+    chip.classList.add("tm-score-hit");
+    const f = document.createElement("span");
+    f.className = "tm-score-float";
+    f.textContent = amount;
+    chip.appendChild(f);
+    setTimeout(() => {
+      chip.classList.remove("tm-score-hit");
+      f.remove();
+    }, 1700);
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -2023,15 +2648,9 @@ function renderTimeStones(parent, count) {
   parent.appendChild(wrap);
 }
 
-function renderPlayerBoard() {
-  els.gameBoard.querySelector(".tm-pb-wrap")?.remove();
-  const me = myPlayer();
-  if (!me) return;
-
-  const wrap = document.createElement("div");
-  wrap.className = "tm-pb-wrap";
-  renderTimeStones(wrap, me.timeStones ?? 0);
-
+// Build the .tm-player-board element for any player (used for the human's own
+// board and for the hover preview of an opponent's stats).
+function buildPlayerBoard(me) {
   const board = document.createElement("div");
   board.className = "tm-player-board";
 
@@ -2081,20 +2700,36 @@ function renderPlayerBoard() {
       return;
     }
 
-    for (let i = 0; i < 6; i += 1) {
+    // Column lengths are tunable, so cells share a fixed column height:
+    // longer columns get shorter blocks, shorter columns taller ones.
+    const vals = columnValuesFor(col.id);
+    const cellH = Math.max(13, Math.min(30, Math.round(150 / Math.max(1, vals.length))));
+    const level = Math.min(cur, vals.length - 1);
+    vals.forEach((val, i) => {
       const cell = document.createElement("div");
       cell.className = "tm-pb-cell";
-      const val = col.values[i];
-      const isCurrent = val != null && i === cur;
+      cell.style.height = `${cellH}px`;
+      const isCurrent = i === level;
       cell.style.background = hexToRgba(col.color, isCurrent ? 0.95 : 0.22);
-      if (val != null) cell.textContent = String(val);
+      cell.textContent = String(val);
       if (isCurrent) cell.classList.add("tm-pb-current");
       c.appendChild(cell);
-    }
+    });
     grid.appendChild(c);
   });
   board.appendChild(grid);
-  wrap.appendChild(board);
+  return board;
+}
+
+function renderPlayerBoard() {
+  els.gameBoard.querySelector(".tm-pb-wrap")?.remove();
+  const me = myPlayer();
+  if (!me) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "tm-pb-wrap";
+  renderTimeStones(wrap, me.timeStones ?? 0);
+  wrap.appendChild(buildPlayerBoard(me));
   els.gameBoard.appendChild(wrap);
 }
 
@@ -2615,6 +3250,261 @@ function saveMap() {
 }
 
 // --------------------------------------------------------------------------
+// Tuning: edit every number in the game, save named versions (local runs
+// only), and apply presets/saved versions mid-match.
+// --------------------------------------------------------------------------
+
+const TUNE_COLUMNS = [
+  ["capacity", "Capacity"], ["variety", "Variety"], ["aversion", "Aversion"],
+  ["agression", "Agression"], ["timestones", "Time stones"]
+];
+const TUNE_COLORS = [
+  ["#cf4a3c", "Red"], ["#e08a3c", "Orange"], ["#e8c33c", "Yellow"],
+  ["#4f9d57", "Green"], ["#4a72b0", "Blue"], ["#8a5bb0", "Purple"], ["#8f6b52", "Brown"]
+];
+
+function openTuning() {
+  if (!settingsState) return;
+  tuneDraft = {
+    columns: Object.fromEntries(
+      TUNE_COLUMNS.map(([id]) => [id, (settingsState.columns?.[id] ?? []).join(", ")])
+    ),
+    packages: Object.fromEntries(TUNE_COLORS.map(([hex]) => {
+      const p = settingsState.packages?.[hex] ?? { square: 0, circle: 0 };
+      return [hex, { square: String(p.square), circle: String(p.circle) }];
+    })),
+    protectedCount: String(settingsState.protectedCount ?? 6),
+    startingTimeStones: String(settingsState.startingTimeStones ?? 3),
+    points: {
+      square: String(settingsState.points?.square ?? 1),
+      circle: String(settingsState.points?.circle ?? 2),
+      ticket: String(settingsState.points?.ticket ?? 1),
+      rushTicket: String(settingsState.points?.rushTicket ?? 2)
+    }
+  };
+  renderTuning();
+}
+
+function closeTuning() {
+  tuneDraft = null;
+  document.querySelector(".tm-tuning")?.remove();
+}
+
+// Parse the draft into a settings object + the list of everything that doesn't
+// line up yet. Editing is free; only Save (and the issue list) cares.
+function parseTuneDraft() {
+  const issues = [];
+  const columns = {};
+  TUNE_COLUMNS.forEach(([id, label]) => {
+    const nums = tuneDraft.columns[id]
+      .split(",").map((s) => s.trim()).filter((s) => s !== "").map(Number);
+    if (!nums.length || nums.some((n) => !Number.isInteger(n) || n < 0 || n > 99)) {
+      issues.push(`${label}: comma-separated whole numbers (0–99)`);
+    } else if (nums.length < 2 || nums.length > 12) {
+      issues.push(`${label}: needs 2–12 values`);
+    }
+    columns[id] = nums;
+  });
+
+  const packages = {};
+  let circles = 0;
+  let squares = 0;
+  TUNE_COLORS.forEach(([hex, name]) => {
+    const sq = Number(tuneDraft.packages[hex].square);
+    const ci = Number(tuneDraft.packages[hex].circle);
+    if (!Number.isInteger(sq) || sq < 0 || !Number.isInteger(ci) || ci < 0) {
+      issues.push(`${name} packages: counts must be whole numbers`);
+    }
+    packages[hex] = { square: sq | 0, circle: ci | 0 };
+    squares += sq | 0;
+    circles += ci | 0;
+  });
+
+  const protectedCount = Number(tuneDraft.protectedCount);
+  if (!Number.isInteger(protectedCount) || protectedCount < 0 || protectedCount > 12) {
+    issues.push("Protected locations: 0–12");
+  }
+  const startingTimeStones = Number(tuneDraft.startingTimeStones);
+  if (!Number.isInteger(startingTimeStones) || startingTimeStones < 0) {
+    issues.push("Starting time stones: a whole number ≥ 0");
+  }
+  const points = {};
+  [["square", "Square points"], ["circle", "Circle points"],
+   ["ticket", "Ticket loss"], ["rushTicket", "Rush-hour ticket loss"]].forEach(([k, label]) => {
+    const v = Number(tuneDraft.points[k]);
+    if (!Number.isInteger(v) || v < 0) issues.push(`${label}: a whole number ≥ 0`);
+    points[k] = v | 0;
+  });
+
+  // The line-up rules (mirrored by the server before persisting).
+  if (Number.isInteger(protectedCount) && protectedCount >= 0) {
+    if (circles !== protectedCount * 6) {
+      issues.push(`Circles must total protected × 6 = ${protectedCount * 6} (now ${circles})`);
+    }
+    const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
+    if (orange !== protectedCount * 2) {
+      issues.push(`Orange must total protected × 2 = ${protectedCount * 2} (now ${orange})`);
+    }
+  }
+  if (squares % 6 !== 0) issues.push(`Squares must divide by 6 (now ${squares})`);
+
+  return {
+    settings: { columns, packages, protectedCount, startingTimeStones, points },
+    issues
+  };
+}
+
+function tuneField(value, onInput, cls = "tm-tune-input") {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = cls;
+  input.value = value;
+  input.addEventListener("input", () => {
+    onInput(input.value);
+    updateTuneStatus();
+  });
+  return input;
+}
+
+// Refresh the footer: issue list + Save enabled state.
+function updateTuneStatus() {
+  const panel = document.querySelector(".tm-tuning");
+  if (!panel || !tuneDraft) return;
+  const { issues } = parseTuneDraft();
+  const box = panel.querySelector(".tm-tune-issues");
+  box.innerHTML = "";
+  if (issues.length) {
+    issues.forEach((msg) => {
+      const li = document.createElement("div");
+      li.textContent = `• ${msg}`;
+      box.appendChild(li);
+    });
+  } else {
+    const ok = document.createElement("div");
+    ok.className = "tm-tune-ok";
+    ok.textContent = "✓ Everything lines up";
+    box.appendChild(ok);
+  }
+  const saveBtn = panel.querySelector(".tm-tune-save");
+  if (saveBtn) saveBtn.disabled = issues.length > 0;
+}
+
+function refreshTuningSelect() {
+  const select = document.querySelector(".tm-tuning .tm-tune-select");
+  if (!select) return;
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Apply settings…";
+  select.appendChild(placeholder);
+  savedSettingsList.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = s.name;
+    select.appendChild(opt);
+  });
+}
+
+function renderTuning() {
+  document.querySelector(".tm-tuning")?.remove();
+  if (!tuneDraft) return;
+  const panel = document.createElement("div");
+  panel.className = "tm-tuning";
+
+  const title = document.createElement("div");
+  title.className = "tm-tune-title";
+  title.textContent = "Game tuning";
+  panel.appendChild(title);
+
+  const section = (label) => {
+    const h = document.createElement("div");
+    h.className = "tm-tune-section";
+    h.textContent = label;
+    panel.appendChild(h);
+  };
+  const row = (label, ...els2) => {
+    const r = document.createElement("div");
+    r.className = "tm-tune-row";
+    const l = document.createElement("span");
+    l.className = "tm-tune-label";
+    l.textContent = label;
+    r.appendChild(l);
+    els2.forEach((e) => r.appendChild(e));
+    panel.appendChild(r);
+    return r;
+  };
+
+  section("Board columns (first = start; count = column length)");
+  TUNE_COLUMNS.forEach(([id, label]) => {
+    row(label, tuneField(tuneDraft.columns[id], (v) => { tuneDraft.columns[id] = v; }, "tm-tune-input tm-tune-list"));
+  });
+
+  section("Packages (squares / circles per color)");
+  TUNE_COLORS.forEach(([hex, name]) => {
+    const sq = tuneField(tuneDraft.packages[hex].square, (v) => { tuneDraft.packages[hex].square = v; }, "tm-tune-input tm-tune-num");
+    const ci = tuneField(tuneDraft.packages[hex].circle, (v) => { tuneDraft.packages[hex].circle = v; }, "tm-tune-input tm-tune-num");
+    const r = row(name, sq, ci);
+    const dot = document.createElement("span");
+    dot.className = "tm-tune-dot";
+    dot.style.background = hex;
+    r.insertBefore(dot, r.firstChild);
+  });
+
+  section("Setup");
+  row("Protected locations", tuneField(tuneDraft.protectedCount, (v) => { tuneDraft.protectedCount = v; }, "tm-tune-input tm-tune-num"));
+  row("Starting time stones", tuneField(tuneDraft.startingTimeStones, (v) => { tuneDraft.startingTimeStones = v; }, "tm-tune-input tm-tune-num"));
+
+  section("Points");
+  row("Square delivery", tuneField(tuneDraft.points.square, (v) => { tuneDraft.points.square = v; }, "tm-tune-input tm-tune-num"));
+  row("Circle delivery", tuneField(tuneDraft.points.circle, (v) => { tuneDraft.points.circle = v; }, "tm-tune-input tm-tune-num"));
+  row("Ticket loss", tuneField(tuneDraft.points.ticket, (v) => { tuneDraft.points.ticket = v; }, "tm-tune-input tm-tune-num"));
+  row("Rush-hour ticket loss", tuneField(tuneDraft.points.rushTicket, (v) => { tuneDraft.points.rushTicket = v; }, "tm-tune-input tm-tune-num"));
+
+  const issues = document.createElement("div");
+  issues.className = "tm-tune-issues";
+  panel.appendChild(issues);
+
+  const footer = document.createElement("div");
+  footer.className = "tm-tune-footer";
+  const select = document.createElement("select");
+  select.className = "tm-tune-select";
+  footer.appendChild(select);
+  const loadBtn = button("Apply", "");
+  loadBtn.addEventListener("click", () => {
+    if (select.value && app.roomId) {
+      socket.emit("truck_mania_load_settings", { roomId: app.roomId, settingsId: select.value });
+    }
+  });
+  footer.appendChild(loadBtn);
+  if (canSaveSettings) {
+    const saveBtn = button("Save…", "", "primary-btn");
+    saveBtn.classList.add("tm-tune-save");
+    saveBtn.addEventListener("click", () => {
+      const parsed = parseTuneDraft();
+      if (parsed.issues.length || !app.roomId) return;
+      const name = window.prompt("Name these settings:", `Settings ${savedSettingsList.length + 1}`);
+      if (name === null) return;
+      socket.emit("truck_mania_save_settings", { roomId: app.roomId, name, settings: parsed.settings });
+    });
+    footer.appendChild(saveBtn);
+  }
+  const closeBtn = button("Close", "");
+  closeBtn.addEventListener("click", closeTuning);
+  footer.appendChild(closeBtn);
+  panel.appendChild(footer);
+
+  document.body.appendChild(panel);
+  refreshTuningSelect();
+  updateTuneStatus();
+}
+
+socket.on("truck_mania_settings", ({ settings, canSave } = {}) => {
+  savedSettingsList = Array.isArray(settings) ? settings : [];
+  canSaveSettings = canSave !== false;
+  refreshTuningSelect();
+});
+
+// --------------------------------------------------------------------------
 // Controls
 // --------------------------------------------------------------------------
 
@@ -2635,6 +3525,7 @@ function renderControls() {
   if (!mapsRequested) {
     mapsRequested = true;
     socket.emit("truck_mania_list_maps");
+    socket.emit("truck_mania_list_settings");
   }
 
   if (editor) {
@@ -2707,6 +3598,7 @@ function renderControls() {
   els.hand.appendChild(button("New map", "regen"));
   els.hand.appendChild(button("Mix up", "mixup"));
   els.hand.appendChild(button("Edit map", "edit"));
+  els.hand.appendChild(button("Tuning", "tuning"));
 
   // AI opponents (0–3). Re-deals the board when changed.
   const aiWrap = document.createElement("label");
@@ -2729,16 +3621,72 @@ function renderControls() {
   aiWrap.appendChild(aiSelect);
   els.hand.appendChild(aiWrap);
 
+  // Movement-selection mode: pick a previewed route, or hand-build one light
+  // at a time. Switchable at any moment, mid-match included.
+  const modeBtn = button(moveMode === "build" ? "Route: build" : "Route: auto", "routemode");
+  if (moveMode === "build") modeBtn.classList.add("tm-active");
+  els.hand.appendChild(modeBtn);
+
+  // Animation speed dial (×1 … ×3), a room-wide setting usable mid-match.
+  const speedWrap = document.createElement("label");
+  speedWrap.className = "tm-speed-wrap";
+  speedWrap.textContent = "Speed";
+  const dial = document.createElement("input");
+  dial.type = "range";
+  dial.min = "1";
+  dial.max = "3";
+  dial.step = "0.5";
+  dial.value = String(speedMult);
+  dial.className = "tm-speed";
+  const dialVal = document.createElement("span");
+  dialVal.className = "tm-speed-val";
+  dialVal.textContent = `×${speedMult}`;
+  dial.addEventListener("input", () => {
+    dialVal.textContent = `×${dial.value}`;
+  });
+  dial.addEventListener("change", () => {
+    if (app.roomId) socket.emit("truck_mania_set_speed", { roomId: app.roomId, speed: Number(dial.value) });
+  });
+  speedWrap.append(dial, dialVal);
+  els.hand.appendChild(speedWrap);
+
   const endBtn = button("End turn", "endturn", "primary-btn tm-end-turn");
-  endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating;
+  endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
   els.hand.appendChild(endBtn);
 }
 
 // Light refresh of just the End-turn button's enabled state (called on every
-// state update, without rebuilding the whole control bar).
+// state update, without rebuilding the whole control bar). Also disabled while
+// any truck is mid-drive or the clock is mid-flip, so a turn can't end before
+// its animations have played out.
 function updateTurnControls() {
   const btn = els.hand.querySelector(".tm-end-turn");
-  if (btn) btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating;
+  if (btn) btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+}
+
+// Reflect a (possibly remote) speed change on the dial + CSS transitions.
+function applySpeed(sp) {
+  if (sp === speedMult) return;
+  speedMult = sp;
+  document.body.style.setProperty("--tm-mult", String(sp));
+  const dial = els.hand.querySelector(".tm-speed");
+  if (dial) {
+    dial.value = String(sp);
+    const v = els.hand.querySelector(".tm-speed-val");
+    if (v) v.textContent = `×${sp}`;
+  }
+}
+
+// Brief banner marking the turn boundary: the old turn is over, this one's up.
+function showTurnToast() {
+  document.querySelector(".tm-turn-toast")?.remove();
+  const p = playersState[turnWhose];
+  const div = document.createElement("div");
+  div.className = "tm-turn-toast";
+  div.style.borderColor = p?.color ?? "#ffe17a";
+  div.textContent = isMyTurn() ? "Your turn" : `${p?.name ?? "Opponent"}'s turn`;
+  document.body.appendChild(div);
+  setTimeout(() => div.remove(), 1900);
 }
 
 els.hand.addEventListener("click", (event) => {
@@ -2757,6 +3705,16 @@ els.hand.addEventListener("click", (event) => {
       break;
     case "endturn":
       socket.emit("truck_mania_end_turn", { roomId: app.roomId });
+      break;
+    case "routemode":
+      moveMode = moveMode === "build" ? "auto" : "build";
+      clearPreview();
+      refreshBuilder();
+      renderControls();
+      break;
+    case "tuning":
+      if (tuneDraft) closeTuning();
+      else openTuning();
       break;
     case "load": {
       const select = els.hand.querySelector(".tm-map-select");
@@ -2829,7 +3787,9 @@ export const truckMania = {
     turnChangedTime = !!tm.turnState?.changedTime;
     turnTruck = tm.turnState?.truck ?? null;
     stealVictimId = tm.turnState?.stealVictim ?? null;
+    turnPickups = tm.turnState?.pickups ?? [];
     aiMoveState = tm.aiMove ?? null;
+    applySpeed(tm.speed ?? 1);
     // Reconcile the aimed truck: locked to the turn's mover once set, else keep
     // a valid selection among the player's trucks.
     const myIds = (tm.trucks ?? []).filter((t) => t.player === myIndex()).map((t) => t.id);
@@ -2839,6 +3799,8 @@ export const truckMania = {
     playersState = tm.players ?? [];
     lastRollState = tm.lastRoll ?? null;
     decksState = tm.decks ?? null;
+    winnerState = tm.winner ?? null;
+    settingsState = tm.settings ?? settingsState;
     if (!isMyTurn()) {
       clearPreview();
       clearSteal();
@@ -2878,18 +3840,26 @@ export const truckMania = {
       }
       updateDayNight();
       // A fresh ticket roll tumbles the dice for everyone; the mover's truck is
-      // held (deferred drive) until the roll settles.
+      // held (deferred drive) until the roll settles. If a clock flip is mid-
+      // animation, the roll itself queues behind it: clock → dice → drive.
       const roll = tm.lastRoll;
       const newRoll = roll && roll.seq !== lastRollSeq && roll.dice?.length;
       if (roll) lastRollSeq = roll.seq;
       if (newRoll) {
-        diceAnimating = true;
-        updateTurnControls();
-        animateDiceRoll(roll, () => {
-          diceAnimating = false;
-          runDeferredDrives();
+        const startDice = () => {
+          diceAnimating = true;
           updateTurnControls();
-        });
+          refreshBuilder();
+          animateDiceRoll(roll, () => {
+            diceAnimating = false;
+            runDeferredDrives();
+            flushIdleFlies();
+            updateTurnControls();
+            refreshBuilder();
+          });
+        };
+        if (flipping) clockQueue.push(startDice);
+        else startDice();
       }
       // Animate other players' pickups/deliveries: hide the moved packages, let
       // syncTrucks/refresh render around them, then fly them in on arrival.
@@ -2904,11 +3874,18 @@ export const truckMania = {
       renderDice();
       renderDecks();
       updateTurnControls(); // reflect turn/steal state on the End-turn button
+      if (lastTurnSeen !== null && lastTurnSeen !== turnWhose && winnerState == null) {
+        showTurnToast();
+      }
+      lastTurnSeen = turnWhose;
+      refreshBuilder();
     } else {
       mapState = tm.map;
       previewState = null;
       stealSession = null;
       diceAnimating = false;
+      flipping = false;
+      clockQueue = [];
       deferredDrives = [];
       lastRollSeq = tm.lastRoll?.seq ?? lastRollSeq;
       Object.keys(pendingFlies).forEach((k) => delete pendingFlies[k]);
@@ -2917,13 +3894,23 @@ export const truckMania = {
       Object.keys(pkgPos).forEach((k) => delete pkgPos[k]);
       animatingPkgs.clear();
       trucksState = tm.trucks ?? [];
+      builder = null;
       renderMap();
       renderControls();
+      lastTurnSeen = turnWhose;
+      refreshBuilder();
     }
 
-    els.turnStatus.textContent = isMyTurn()
-      ? (turnActed ? "Your turn — end when ready" : "Your turn")
-      : `${playersState[turnWhose]?.name ?? "Opponent"}'s turn…`;
+    if (winnerState != null) {
+      const w = playersState[winnerState];
+      els.turnStatus.textContent = winnerState === myIndex()
+        ? `You win! ${w?.points ?? ""} points`
+        : `${w?.name ?? "Opponent"} wins! ${w?.points ?? ""} points`;
+    } else {
+      els.turnStatus.textContent = isMyTurn()
+        ? (turnActed ? "Your turn — end when ready" : "Your turn")
+        : `${playersState[turnWhose]?.name ?? "Opponent"}'s turn…`;
+    }
     return true;
   },
 
@@ -2948,6 +3935,7 @@ export const truckMania = {
     stealSession = null;
     lastRollState = null;
     decksState = null;
+    winnerState = null;
     timeState = 0;
     nightState = true;
     rushState = false;
@@ -2962,9 +3950,18 @@ export const truckMania = {
     lastRollSeq = -1;
     diceAnimating = false;
     deferredDrives = [];
+    builder = null;
+    lastTurnSeen = null;
+    turnPickups = [];
+    clockQueue = [];
+    speedMult = 1;
+    document.body.style.removeProperty("--tm-mult");
+    settingsState = null;
+    closeTuning();
     Object.keys(pendingFlies).forEach((k) => delete pendingFlies[k]);
     playersState = [];
     document.querySelector(".game-header .tm-scoreboard")?.remove();
+    document.querySelector(".tm-turn-toast")?.remove();
     animatingPkgs.clear();
     [truckEls, cargoEls, truckPos, truckSpots, pkgPos, pendingRoutes].forEach((o) =>
       Object.keys(o).forEach((k) => delete o[k])

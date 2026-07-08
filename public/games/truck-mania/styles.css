@@ -64,10 +64,39 @@
   stroke-width: 1.5;
 }
 
+/* Highlighted signs (hovering an hour / a staged time change) grow a lot so
+   they're easy to spot, via the zoom wrapper between translate and fold. */
+.tm-oct-zoom {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform calc(0.3s / var(--tm-mult, 1)) ease;
+}
+
+.tm-oct.tm-oct-hi .tm-oct-zoom {
+  transform: scale(1.9);
+}
+
 .tm-oct.tm-oct-hi polygon {
   stroke: #ffe17a;
   stroke-width: 4;
   filter: drop-shadow(0 0 6px rgba(255, 216, 92, 0.95));
+}
+
+/* Build mode: the lights you may click next glow (no growing this time). */
+.tm-oct.tm-oct-choice {
+  cursor: pointer;
+}
+
+.tm-oct.tm-oct-choice polygon {
+  stroke: #fff;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.85));
+  animation: tm-choice-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes tm-choice-pulse {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.55)); }
+  50% { filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.95)); }
 }
 
 /* Trucks */
@@ -118,12 +147,17 @@
   cursor: pointer;
 }
 
-/* Stealing: highlight a passed truck's cargo and its Continue button */
+/* Stealing: the whole victim truck glows; click it (or its cargo) to rob it */
 
-.tm-pkg-cargo.tm-steal-target {
-  stroke: #ffe17a;
-  stroke-width: 2.2;
-  filter: drop-shadow(0 0 3px rgba(255, 216, 92, 0.95));
+.tm-truck.tm-steal-victim {
+  cursor: pointer;
+  filter: drop-shadow(0 0 5px rgba(255, 216, 92, 0.95)) drop-shadow(0 0 10px rgba(255, 216, 92, 0.5));
+  animation: tm-victim-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tm-victim-pulse {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(255, 216, 92, 0.8)); }
+  50% { filter: drop-shadow(0 0 9px rgba(255, 216, 92, 1)) drop-shadow(0 0 14px rgba(255, 216, 92, 0.55)); }
 }
 
 .tm-steal {
@@ -188,6 +222,30 @@
   opacity: 0.9;
   pointer-events: none;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+  transition: stroke-width 0.12s ease, opacity 0.12s ease;
+}
+
+/* Hovering a route: its line thickens and glows… */
+.tm-route-line.tm-route-hover {
+  stroke-width: 6.5;
+  opacity: 1;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.55));
+}
+
+/* …and its red-count badge lights up and grows. */
+.tm-route-badge-inner {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.12s ease;
+}
+
+.tm-route-badge-inner.tm-route-badge-hover {
+  transform: scale(1.4);
+}
+
+.tm-route-badge-inner.tm-route-badge-hover .tm-route-badge-bg {
+  fill: #ffe17a;
+  stroke-width: 2.5;
 }
 
 .tm-route-hit {
@@ -248,10 +306,33 @@
   opacity: 0.8;
 }
 
+/* Build mode: dots you may end the route on, and the one you picked. */
+.tm-spot-choice .tm-spot-ring {
+  opacity: 0.9;
+  stroke: #ffe17a;
+  animation: tm-spot-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes tm-spot-pulse {
+  0%, 100% { stroke-width: 2; }
+  50% { stroke-width: 4; }
+}
+
+.tm-spot-picked .tm-spot-ring {
+  opacity: 1;
+  stroke: #ffe17a;
+  stroke-width: 3.5;
+}
+
 .tm-oct-flip {
-  transition: transform 0.16s ease-in;
+  transition: transform calc(0.16s / var(--tm-mult, 1)) ease-in;
   transform-box: fill-box;
   transform-origin: center;
+}
+
+/* Staged time changes fold slowly, so the flip reads clearly while big. */
+.tm-oct-flip.tm-oct-slow {
+  transition: transform calc(0.5s / var(--tm-mult, 1)) ease-in-out;
 }
 
 .tm-oct-flip.tm-oct-folding {
@@ -402,9 +483,107 @@
 }
 
 .tm-score {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
+  cursor: help;
+  padding: 2px 4px;
+  border-radius: 8px;
+}
+
+.tm-score:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Whoever's turn it is: their chip glows in their color. */
+.tm-score-turn {
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: 0 0 0 2px var(--pcolor, #ffe17a);
+  animation: tm-turn-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tm-turn-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--pcolor, #ffe17a); }
+  50% { box-shadow: 0 0 0 2px var(--pcolor, #ffe17a), 0 0 10px 2px var(--pcolor, #ffe17a); }
+}
+
+/* A chip flashing red as its owner loses points to tickets. */
+.tm-score-hit {
+  animation: tm-score-hit 0.9s ease;
+}
+
+@keyframes tm-score-hit {
+  0%, 100% { background: transparent; }
+  30% { background: rgba(229, 53, 43, 0.45); }
+}
+
+.tm-score-float {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 16px;
+  font-weight: 900;
+  color: #e5352b;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  animation: tm-loss-pop 1.7s ease forwards;
+}
+
+/* Turn-boundary banner */
+.tm-turn-toast {
+  position: fixed;
+  top: 68px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 9px 24px;
+  border-radius: 999px;
+  border: 2px solid #ffe17a;
+  background: rgba(16, 21, 29, 0.96);
+  color: #eef1f4;
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  animation: tm-toast 1.9s ease forwards;
+}
+
+@keyframes tm-toast {
+  0% { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(0.9); }
+  12% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1.04); }
+  20% { transform: translateX(-50%) translateY(0) scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+}
+
+.tm-score-winner {
+  background: rgba(245, 200, 66, 0.22);
+  box-shadow: 0 0 0 1px rgba(245, 200, 66, 0.7);
+}
+
+/* Hover preview of another player's full board */
+.tm-stats-tip {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+/* Red aggression badge over a hovered truck */
+.tm-truck-aggr {
+  fill: #e5352b;
+  font-size: 16px;
+  font-weight: 900;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.85);
+  stroke-width: 3px;
+  pointer-events: none;
 }
 
 .tm-score-dot {
@@ -439,6 +618,42 @@
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+  transform-origin: top right;
+  transition: transform 0.25s ease;
+}
+
+/* While a roll plays out the whole panel grows a lot. */
+.tm-dice.tm-dice-big {
+  transform: scale(1.65);
+  z-index: 6;
+  animation: tm-dice-grow 0.25s ease;
+}
+
+@keyframes tm-dice-grow {
+  from { transform: scale(1); }
+  to { transform: scale(1.65); }
+}
+
+/* The point-loss beat: a big −N popping off the panel. */
+.tm-dice-loss {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 26px;
+  font-weight: 900;
+  color: #e5352b;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.8), 0 0 10px rgba(229, 53, 43, 0.55);
+  pointer-events: none;
+  animation: tm-loss-pop 1.8s ease forwards;
+}
+
+@keyframes tm-loss-pop {
+  0% { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.5); }
+  15% { opacity: 1; transform: translateX(-50%) translateY(-4px) scale(1.25); }
+  30% { transform: translateX(-50%) translateY(-2px) scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-16px) scale(1); }
 }
 
 .tm-dice-head {
@@ -486,10 +701,22 @@
   animation: tm-die-shake 0.16s linear infinite;
 }
 
+/* In the grown panel the tumble shakes much harder. */
+.tm-dice-big .tm-die-rolling {
+  animation: tm-die-shake-big 0.13s linear infinite;
+}
+
 @keyframes tm-die-shake {
   0%, 100% { transform: translateY(0) rotate(0deg); }
   25% { transform: translateY(-1px) rotate(-6deg); }
   75% { transform: translateY(1px) rotate(6deg); }
+}
+
+@keyframes tm-die-shake-big {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  25% { transform: translate(-2px, -2px) rotate(-13deg); }
+  50% { transform: translate(2px, 1px) rotate(9deg); }
+  75% { transform: translate(-1px, 2px) rotate(13deg); }
 }
 
 .tm-rush-tag {
@@ -581,7 +808,7 @@
 }
 
 .tm-clock-hand {
-  transition: transform 0.5s cubic-bezier(0.3, 0.9, 0.4, 1);
+  transition: transform calc(0.5s / var(--tm-mult, 1)) cubic-bezier(0.3, 0.9, 0.4, 1);
   transform-origin: 100px 100px;
 }
 
@@ -784,6 +1011,28 @@
   color: #1a1f27;
 }
 
+/* Animation speed dial */
+
+.tm-speed-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.tm-speed {
+  width: 90px;
+  accent-color: #3ac0c0;
+}
+
+.tm-speed-val {
+  min-width: 32px;
+  font-weight: 800;
+  color: #3ac0c0;
+}
+
 .tm-scale-wrap {
   display: flex;
   align-items: center;
@@ -887,6 +1136,194 @@
 
 .tm-street-note.tm-warn {
   color: #e8a13a;
+}
+
+/* Tuning panel: edit every number in the game */
+
+.tm-tuning {
+  position: fixed;
+  left: 24px;
+  top: 72px;
+  bottom: 96px;
+  width: 320px;
+  z-index: 20;
+  overflow-y: auto;
+  padding: 14px 16px;
+  background: rgba(16, 21, 29, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+}
+
+.tm-tune-title {
+  font-size: 15px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.tm-tune-section {
+  margin: 12px 0 6px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #aeb3ba);
+}
+
+.tm-tune-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.tm-tune-label {
+  flex: 1;
+  font-weight: 600;
+}
+
+.tm-tune-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  flex: 0 0 auto;
+}
+
+.tm-tune-input {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 5px 7px;
+  font: inherit;
+}
+
+.tm-tune-list {
+  width: 170px;
+}
+
+.tm-tune-num {
+  width: 46px;
+  text-align: center;
+}
+
+.tm-tune-issues {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(207, 74, 60, 0.14);
+  color: #e8a13a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tm-tune-issues .tm-tune-ok {
+  color: #4f9d57;
+  font-weight: 700;
+}
+
+.tm-tune-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.tm-tune-select {
+  flex: 1;
+  min-width: 120px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+
+.tm-tune-select option {
+  color: #1a1f27;
+}
+
+/* Build mode: the growing route arrow + its control panel */
+
+.tm-build {
+  pointer-events: none;
+}
+
+.tm-build-line {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.95;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+
+.tm-build-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.tm-build-dice {
+  display: flex;
+  gap: 4px;
+}
+
+.tm-build-dice:empty {
+  display: none;
+}
+
+/* One pending ticket die per red light clicked into the path. */
+.tm-build-die {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: #f4f1ea;
+  box-shadow: inset 0 0 0 2px #cf4a3c;
+  position: relative;
+  animation: tm-build-die-in 0.25s ease;
+}
+
+.tm-build-die::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #cf4a3c;
+}
+
+@keyframes tm-build-die-in {
+  from { transform: scale(0.3); }
+  to { transform: scale(1); }
+}
+
+.tm-build-hint {
+  color: var(--muted, #aeb3ba);
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tm-build-go {
+  font-size: 15px;
+  padding: 10px 26px;
 }
 
 @media (max-width: 700px) {
