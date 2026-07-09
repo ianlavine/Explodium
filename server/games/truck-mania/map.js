@@ -22,19 +22,29 @@
 const MAP_W = 960;
 const MAP_H = 720;
 const STREET_W = 10;
-const MIN_CELL = 140;
-const MAX_CELL = 210;
 
-const TARGET_INTERSECTIONS = 30;
-const TOTAL_BUILDINGS = 27;
+// Two generation profiles: the classic board, and a denser one (smaller grid
+// cells → more blocks; higher building budget + per-block cap) used by ticket
+// mode, which needs room for 12 chore locations and 3 special buildings on top
+// of the usual pickups/dropoffs.
+const PROFILES = {
+  classic: {
+    minCell: 140, maxCell: 210,
+    targetIntersections: 30, totalBuildings: 27,
+    blockCap: 3, minRadius: 19, maxRadius: 66
+  },
+  dense: {
+    minCell: 105, maxCell: 165,
+    targetIntersections: 38, totalBuildings: 48,
+    blockCap: 4, minRadius: 16, maxRadius: 54
+  }
+};
 
 const GRID = 4; // rasterization cell size in px
 const CLEARANCE_CAP = 72; // clearance beyond this doesn't matter for sizing
 const SLIVER_CLEARANCE = 15; // regions thinner than this reject a street
 const BUILDING_MARGIN = 5; // minimum gap between building and street edge
 const BUILDING_GAP = 10; // gap between buildings in the same block
-const MIN_RADIUS = 19; // smallest bounding-circle radius worth placing
-const MAX_RADIUS = 66;
 const MIN_INTERSECTIONS = 26; // 24 numbered octagons + the two square corners
 
 function mulberry32(seed) {
@@ -441,7 +451,7 @@ function hasSliver(streets, gw, gh, cornerZones) {
 // One diagonal avenue between two grid intersections at a 27–63° slope,
 // spanning ≥2 cells in both directions so it crosses streets like a real
 // avenue. Rejected if it would overshoot the budget or carve a sliver.
-function addDiagonal(rng, streets, nodes, gw, gh, count, cornerZones) {
+function addDiagonal(rng, streets, nodes, gw, gh, count, cornerZones, target) {
   for (let attempt = 0; attempt < 160; attempt += 1) {
     const a = pick(rng, nodes);
     const b = pick(rng, nodes);
@@ -452,7 +462,7 @@ function addDiagonal(rng, streets, nodes, gw, gh, count, cornerZones) {
     const cand = { kind: "line", x1: a.x, y1: a.y, x2: b.x, y2: b.y, width: STREET_W };
     const next = [...streets, cand];
     const nextCount = countIntersections(next);
-    if (nextCount > TARGET_INTERSECTIONS - 2) continue; // leave room for the curve
+    if (nextCount > target - 2) continue; // leave room for the curve
     if (hasSliver(next, gw, gh, cornerZones)) continue;
     return { streets: next, count: nextCount, ends: [a, b] };
   }
@@ -462,7 +472,7 @@ function addDiagonal(rng, streets, nodes, gw, gh, count, cornerZones) {
 // One street that curves into a different direction: it leaves node A tangent
 // to one axis and arrives at node B heading along the other, sweeping through
 // the blocks in between like a road bending 90°.
-function addCurve(rng, streets, nodes, gw, gh, count, cornerZones, usedNodes) {
+function addCurve(rng, streets, nodes, gw, gh, count, cornerZones, usedNodes, target) {
   for (let attempt = 0; attempt < 160; attempt += 1) {
     const a = pick(rng, nodes);
     const b = pick(rng, nodes);
@@ -486,7 +496,7 @@ function addCurve(rng, streets, nodes, gw, gh, count, cornerZones, usedNodes) {
     };
     const next = [...streets, cand];
     const nextCount = countIntersections(next);
-    if (nextCount > TARGET_INTERSECTIONS) continue; // hard ceiling: never above 30
+    if (nextCount > target) continue; // hard ceiling
     if (hasSliver(next, gw, gh, cornerZones)) continue;
     return { streets: next, count: nextCount };
   }
@@ -568,54 +578,54 @@ function makeBuilding(rng, cx, cy, r, palette, info) {
 // Place one building in the block. The site is picked with jitter — any cell
 // nearly as roomy as the best one qualifies — so margins vary building to
 // building. Returns false when nothing fits anymore.
-function placeOne(rng, block, clearance, gw, segments, palette) {
+function placeOne(rng, block, clearance, gw, segments, palette, cfg) {
   let bestFit = 0;
   const fits = [];
   for (const idx of block.cells) {
     let fit = clearance[idx] - BUILDING_MARGIN - GRID * 0.75;
-    if (fit < MIN_RADIUS) continue;
+    if (fit < cfg.minRadius) continue;
     const gx = (idx % gw) * GRID + GRID / 2;
     const gy = ((idx / gw) | 0) * GRID + GRID / 2;
     for (const placed of block.placed) {
       const d = Math.hypot(gx - placed.cx, gy - placed.cy) - placed.r - BUILDING_GAP;
       if (d < fit) fit = d;
     }
-    if (fit < MIN_RADIUS) continue;
+    if (fit < cfg.minRadius) continue;
     fits.push({ idx, fit });
     if (fit > bestFit) bestFit = fit;
   }
   if (!fits.length) return false;
 
-  const pool = fits.filter((f) => f.fit >= Math.max(MIN_RADIUS, bestFit * 0.85));
+  const pool = fits.filter((f) => f.fit >= Math.max(cfg.minRadius, bestFit * 0.85));
   const chosen = pick(rng, pool);
   const cx = (chosen.idx % gw) * GRID + GRID / 2;
   const cy = ((chosen.idx / gw) | 0) * GRID + GRID / 2;
-  const r = Math.min(chosen.fit, MAX_RADIUS);
+  const r = Math.min(chosen.fit, cfg.maxRadius);
   const info = nearestStreetInfo(segments, cx, cy);
   block.placed.push({ cx, cy, r });
   block.buildings.push(makeBuilding(rng, cx, cy, r, palette, info));
   return true;
 }
 
-// Hand out exactly TOTAL_BUILDINGS buildings. Every block that can hold one
+// Hand out exactly cfg.totalBuildings buildings. Every block that can hold one
 // gets one (biggest first); the rest go to the block with the most area per
-// building so far (bigger block → more buildings). Soft cap of 3 per block;
-// lifted only if every other block is full.
-function placeAllBuildings(rng, blocks, clearance, gw, segments, palette) {
+// building so far (bigger block → more buildings). Soft cap of cfg.blockCap per
+// block; lifted only if every other block is full.
+function placeAllBuildings(rng, blocks, clearance, gw, segments, palette, cfg) {
   let placedTotal = 0;
   const byArea = [...blocks].sort((a, b) => b.areaPx - a.areaPx);
   for (const block of byArea) {
-    if (placedTotal >= TOTAL_BUILDINGS) break;
-    if (placeOne(rng, block, clearance, gw, segments, palette)) placedTotal += 1;
+    if (placedTotal >= cfg.totalBuildings) break;
+    if (placeOne(rng, block, clearance, gw, segments, palette, cfg)) placedTotal += 1;
     else block.exhausted = true;
   }
-  while (placedTotal < TOTAL_BUILDINGS) {
+  while (placedTotal < cfg.totalBuildings) {
     let cand = null;
     let bestScore = -1;
     for (const capped of [false, true]) {
       for (const block of blocks) {
         if (block.exhausted) continue;
-        if (!capped && block.buildings.length >= 3) continue;
+        if (!capped && block.buildings.length >= cfg.blockCap) continue;
         const score = block.areaPx / (block.buildings.length + 1);
         if (score > bestScore) {
           bestScore = score;
@@ -625,7 +635,7 @@ function placeAllBuildings(rng, blocks, clearance, gw, segments, palette) {
       if (cand) break;
     }
     if (!cand) break;
-    if (placeOne(rng, cand, clearance, gw, segments, palette)) placedTotal += 1;
+    if (placeOne(rng, cand, clearance, gw, segments, palette, cfg)) placedTotal += 1;
     else cand.exhausted = true;
   }
   return placedTotal;
@@ -760,6 +770,23 @@ export function randomizeOctagons(octagons) {
   return assignOctagons(() => Math.random(), octagons.map(({ x, y }) => ({ x, y })));
 }
 
+// Recolor the blank (unnumbered) stoplights in place: of the blanks, `green`
+// become green and `red` become red (dealt in a random order); any blanks past
+// green+red stay a coin flip. The 24 numbered signs are untouched.
+export function setBlankLights(octagons, green, red) {
+  const blanks = octagons.filter((o) => o.number == null);
+  for (let i = blanks.length - 1; i > 0; i -= 1) {
+    const k = Math.floor(Math.random() * (i + 1));
+    [blanks[i], blanks[k]] = [blanks[k], blanks[i]];
+  }
+  blanks.forEach((o, i) => {
+    if (i < green) o.color = "green";
+    else if (i < green + red) o.color = "red";
+    else o.color = Math.random() < 0.5 ? "green" : "red";
+  });
+  return octagons;
+}
+
 // A "spot" is a parking place where a truck sits: the street-end of a building
 // connector. Its facing is parallel to the street it sits on.
 export function deriveSpots(map) {
@@ -797,20 +824,21 @@ export function deriveSpots(map) {
 // Entry point
 // ---------------------------------------------------------------------------
 
-export function generateCityMap(seed = Date.now()) {
+export function generateCityMap(seed = Date.now(), { dense = false } = {}) {
+  const cfg = dense ? PROFILES.dense : PROFILES.classic;
   const rng = mulberry32(Number(seed) || 1);
   // Regenerate until there are enough intersections for the 24 numbered
   // octagons (plus the square corners). Nearly always succeeds first try.
-  let map = generateOnce(rng, seed);
+  let map = generateOnce(rng, seed, cfg);
   for (let attempt = 0; attempt < 8 && map.intersections.length < MIN_INTERSECTIONS; attempt += 1) {
-    map = generateOnce(rng, seed);
+    map = generateOnce(rng, seed, cfg);
   }
   return map;
 }
 
-function generateOnce(rng, seed) {
-  const vLines = buildGridLines(rng, MAP_W, MIN_CELL, MAX_CELL);
-  const hLines = buildGridLines(rng, MAP_H, MIN_CELL, MAX_CELL);
+function generateOnce(rng, seed, cfg) {
+  const vLines = buildGridLines(rng, MAP_W, cfg.minCell, cfg.maxCell);
+  const hLines = buildGridLines(rng, MAP_H, cfg.minCell, cfg.maxCell);
   const walls = makeWalls(vLines.length, hLines.length);
   const gw = Math.ceil(MAP_W / GRID);
   const gh = Math.ceil(MAP_H / GRID);
@@ -830,15 +858,15 @@ function generateOnce(rng, seed) {
   const borders = buildBorderStreets(rounded);
 
   // Leave the diagonal and the curve headroom to bring the count back up.
-  pruneGrid(rng, walls, vLines, hLines, borders, TARGET_INTERSECTIONS - randInt(rng, 4, 6));
+  pruneGrid(rng, walls, vLines, hLines, borders, cfg.targetIntersections - randInt(rng, 4, 6));
 
   let streets = [...borders, ...buildInteriorStreets(walls, vLines, hLines)];
   let count = countIntersections(streets);
   const nodes = intersectionNodes(walls, vLines, hLines);
 
   let diagonalEnds = [];
-  ({ streets, count, ends: diagonalEnds } = addDiagonal(rng, streets, nodes, gw, gh, count, cornerZones));
-  ({ streets, count } = addCurve(rng, streets, nodes, gw, gh, count, cornerZones, diagonalEnds));
+  ({ streets, count, ends: diagonalEnds } = addDiagonal(rng, streets, nodes, gw, gh, count, cornerZones, cfg.targetIntersections));
+  ({ streets, count } = addCurve(rng, streets, nodes, gw, gh, count, cornerZones, diagonalEnds, cfg.targetIntersections));
 
   const segments = collectSegments(streets);
   const clearance = buildClearanceField(segments, gw, gh);
@@ -855,7 +883,7 @@ function generateOnce(rng, seed) {
     }));
 
   const palette = ["#c97b63", "#6b8f71", "#d4a056", "#7d8aa5", "#b8849f", "#8f7e6b"];
-  placeAllBuildings(rng, blocks, clearance, gw, segments, palette);
+  placeAllBuildings(rng, blocks, clearance, gw, segments, palette, cfg);
 
   for (const block of blocks) {
     block.buildings.forEach((building, i) => {

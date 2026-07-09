@@ -18,6 +18,7 @@ let boardMode = "play"; // "play" | "edit"
 let savedMaps = [];
 let canSaveMaps = true;
 let mapsRequested = false;
+let mapsMenuOpen = false; // the saved-maps drop-up in the control bar
 let hoveredHour = null;
 let flipping = false;
 
@@ -71,6 +72,27 @@ let speedMult = 1;
 let turnPickups = []; // this turn's pickups [{pkg, bid}] — the put-back rights
 let clockQueue = []; // work (e.g. a dice roll) queued until the clock-flip animation ends
 const STEAL_GAP = 44; // px a thief parks short of its victim (about a truck length)
+
+// Ticket mode (settings.mode === "tickets"): no points — first to complete
+// `columnsToWin` columns wins. Reds bank dice into a pool rolled at turn end;
+// failed dice issue literal tickets pointing at chore locations.
+let dicePoolState = 0; // dice banked this turn (ticket mode)
+let pawnUsesState = 0; // pawn-shop conversions made this turn
+let courtUsesState = 0; // courthouse removals made this turn
+
+function isTicketMode() {
+  return settingsState?.mode === "tickets";
+}
+
+// The numeric tracks that count toward the ticket-mode win.
+const TICKET_TRACKS = ["capacity", "variety", "aversion", "agression", "timestones", "money"];
+
+function completedColumnsOf(player) {
+  return TICKET_TRACKS.filter((c) => {
+    const vals = columnValuesFor(c);
+    return vals.length && (player?.columns?.[c] ?? 0) >= vals.length - 1;
+  }).length;
+}
 
 function hasAbil(id) {
   return !!myPlayer()?.abilities?.includes(id);
@@ -156,6 +178,23 @@ const PB_COLUMNS = [
   { id: "locations", title: "Locations", color: "#e08a3c", values: [] },
   { id: "abilities", title: "Abilities", color: "#8f6b52", values: [] }
 ];
+
+// Ticket mode: brown feeds the Money column; orange grants letters directly;
+// abilities are bought at the mechanic (so their column is just the owned set).
+const PB_COLUMNS_TICKETS = [
+  { id: "capacity", title: "Capacity", color: "#e8c33c", values: [2, 3, 4, 5, 6, 7] },
+  { id: "variety", title: "Variety", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] },
+  { id: "aversion", title: "Aversion", color: "#4f9d57", values: [1, 2, 3, 4, 5, 6] },
+  { id: "agression", title: "Agression", color: "#cf4a3c", values: [0, 1, 2, 3, 4, 5] },
+  { id: "timestones", title: "Time stones", color: "#8a5bb0", values: [2, 4, 6, 8, 10, 12] },
+  { id: "money", title: "Money", color: "#8f6b52", values: [2, 4, 6, 8, 10, 12] },
+  { id: "locations", title: "Letters", color: "#e08a3c", values: [] },
+  { id: "abilities", title: "Abilities", color: "#9aa0a8", values: [] }
+];
+
+function pbColumns() {
+  return isTicketMode() ? PB_COLUMNS_TICKETS : PB_COLUMNS;
+}
 
 function hexToRgba(hex, a) {
   const n = parseInt(hex.slice(1), 16);
@@ -352,7 +391,10 @@ function assignOctagons(points, width) {
 // --------------------------------------------------------------------------
 
 function appendBuilding(parent, building) {
-  const g = svgEl("g", { class: "tm-building" }, parent);
+  const cls = ["tm-building"];
+  if (building.role === "ticket") cls.push("tm-bldg-ticket");
+  if (building.role === "special") cls.push("tm-bldg-special");
+  const g = svgEl("g", { class: cls.join(" "), "data-bldg": building.bid }, parent);
 
   (building.connectors ?? []).forEach((c) => {
     svgEl("line", {
@@ -403,6 +445,16 @@ function appendBuilding(parent, building) {
     svgEl("circle", { cx: bx, cy: by, r: 7.5, class: "tm-loc-letter-bg" }, badge);
     const t = svgEl("text", { x: bx, y: by, class: "tm-loc-letter-text" }, badge);
     t.textContent = building.letter;
+  }
+
+  // Ticket-mode themed places: chore locations and the three money sinks get
+  // an icon + name so they read at a glance.
+  if ((building.role === "ticket" || building.role === "special") && building.icon) {
+    const [cx, cy] = buildingCentroid(building);
+    const icon = svgEl("text", { x: cx, y: cy - 3, class: "tm-bldg-icon" }, g);
+    icon.textContent = building.icon;
+    const name = svgEl("text", { x: cx, y: cy + 10, class: "tm-bldg-name" }, g);
+    name.textContent = building.name ?? "";
   }
 }
 
@@ -653,6 +705,14 @@ function updateDayNight() {
     rush.className = "tm-rush-tag";
     rush.textContent = "⚠ RUSH";
     dayNightEl.appendChild(rush);
+  }
+  // Ticket mode: the dice banked this turn, rolled when the turn ends.
+  if (isTicketMode() && dicePoolState > 0) {
+    const pool = document.createElement("span");
+    pool.className = "tm-pool-tag";
+    pool.textContent = `🎲 ×${dicePoolState}`;
+    pool.title = "Ticket dice — rolled when the turn ends";
+    dayNightEl.appendChild(pool);
   }
   dayNightEl.classList.toggle("tm-night", nightState);
 }
@@ -1016,6 +1076,18 @@ function renderTruckHighlight() {
   const many = myTruckList().length > 1;
   Object.entries(truckEls).forEach(([id, el]) => {
     el.classList.toggle("tm-truck-selected", many && Number(id) === activeTruckId());
+  });
+}
+
+// Ticket mode: light up the chore locations named on my visible tickets, so
+// the places to work them off are easy to spot on the board.
+function renderTicketHighlights() {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  if (!svg) return;
+  svg.querySelectorAll(".tm-ticket-lit").forEach((el) => el.classList.remove("tm-ticket-lit"));
+  if (!isTicketMode()) return;
+  (myPlayer()?.tickets ?? []).forEach((t) => {
+    svg.querySelector(`.tm-building[data-bldg="${t.loc}"]`)?.classList.add("tm-ticket-lit");
   });
 }
 
@@ -1538,12 +1610,19 @@ function renderBuildPanel() {
 }
 
 // A parcel: a filled square or circle with a dark outline. Used on buildings,
-// in the dock, and for the fly animation.
-function drawPackage(parent, shape, color, cx, cy, size) {
-  if (shape === "circle") {
-    return svgEl("circle", { cx, cy, r: size / 2, fill: color, class: "tm-pkg-shape" }, parent);
+// in the dock, and for the fly animation. Ticket-mode orange packages carry a
+// letter — drawn on top when given.
+function drawPackage(parent, shape, color, cx, cy, size, letter) {
+  const el = shape === "circle"
+    ? svgEl("circle", { cx, cy, r: size / 2, fill: color, class: "tm-pkg-shape" }, parent)
+    : svgEl("rect", { x: cx - size / 2, y: cy - size / 2, width: size, height: size, rx: 1.5, fill: color, class: "tm-pkg-shape" }, parent);
+  if (letter) {
+    const t = svgEl("text", {
+      x: cx, y: cy, class: "tm-pkg-letter", "font-size": Math.max(4, size * 0.62)
+    }, parent);
+    t.textContent = letter;
   }
-  return svgEl("rect", { x: cx - size / 2, y: cy - size / 2, width: size, height: size, rx: 1.5, fill: color, class: "tm-pkg-shape" }, parent);
+  return el;
 }
 
 // Dock slot k, in the truck's local frame: two columns stacking upward.
@@ -1575,7 +1654,7 @@ function renderCargo(id) {
     if (animatingPkgs.has(pkg.id)) return;
     const [lx, ly] = dockSlotLocal(slot);
     slot += 1;
-    const shape = drawPackage(layer, pkg.shape, pkg.color, lx, ly, CARGO_SIZE);
+    const shape = drawPackage(layer, pkg.shape, pkg.color, lx, ly, CARGO_SIZE, pkg.letter);
     shape.classList.add("tm-pkg-cargo");
     shape.setAttribute("data-pkg", pkg.id);
     shape.setAttribute("data-truck", id);
@@ -1666,7 +1745,8 @@ function runDeferredDrives() {
 }
 
 // On arrival: fly in any packages this truck picked up/delivered mid-drive, and
-// (for the human) offer a steal if it parked on a robbable truck.
+// (for the human) offer a steal if it parked on a robbable truck. Ticket mode:
+// parking at a special building opens its panel.
 function onTruckArrive(id) {
   const evs = pendingFlies[id];
   if (evs) {
@@ -1676,6 +1756,7 @@ function onTruckArrive(id) {
   if (id === activeTruckId()) maybeOpenSteal();
   updateTurnControls(); // End turn re-enables once nothing is driving
   refreshBuilder();
+  renderSpecialPanel();
 }
 
 // Travel direction at the end of a path (the truck's true arrival facing).
@@ -1917,7 +1998,7 @@ function drawBuildingPackages(layer) {
         const [px, py] = bldPkgSlot(cx, cy, i);
         pkgPos[pkg.id] = [px, py];
         const g = svgEl("g", { class: "tm-pkg tm-pkg-building", "data-pkg": pkg.id, "data-bid": b.bid }, layer);
-        drawPackage(g, pkg.shape, pkg.color, px, py, BLD_PKG_SIZE);
+        drawPackage(g, pkg.shape, pkg.color, px, py, BLD_PKG_SIZE, pkg.letter);
       });
     });
   });
@@ -1954,7 +2035,7 @@ function usableBids() {
 }
 
 // Temp parcel that flies from `from` to `to`, then runs onDone.
-function flyPackage(shape, color, from, to, onDone) {
+function flyPackage(shape, color, from, to, onDone, letter) {
   const svg = els.gameBoard.querySelector(".tm-map");
   if (!svg) {
     onDone?.();
@@ -1963,7 +2044,7 @@ function flyPackage(shape, color, from, to, onDone) {
   let layer = svg.querySelector(".tm-fly");
   if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
   const g = svgEl("g", {}, layer);
-  drawPackage(g, shape, color, 0, 0, CARGO_SIZE + 1);
+  drawPackage(g, shape, color, 0, 0, CARGO_SIZE + 1, letter);
   const dur = 360 / speedMult;
   const start = performance.now();
   const step = (now) => {
@@ -1984,7 +2065,7 @@ function flyPackage(shape, color, from, to, onDone) {
 function columnValuesFor(colId) {
   const vals = settingsState?.columns?.[colId];
   if (Array.isArray(vals) && vals.length) return vals;
-  return PB_COLUMNS.find((c) => c.id === colId)?.values ?? [];
+  return pbColumns().find((c) => c.id === colId)?.values ?? [];
 }
 
 // Current value of a player-board column (e.g. capacity 2→7), by its level.
@@ -2018,7 +2099,7 @@ function attemptPickup(pkgId, bid) {
     animatingPkgs.delete(pkgId);
     renderCargo(truck.id);
     renderBuildingPackagesRefresh();
-  });
+  }, pkg.letter);
 }
 
 // Fly a parcel to the dropoff slot, then flip it over to its black side —
@@ -2032,7 +2113,7 @@ function animateDropoff(pkg, from, to, onDone) {
   let layer = svg.querySelector(".tm-fly");
   if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
   const g = svgEl("g", {}, layer);
-  const shapeEl = drawPackage(g, pkg.shape, pkg.color, 0, 0, BLD_PKG_SIZE);
+  const shapeEl = drawPackage(g, pkg.shape, pkg.color, 0, 0, BLD_PKG_SIZE, pkg.letter);
   const flyDur = 360 / speedMult;
   const flipDur = 300 / speedMult;
   const start = performance.now();
@@ -2107,7 +2188,7 @@ function attemptPutback(pkgId) {
     animatingPkgs.delete(pkgId);
     renderCargo(truck.id);
     renderBuildingPackagesRefresh();
-  });
+  }, pkg.letter);
 }
 
 // Snapshot where every package currently lives, so the next state can be diffed
@@ -2193,7 +2274,7 @@ function runPkgFlies(events) {
           animatingPkgs.delete(e.pkg.id);
           renderCargo(e.truckId);
           renderBuildingPackagesRefresh();
-        });
+        }, e.pkg.letter);
       } else {
         const tp = truckPos[e.truckId] || { x: 0, y: 0 };
         const [cx, cy] = b ? buildingCentroid(b) : [0, 0];
@@ -2380,6 +2461,10 @@ function showPlayerStatsTip(player, anchor) {
   const tip = document.createElement("div");
   tip.className = "tm-stats-tip";
   renderTimeStones(tip, player.timeStones ?? 0);
+  if (isTicketMode()) {
+    renderMoney(tip, player.money ?? 0);
+    tip.appendChild(buildTicketsRow(player));
+  }
   tip.appendChild(buildPlayerBoard(player));
   document.body.appendChild(tip);
   const r = anchor.getBoundingClientRect();
@@ -2416,8 +2501,21 @@ function renderScoreboard() {
     dot.style.background = p.color;
     const val = document.createElement("span");
     val.className = "tm-score-val";
-    val.textContent = String(p.points ?? 0);
-    chip.append(dot, val);
+    if (isTicketMode()) {
+      // Race progress: completed columns out of the number needed to win.
+      val.textContent = `${completedColumnsOf(p)}/${settingsState?.columnsToWin ?? 3}`;
+      chip.append(dot, val);
+      const owed = (p.tickets?.length ?? 0) + (p.ticketPileCount ?? 0);
+      if (owed > 0) {
+        const tk = document.createElement("span");
+        tk.className = "tm-score-tickets";
+        tk.textContent = `🎫${owed}`;
+        chip.appendChild(tk);
+      }
+    } else {
+      val.textContent = String(p.points ?? 0);
+      chip.append(dot, val);
+    }
     chip.addEventListener("mouseenter", () => showPlayerStatsTip(p, chip));
     chip.addEventListener("mouseleave", hidePlayerStatsTip);
     bar.appendChild(chip);
@@ -2450,8 +2548,13 @@ function setDiceHead(head, roll, settled) {
   if (!settled) {
     head.textContent = `${who} rolling…`;
   } else if (roll.tickets > 0) {
-    const loss = roll.loss ?? roll.tickets;
-    head.textContent = `${who}: ${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} · −${loss}${roll.rush ? " ⚠" : ""}`;
+    if (roll.mode === "tickets") {
+      // Ticket mode: no points — failed dice hand out literal tickets.
+      head.textContent = `${who}: +${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} 🎫${roll.rush ? " ⚠" : ""}`;
+    } else {
+      const loss = roll.loss ?? roll.tickets;
+      head.textContent = `${who}: ${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} · −${loss}${roll.rush ? " ⚠" : ""}`;
+    }
     head.classList.add("tm-dice-bad");
   } else {
     head.textContent = `${who}: no tickets`;
@@ -2527,10 +2630,11 @@ function animateDiceRoll(roll, onDone) {
   }, 90);
 }
 
-// The point-loss beat: a big "−N" popping off the dice panel, and the same
-// figure flashing on the roller's scoreboard chip.
+// The bad-roll beat: a big "−N" (points mode) or "+N 🎫" (ticket mode)
+// popping off the dice panel, and the same figure flashing on the roller's
+// scoreboard chip.
 function flashLoss(roll) {
-  const amount = `−${roll.loss ?? roll.tickets}`;
+  const amount = roll.mode === "tickets" ? `+${roll.tickets} 🎫` : `−${roll.loss ?? roll.tickets}`;
   const wrap = els.gameBoard.querySelector(".tm-dice");
   if (wrap) {
     const loss = document.createElement("div");
@@ -2609,7 +2713,7 @@ function makeDeckRow(deckId, title, data, active) {
 
 function renderDecks() {
   els.gameBoard.querySelector(".tm-decks")?.remove();
-  if (!decksState) return;
+  if (!decksState || isTicketMode()) return; // no card decks in ticket mode
   const myDrafts = myPlayer()?.pendingDrafts ?? [];
   const panel = document.createElement("div");
   panel.className = "tm-decks";
@@ -2622,6 +2726,142 @@ function renderDecks() {
     if (!(myPlayer()?.pendingDrafts ?? []).includes(deck)) return;
     socket.emit("truck_mania_draft", { roomId: app.roomId, deck, choice: el.dataset.draftChoice });
   });
+  els.gameBoard.appendChild(panel);
+}
+
+// --------------------------------------------------------------------------
+// Ticket-mode special locations: mechanic / pawn shop / courthouse. Parking at
+// one opens its panel; every use ends the turn's movement (server-enforced).
+// --------------------------------------------------------------------------
+
+const TRACK_LABELS = {
+  capacity: "Capacity", variety: "Variety", aversion: "Aversion",
+  agression: "Agression", timestones: "Time stones", money: "Money"
+};
+
+// The special building the human's active truck is parked at, if usable now.
+function specialBuildingHere() {
+  if (!isTicketMode() || !isMyTurn() || winnerState != null || !mapState) return null;
+  const truck = activeTruck();
+  if (!truck || truckShares(truck) || truckAnim[truck.id] != null) return null;
+  const spot = mapState.spots?.[truck.spot];
+  const b = spot != null ? buildingsByBid().get(spot.building) : null;
+  return b && b.role === "special" ? b : null;
+}
+
+function renderSpecialPanel() {
+  els.gameBoard.querySelector(".tm-special")?.remove();
+  const b = specialBuildingHere();
+  if (!b) return;
+  const me = myPlayer();
+  const money = me?.money ?? 0;
+  const truck = activeTruck();
+
+  const panel = document.createElement("div");
+  panel.className = "tm-special";
+  const head = document.createElement("div");
+  head.className = "tm-special-head";
+  head.textContent = `${b.icon ?? ""} ${b.name ?? ""}`;
+  const purse = document.createElement("span");
+  purse.className = "tm-special-purse";
+  purse.textContent = `${money} 🪙`;
+  head.appendChild(purse);
+  panel.appendChild(head);
+
+  if (b.special === "mechanic") {
+    const costs = settingsState?.abilityCosts ?? {};
+    const list = document.createElement("div");
+    list.className = "tm-special-list";
+    Object.keys(ABILITY_LABELS).forEach((id) => {
+      const owned = (me?.abilities ?? []).includes(id);
+      const cost = costs[id];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ghost-btn tm-special-item";
+      btn.textContent = owned
+        ? `✓ ${ABILITY_ICONS[id]} ${ABILITY_LABELS[id]}`
+        : `${ABILITY_ICONS[id]} ${ABILITY_LABELS[id]} · ${cost ?? "?"} 🪙`;
+      btn.disabled = owned || !Number.isInteger(cost) || cost > money;
+      if (owned) btn.classList.add("tm-special-owned");
+      btn.addEventListener("click", () => {
+        socket.emit("truck_mania_buy_ability", { roomId: app.roomId, truckId: truck.id, ability: id });
+      });
+      list.appendChild(btn);
+    });
+    panel.appendChild(list);
+  } else if (b.special === "pawnshop") {
+    const costs = settingsState?.pawnCosts ?? [2, 3, 4];
+    const uses = pawnUsesState;
+    const cost = costs[Math.min(uses, costs.length - 1)];
+    const row = document.createElement("div");
+    row.className = "tm-special-row";
+    const mkSelect = (filter) => {
+      const sel = document.createElement("select");
+      sel.className = "tm-special-select";
+      TICKET_TRACKS.filter(filter).forEach((c) => {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = TRACK_LABELS[c];
+        sel.appendChild(opt);
+      });
+      return sel;
+    };
+    const fromSel = mkSelect((c) => (me?.columns?.[c] ?? 0) > 0);
+    const toSel = mkSelect((c) => {
+      const vals = columnValuesFor(c);
+      return vals.length && (me?.columns?.[c] ?? 0) < vals.length - 1;
+    });
+    const arrow = document.createElement("span");
+    arrow.textContent = "→";
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "primary-btn tm-special-item";
+    go.textContent = uses >= 3 ? "3 per turn max" : `Convert · ${cost} 🪙`;
+    go.disabled = uses >= 3 || cost > money || !fromSel.options.length || !toSel.options.length;
+    go.addEventListener("click", () => {
+      if (fromSel.value && toSel.value && fromSel.value !== toSel.value) {
+        socket.emit("truck_mania_pawn", {
+          roomId: app.roomId, truckId: truck.id, from: fromSel.value, to: toSel.value
+        });
+      }
+    });
+    row.append(fromSel, arrow, toSel, go);
+    panel.appendChild(row);
+    const note = document.createElement("div");
+    note.className = "tm-special-note";
+    note.textContent = "Moves one upgrade step from one column to another.";
+    panel.appendChild(note);
+  } else if (b.special === "courthouse") {
+    const costs = settingsState?.courtCosts ?? [2, 3, 4];
+    const uses = courtUsesState;
+    const cost = costs[Math.min(uses, costs.length - 1)];
+    const list = document.createElement("div");
+    list.className = "tm-special-list";
+    const byBid = buildingsByBid();
+    const tickets = me?.tickets ?? [];
+    if (!tickets.length) {
+      const empty = document.createElement("div");
+      empty.className = "tm-special-note";
+      empty.textContent = "No visible tickets to pay off.";
+      list.appendChild(empty);
+    }
+    tickets.forEach((t) => {
+      const loc = byBid.get(t.loc);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ghost-btn tm-special-item";
+      btn.textContent = uses >= 3
+        ? `${loc?.icon ?? "🎫"} ${loc?.name ?? "Ticket"} · 3 per turn max`
+        : `${loc?.icon ?? "🎫"} ${loc?.name ?? "Ticket"} · pay ${cost} 🪙`;
+      btn.disabled = uses >= 3 || cost > money;
+      btn.addEventListener("click", () => {
+        socket.emit("truck_mania_pay_ticket", { roomId: app.roomId, truckId: truck.id, ticketId: t.id });
+      });
+      list.appendChild(btn);
+    });
+    panel.appendChild(list);
+  }
+
   els.gameBoard.appendChild(panel);
 }
 
@@ -2648,6 +2888,59 @@ function renderTimeStones(parent, count) {
   parent.appendChild(wrap);
 }
 
+// The stack of money coins next to the time stones (ticket mode's currency).
+function renderMoney(parent, count) {
+  const wrap = document.createElement("div");
+  wrap.className = "tm-stones tm-money";
+  const shown = Math.min(count, 14);
+  for (let i = 0; i < shown; i += 1) {
+    const svg = svgEl("svg", { viewBox: "0 0 20 20", class: "tm-stone" });
+    svgEl("circle", { cx: 10, cy: 10, r: 8.5, fill: "#d8a531", stroke: "rgba(18,22,28,0.6)", "stroke-width": 1.5 }, svg);
+    svgEl("circle", { cx: 10, cy: 10, r: 5.2, fill: "none", stroke: "rgba(255,255,255,0.45)", "stroke-width": 1.2 }, svg);
+    wrap.appendChild(svg);
+  }
+  const label = document.createElement("span");
+  label.className = "tm-stones-count";
+  label.textContent = `× ${count}`;
+  wrap.appendChild(label);
+  parent.appendChild(wrap);
+}
+
+// The player's three ticket slots + face-down pile (ticket mode). Each visible
+// ticket names the chore location that clears it; face-down ones flip up only
+// when the owner's turn ends.
+function buildTicketsRow(player) {
+  const row = document.createElement("div");
+  row.className = "tm-tickets";
+  const byBid = buildingsByBid();
+  for (let i = 0; i < 3; i += 1) {
+    const t = (player.tickets ?? [])[i];
+    const slot = document.createElement("div");
+    slot.className = `tm-ticket${t ? " tm-ticket-filled" : ""}`;
+    if (t) {
+      const b = byBid.get(t.loc);
+      slot.title = b?.name ?? "Ticket";
+      const icon = document.createElement("span");
+      icon.className = "tm-ticket-icon";
+      icon.textContent = b?.icon ?? "🎫";
+      const name = document.createElement("span");
+      name.className = "tm-ticket-name";
+      name.textContent = b?.name ?? "?";
+      slot.append(icon, name);
+    }
+    row.appendChild(slot);
+  }
+  const pileN = player.ticketPileCount ?? 0;
+  if (pileN > 0) {
+    const pile = document.createElement("div");
+    pile.className = "tm-ticket tm-ticket-pile";
+    pile.title = "Face-down tickets — revealed when your turn ends";
+    pile.textContent = `+${pileN}`;
+    row.appendChild(pile);
+  }
+  return row;
+}
+
 // Build the .tm-player-board element for any player (used for the human's own
 // board and for the hover preview of an opponent's stats).
 function buildPlayerBoard(me) {
@@ -2662,7 +2955,7 @@ function buildPlayerBoard(me) {
 
   const grid = document.createElement("div");
   grid.className = "tm-pb-grid";
-  PB_COLUMNS.forEach((col) => {
+  pbColumns().forEach((col) => {
     const cur = me.columns?.[col.id] ?? 0;
     const c = document.createElement("div");
     c.className = "tm-pb-col";
@@ -2705,6 +2998,11 @@ function buildPlayerBoard(me) {
     const vals = columnValuesFor(col.id);
     const cellH = Math.max(13, Math.min(30, Math.round(150 / Math.max(1, vals.length))));
     const level = Math.min(cur, vals.length - 1);
+    // Ticket mode's win condition: a fully upgraded column gets a ✓ crown.
+    if (isTicketMode() && vals.length && level >= vals.length - 1) {
+      c.classList.add("tm-pb-complete");
+      title.textContent = `✓ ${col.title}`;
+    }
     vals.forEach((val, i) => {
       const cell = document.createElement("div");
       cell.className = "tm-pb-cell";
@@ -2729,6 +3027,10 @@ function renderPlayerBoard() {
   const wrap = document.createElement("div");
   wrap.className = "tm-pb-wrap";
   renderTimeStones(wrap, me.timeStones ?? 0);
+  if (isTicketMode()) {
+    renderMoney(wrap, me.money ?? 0);
+    wrap.appendChild(buildTicketsRow(me));
+  }
   wrap.appendChild(buildPlayerBoard(me));
   els.gameBoard.appendChild(wrap);
 }
@@ -2802,6 +3104,8 @@ function renderMap() {
   renderScoreboard();
   renderDice();
   renderDecks();
+  renderTicketHighlights();
+  renderSpecialPanel();
 }
 
 // --------------------------------------------------------------------------
@@ -2839,7 +3143,8 @@ function enterEditor() {
     streetMode: false,
     newStreet: null,
     segments: collectSegments(streets),
-    scaleBase: null
+    scaleBase: null,
+    saveName: null // the title box in the edit controls; ✓ saves under it
   };
   renderEditor();
   renderControls();
@@ -3232,8 +3537,7 @@ function saveMap() {
     window.alert(`This map has ${editor.octagons.length} intersections. It needs at least 24 to be saved.`);
     return;
   }
-  const name = window.prompt("Name this map:", `Map ${savedMaps.length + 1}`);
-  if (name === null) return;
+  const name = (editor.saveName ?? "").trim() || `Map ${savedMaps.length + 1}`;
   socket.emit("truck_mania_save_map", {
     roomId: app.roomId,
     name,
@@ -3258,16 +3562,24 @@ const TUNE_COLUMNS = [
   ["capacity", "Capacity"], ["variety", "Variety"], ["aversion", "Aversion"],
   ["agression", "Agression"], ["timestones", "Time stones"]
 ];
+const TUNE_COLUMNS_TICKETS = [...TUNE_COLUMNS, ["money", "Money"]];
 const TUNE_COLORS = [
   ["#cf4a3c", "Red"], ["#e08a3c", "Orange"], ["#e8c33c", "Yellow"],
   ["#4f9d57", "Green"], ["#4a72b0", "Blue"], ["#8a5bb0", "Purple"], ["#8f6b52", "Brown"]
 ];
 
+function tuneColumns() {
+  return tuneDraft?.mode === "tickets" ? TUNE_COLUMNS_TICKETS : TUNE_COLUMNS;
+}
+
 function openTuning() {
   if (!settingsState) return;
+  const ticket = isTicketMode();
   tuneDraft = {
+    mode: ticket ? "tickets" : "points",
     columns: Object.fromEntries(
-      TUNE_COLUMNS.map(([id]) => [id, (settingsState.columns?.[id] ?? []).join(", ")])
+      (ticket ? TUNE_COLUMNS_TICKETS : TUNE_COLUMNS)
+        .map(([id]) => [id, (settingsState.columns?.[id] ?? []).join(", ")])
     ),
     packages: Object.fromEntries(TUNE_COLORS.map(([hex]) => {
       const p = settingsState.packages?.[hex] ?? { square: 0, circle: 0 };
@@ -3275,13 +3587,29 @@ function openTuning() {
     })),
     protectedCount: String(settingsState.protectedCount ?? 6),
     startingTimeStones: String(settingsState.startingTimeStones ?? 3),
-    points: {
+    saveName: `Settings ${savedSettingsList.length + 1}`
+  };
+  if (ticket) {
+    tuneDraft.startingMoney = String(settingsState.startingMoney ?? 2);
+    tuneDraft.columnsToWin = String(settingsState.columnsToWin ?? 3);
+    tuneDraft.ticketLocations = String(settingsState.ticketLocations ?? 12);
+    tuneDraft.perFail = String(settingsState.tickets?.perFail ?? 1);
+    tuneDraft.rushPerFail = String(settingsState.tickets?.rushPerFail ?? 2);
+    tuneDraft.abilityCosts = Object.fromEntries(
+      Object.keys(ABILITY_LABELS).map((id) => [id, String(settingsState.abilityCosts?.[id] ?? 0)])
+    );
+    tuneDraft.pawnCosts = (settingsState.pawnCosts ?? [2, 3, 4]).join(", ");
+    tuneDraft.courtCosts = (settingsState.courtCosts ?? [2, 3, 4]).join(", ");
+    tuneDraft.blankGreen = String(settingsState.blankLights?.green ?? 5);
+    tuneDraft.blankRed = String(settingsState.blankLights?.red ?? 5);
+  } else {
+    tuneDraft.points = {
       square: String(settingsState.points?.square ?? 1),
       circle: String(settingsState.points?.circle ?? 2),
       ticket: String(settingsState.points?.ticket ?? 1),
       rushTicket: String(settingsState.points?.rushTicket ?? 2)
-    }
-  };
+    };
+  }
   renderTuning();
 }
 
@@ -3294,8 +3622,17 @@ function closeTuning() {
 // line up yet. Editing is free; only Save (and the issue list) cares.
 function parseTuneDraft() {
   const issues = [];
+  const ticket = tuneDraft.mode === "tickets";
+  const intField = (raw, label, min, max) => {
+    const v = Number(raw);
+    if (!Number.isInteger(v) || v < min || v > max) {
+      issues.push(`${label}: a whole number ${min}–${max}`);
+    }
+    return v | 0;
+  };
+
   const columns = {};
-  TUNE_COLUMNS.forEach(([id, label]) => {
+  tuneColumns().forEach(([id, label]) => {
     const nums = tuneDraft.columns[id]
       .split(",").map((s) => s.trim()).filter((s) => s !== "").map(Number);
     if (!nums.length || nums.some((n) => !Number.isInteger(n) || n < 0 || n > 99)) {
@@ -3320,26 +3657,15 @@ function parseTuneDraft() {
     circles += ci | 0;
   });
 
-  const protectedCount = Number(tuneDraft.protectedCount);
-  if (!Number.isInteger(protectedCount) || protectedCount < 0 || protectedCount > 12) {
-    issues.push("Protected locations: 0–12");
-  }
-  const startingTimeStones = Number(tuneDraft.startingTimeStones);
-  if (!Number.isInteger(startingTimeStones) || startingTimeStones < 0) {
-    issues.push("Starting time stones: a whole number ≥ 0");
-  }
-  const points = {};
-  [["square", "Square points"], ["circle", "Circle points"],
-   ["ticket", "Ticket loss"], ["rushTicket", "Rush-hour ticket loss"]].forEach(([k, label]) => {
-    const v = Number(tuneDraft.points[k]);
-    if (!Number.isInteger(v) || v < 0) issues.push(`${label}: a whole number ≥ 0`);
-    points[k] = v | 0;
-  });
+  const protectedCount = intField(tuneDraft.protectedCount, "Protected locations", 0, 12);
+  const startingTimeStones = intField(tuneDraft.startingTimeStones, "Starting time stones", 0, 40);
 
-  // The line-up rules (mirrored by the server before persisting).
+  // The line-up rules (mirrored by the server before persisting). Ticket-mode
+  // protected locations hold 8 circles each instead of 6.
+  const perProtected = ticket ? 8 : 6;
   if (Number.isInteger(protectedCount) && protectedCount >= 0) {
-    if (circles !== protectedCount * 6) {
-      issues.push(`Circles must total protected × 6 = ${protectedCount * 6} (now ${circles})`);
+    if (circles !== protectedCount * perProtected) {
+      issues.push(`Circles must total protected × ${perProtected} = ${protectedCount * perProtected} (now ${circles})`);
     }
     const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
     if (orange !== protectedCount * 2) {
@@ -3348,8 +3674,50 @@ function parseTuneDraft() {
   }
   if (squares % 6 !== 0) issues.push(`Squares must divide by 6 (now ${squares})`);
 
+  if (!ticket) {
+    const points = {};
+    [["square", "Square points"], ["circle", "Circle points"],
+     ["ticket", "Ticket loss"], ["rushTicket", "Rush-hour ticket loss"]].forEach(([k, label]) => {
+      const v = Number(tuneDraft.points[k]);
+      if (!Number.isInteger(v) || v < 0) issues.push(`${label}: a whole number ≥ 0`);
+      points[k] = v | 0;
+    });
+    return {
+      settings: { columns, packages, protectedCount, startingTimeStones, points },
+      issues
+    };
+  }
+
+  const startingMoney = intField(tuneDraft.startingMoney, "Starting money", 0, 40);
+  const columnsToWin = intField(tuneDraft.columnsToWin, "Columns to win", 1, 6);
+  const ticketLocations = intField(tuneDraft.ticketLocations, "Ticket locations", 1, 12);
+  const perFail = intField(tuneDraft.perFail, "Tickets per failed die", 0, 6);
+  const rushPerFail = intField(tuneDraft.rushPerFail, "Rush tickets per failed die", 0, 6);
+  const blankGreen = intField(tuneDraft.blankGreen, "Green blank lights", 0, 40);
+  const blankRed = intField(tuneDraft.blankRed, "Red blank lights", 0, 40);
+  const abilityCosts = {};
+  Object.keys(ABILITY_LABELS).forEach((id) => {
+    abilityCosts[id] = intField(tuneDraft.abilityCosts[id], `${ABILITY_LABELS[id]} cost`, 0, 99);
+  });
+  const stepCosts = (raw, label) => {
+    const nums = raw.split(",").map((s) => s.trim()).filter((s) => s !== "").map(Number);
+    if (nums.length !== 3 || nums.some((n) => !Number.isInteger(n) || n < 0 || n > 99)) {
+      issues.push(`${label}: exactly three whole numbers (1st, 2nd, 3rd use)`);
+    }
+    return nums;
+  };
+  const pawnCosts = stepCosts(tuneDraft.pawnCosts, "Pawn shop prices");
+  const courtCosts = stepCosts(tuneDraft.courtCosts, "Courthouse prices");
+
   return {
-    settings: { columns, packages, protectedCount, startingTimeStones, points },
+    settings: {
+      mode: "tickets",
+      columns, packages, protectedCount, startingTimeStones,
+      startingMoney, columnsToWin, ticketLocations,
+      tickets: { perFail, rushPerFail },
+      abilityCosts, pawnCosts, courtCosts,
+      blankLights: { green: blankGreen, red: blankRed }
+    },
     issues
   };
 }
@@ -3389,22 +3757,6 @@ function updateTuneStatus() {
   if (saveBtn) saveBtn.disabled = issues.length > 0;
 }
 
-function refreshTuningSelect() {
-  const select = document.querySelector(".tm-tuning .tm-tune-select");
-  if (!select) return;
-  select.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "Apply settings…";
-  select.appendChild(placeholder);
-  savedSettingsList.forEach((s) => {
-    const opt = document.createElement("option");
-    opt.value = s.id;
-    opt.textContent = s.name;
-    select.appendChild(opt);
-  });
-}
-
 function renderTuning() {
   document.querySelector(".tm-tuning")?.remove();
   if (!tuneDraft) return;
@@ -3413,7 +3765,7 @@ function renderTuning() {
 
   const title = document.createElement("div");
   title.className = "tm-tune-title";
-  title.textContent = "Game tuning";
+  title.textContent = tuneDraft.mode === "tickets" ? "Game tuning — Ticket mode" : "Game tuning — Point mode";
   panel.appendChild(title);
 
   const section = (label) => {
@@ -3435,7 +3787,7 @@ function renderTuning() {
   };
 
   section("Board columns (first = start; count = column length)");
-  TUNE_COLUMNS.forEach(([id, label]) => {
+  tuneColumns().forEach(([id, label]) => {
     row(label, tuneField(tuneDraft.columns[id], (v) => { tuneDraft.columns[id] = v; }, "tm-tune-input tm-tune-list"));
   });
 
@@ -3454,11 +3806,54 @@ function renderTuning() {
   row("Protected locations", tuneField(tuneDraft.protectedCount, (v) => { tuneDraft.protectedCount = v; }, "tm-tune-input tm-tune-num"));
   row("Starting time stones", tuneField(tuneDraft.startingTimeStones, (v) => { tuneDraft.startingTimeStones = v; }, "tm-tune-input tm-tune-num"));
 
-  section("Points");
-  row("Square delivery", tuneField(tuneDraft.points.square, (v) => { tuneDraft.points.square = v; }, "tm-tune-input tm-tune-num"));
-  row("Circle delivery", tuneField(tuneDraft.points.circle, (v) => { tuneDraft.points.circle = v; }, "tm-tune-input tm-tune-num"));
-  row("Ticket loss", tuneField(tuneDraft.points.ticket, (v) => { tuneDraft.points.ticket = v; }, "tm-tune-input tm-tune-num"));
-  row("Rush-hour ticket loss", tuneField(tuneDraft.points.rushTicket, (v) => { tuneDraft.points.rushTicket = v; }, "tm-tune-input tm-tune-num"));
+  if (tuneDraft.mode === "tickets") {
+    row("Starting money", tuneField(tuneDraft.startingMoney, (v) => { tuneDraft.startingMoney = v; }, "tm-tune-input tm-tune-num"));
+    row("Columns to win", tuneField(tuneDraft.columnsToWin, (v) => { tuneDraft.columnsToWin = v; }, "tm-tune-input tm-tune-num"));
+    row("Ticket locations", tuneField(tuneDraft.ticketLocations, (v) => { tuneDraft.ticketLocations = v; }, "tm-tune-input tm-tune-num"));
+
+    section("Tickets (issued per failed die)");
+    row("Normal", tuneField(tuneDraft.perFail, (v) => { tuneDraft.perFail = v; }, "tm-tune-input tm-tune-num"));
+    row("Rush hour", tuneField(tuneDraft.rushPerFail, (v) => { tuneDraft.rushPerFail = v; }, "tm-tune-input tm-tune-num"));
+
+    section("Blank stoplights (after the 24 numbered)");
+    row("Green", tuneField(tuneDraft.blankGreen, (v) => { tuneDraft.blankGreen = v; }, "tm-tune-input tm-tune-num"));
+    row("Red", tuneField(tuneDraft.blankRed, (v) => { tuneDraft.blankRed = v; }, "tm-tune-input tm-tune-num"));
+
+    section("Mechanic — ability prices");
+    Object.keys(ABILITY_LABELS).forEach((id) => {
+      row(`${ABILITY_ICONS[id]} ${ABILITY_LABELS[id]}`,
+        tuneField(tuneDraft.abilityCosts[id], (v) => { tuneDraft.abilityCosts[id] = v; }, "tm-tune-input tm-tune-num"));
+    });
+
+    section("Prices per use in one turn (1st, 2nd, 3rd)");
+    row("Pawn shop", tuneField(tuneDraft.pawnCosts, (v) => { tuneDraft.pawnCosts = v; }, "tm-tune-input tm-tune-list"));
+    row("Courthouse", tuneField(tuneDraft.courtCosts, (v) => { tuneDraft.courtCosts = v; }, "tm-tune-input tm-tune-list"));
+  } else {
+    section("Points");
+    row("Square delivery", tuneField(tuneDraft.points.square, (v) => { tuneDraft.points.square = v; }, "tm-tune-input tm-tune-num"));
+    row("Circle delivery", tuneField(tuneDraft.points.circle, (v) => { tuneDraft.points.circle = v; }, "tm-tune-input tm-tune-num"));
+    row("Ticket loss", tuneField(tuneDraft.points.ticket, (v) => { tuneDraft.points.ticket = v; }, "tm-tune-input tm-tune-num"));
+    row("Rush-hour ticket loss", tuneField(tuneDraft.points.rushTicket, (v) => { tuneDraft.points.rushTicket = v; }, "tm-tune-input tm-tune-num"));
+  }
+
+  // Saved versions: apply one, retitle it (green ✓ commits), or trash it
+  // (inline Yes / No). Deleting/renaming is local-run only, like saving.
+  section("Saved settings");
+  panel.appendChild(buildSavedList({
+    items: savedSettingsList,
+    canManage: canSaveSettings,
+    loadLabel: "Apply",
+    emptyText: "No saved settings yet — name and ✓ Save below.",
+    onLoad: (id) => {
+      if (app.roomId) socket.emit("truck_mania_load_settings", { roomId: app.roomId, settingsId: id });
+    },
+    onRename: (id, name) => {
+      if (app.roomId) socket.emit("truck_mania_rename_settings", { roomId: app.roomId, settingsId: id, name });
+    },
+    onDelete: (id) => {
+      if (app.roomId) socket.emit("truck_mania_delete_settings", { roomId: app.roomId, settingsId: id });
+    }
+  }));
 
   const issues = document.createElement("div");
   issues.className = "tm-tune-issues";
@@ -3466,24 +3861,23 @@ function renderTuning() {
 
   const footer = document.createElement("div");
   footer.className = "tm-tune-footer";
-  const select = document.createElement("select");
-  select.className = "tm-tune-select";
-  footer.appendChild(select);
-  const loadBtn = button("Apply", "");
-  loadBtn.addEventListener("click", () => {
-    if (select.value && app.roomId) {
-      socket.emit("truck_mania_load_settings", { roomId: app.roomId, settingsId: select.value });
-    }
-  });
-  footer.appendChild(loadBtn);
   if (canSaveSettings) {
-    const saveBtn = button("Save…", "", "primary-btn");
+    // Name the version here, then hit the green ✓ to save it.
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "tm-saved-name tm-tune-name";
+    nameInput.maxLength = 40;
+    nameInput.placeholder = "Name these settings…";
+    nameInput.value = tuneDraft.saveName ?? "";
+    nameInput.addEventListener("input", () => { tuneDraft.saveName = nameInput.value; });
+    footer.appendChild(nameInput);
+    const saveBtn = button("✓ Save", "", "primary-btn tm-saved-ok");
     saveBtn.classList.add("tm-tune-save");
+    saveBtn.title = "Save these numbers under the name on the left";
     saveBtn.addEventListener("click", () => {
       const parsed = parseTuneDraft();
       if (parsed.issues.length || !app.roomId) return;
-      const name = window.prompt("Name these settings:", `Settings ${savedSettingsList.length + 1}`);
-      if (name === null) return;
+      const name = (tuneDraft.saveName ?? "").trim() || `Settings ${savedSettingsList.length + 1}`;
       socket.emit("truck_mania_save_settings", { roomId: app.roomId, name, settings: parsed.settings });
     });
     footer.appendChild(saveBtn);
@@ -3494,14 +3888,13 @@ function renderTuning() {
   panel.appendChild(footer);
 
   document.body.appendChild(panel);
-  refreshTuningSelect();
   updateTuneStatus();
 }
 
 socket.on("truck_mania_settings", ({ settings, canSave } = {}) => {
   savedSettingsList = Array.isArray(settings) ? settings : [];
   canSaveSettings = canSave !== false;
-  refreshTuningSelect();
+  if (tuneDraft) renderTuning(); // refresh the saved-versions list in place
 });
 
 // --------------------------------------------------------------------------
@@ -3515,6 +3908,90 @@ function button(label, action, className = "ghost-btn") {
   btn.dataset.action = action;
   btn.textContent = label;
   return btn;
+}
+
+// A managed list of saved items (maps / settings). Every row: an editable
+// title (type, then hit the green ✓ that appears), a load/apply button, and —
+// on local runs only — a trash can that swaps the row to an inline
+// are-you-sure (Yes / No). No browser prompt/confirm dialogs involved.
+function buildSavedList({ items, canManage, loadLabel, emptyText, onLoad, onRename, onDelete }) {
+  const panel = document.createElement("div");
+  panel.className = "tm-saved-panel";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "tm-saved-empty";
+    empty.textContent = emptyText;
+    panel.appendChild(empty);
+    return panel;
+  }
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "tm-saved-row";
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.className = "tm-saved-name";
+    name.maxLength = 40;
+    name.value = item.name;
+    name.readOnly = !canManage;
+    name.title = canManage ? "Type to rename, then hit the green ✓" : item.name;
+
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "tm-btn tm-saved-ok";
+    ok.textContent = "✓";
+    ok.title = "Save the new name";
+    ok.style.display = "none";
+    name.addEventListener("input", () => {
+      const dirty = canManage && name.value.trim() && name.value.trim() !== item.name;
+      ok.style.display = dirty ? "" : "none";
+    });
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && ok.style.display !== "none") ok.click();
+    });
+    ok.addEventListener("click", () => onRename(item.id, name.value.trim()));
+
+    const load = document.createElement("button");
+    load.type = "button";
+    load.className = "ghost-btn tm-btn tm-saved-load";
+    load.textContent = loadLabel;
+    load.addEventListener("click", () => onLoad(item.id));
+
+    row.append(name, ok, load);
+
+    if (canManage) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "ghost-btn tm-btn tm-saved-del";
+      del.textContent = "🗑";
+      del.title = `Delete “${item.name}”`;
+      del.addEventListener("click", () => {
+        row.classList.add("tm-saved-confirm");
+        row.innerHTML = "";
+        const q = document.createElement("span");
+        q.className = "tm-saved-q";
+        q.textContent = `Delete “${item.name}”?`;
+        const yes = document.createElement("button");
+        yes.type = "button";
+        yes.className = "primary-btn tm-btn tm-saved-yes";
+        yes.textContent = "Yes";
+        yes.addEventListener("click", () => onDelete(item.id));
+        const no = document.createElement("button");
+        no.type = "button";
+        no.className = "ghost-btn tm-btn tm-saved-no";
+        no.textContent = "No";
+        no.addEventListener("click", () => {
+          row.classList.remove("tm-saved-confirm");
+          row.innerHTML = "";
+          row.append(name, ok, load, del);
+        });
+        row.append(q, yes, no);
+      });
+      row.appendChild(del);
+    }
+    panel.appendChild(row);
+  });
+  return panel;
 }
 
 function renderControls() {
@@ -3571,7 +4048,17 @@ function renderControls() {
 
     els.hand.appendChild(button("Undo", "undo", "primary-btn tm-undo"));
     if (canSaveMaps) {
-      const saveBtn = button("Save map", "save", "primary-btn");
+      // Name the map right here, then hit the green ✓ to save it.
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.className = "tm-saved-name tm-editor-name";
+      nameInput.maxLength = 40;
+      nameInput.placeholder = "Map name…";
+      nameInput.value = editor.saveName ?? `Map ${savedMaps.length + 1}`;
+      nameInput.addEventListener("input", () => { editor.saveName = nameInput.value; });
+      els.hand.appendChild(nameInput);
+      const saveBtn = button("✓ Save", "save", "primary-btn tm-saved-ok");
+      saveBtn.title = "Save this map under the name on the left";
       saveBtn.disabled = editor.octagons.length < 24;
       els.hand.appendChild(saveBtn);
     }
@@ -3579,26 +4066,56 @@ function renderControls() {
     return;
   }
 
-  const select = document.createElement("select");
-  select.className = "tm-map-select";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = savedMaps.length ? "Saved maps…" : "No saved maps";
-  select.appendChild(placeholder);
-  savedMaps.forEach((m) => {
-    const opt = document.createElement("option");
-    opt.value = m.id;
-    opt.textContent = m.name;
-    select.appendChild(opt);
-  });
-  select.disabled = !savedMaps.length;
-  els.hand.appendChild(select);
+  // Saved maps: a drop-up list — load one, retitle it (green ✓ commits), or
+  // trash it (with an inline are-you-sure).
+  const savedWrap = document.createElement("div");
+  savedWrap.className = "tm-saved-wrap";
+  const mapsBtn = button(`Saved maps (${savedMaps.length}) ${mapsMenuOpen ? "▾" : "▴"}`, "mapsmenu");
+  if (mapsMenuOpen) mapsBtn.classList.add("tm-active");
+  savedWrap.appendChild(mapsBtn);
+  if (mapsMenuOpen) {
+    savedWrap.appendChild(buildSavedList({
+      items: savedMaps,
+      canManage: canSaveMaps,
+      loadLabel: "Load",
+      emptyText: "No saved maps yet — Edit map, then ✓ Save.",
+      onLoad: (id) => {
+        mapsMenuOpen = false;
+        socket.emit("truck_mania_load_map", { roomId: app.roomId, mapId: id });
+      },
+      onRename: (id, name) =>
+        socket.emit("truck_mania_rename_map", { roomId: app.roomId, mapId: id, name }),
+      onDelete: (id) =>
+        socket.emit("truck_mania_delete_map", { roomId: app.roomId, mapId: id })
+    }));
+  }
+  els.hand.appendChild(savedWrap);
 
-  els.hand.appendChild(button("Load", "load", "primary-btn"));
   els.hand.appendChild(button("New map", "regen"));
   els.hand.appendChild(button("Mix up", "mixup"));
   els.hand.appendChild(button("Edit map", "edit"));
   els.hand.appendChild(button("Tuning", "tuning"));
+
+  // Game mode: Points (classic) or Tickets (columns race). Switching applies
+  // that mode's default settings and deals a fitting board.
+  const modeWrap = document.createElement("label");
+  modeWrap.className = "tm-mode-wrap";
+  modeWrap.textContent = "Mode";
+  const modeSelect = document.createElement("select");
+  modeSelect.className = "tm-mode-select";
+  [["points", "Points"], ["tickets", "Tickets"]].forEach(([v, label]) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = label;
+    if ((isTicketMode() ? "tickets" : "points") === v) opt.selected = true;
+    modeSelect.appendChild(opt);
+  });
+  modeSelect.addEventListener("change", () => {
+    if (!app.roomId) return;
+    socket.emit("truck_mania_set_mode", { roomId: app.roomId, mode: modeSelect.value });
+  });
+  modeWrap.appendChild(modeSelect);
+  els.hand.appendChild(modeWrap);
 
   // AI opponents (0–3). Re-deals the board when changed.
   const aiWrap = document.createElement("label");
@@ -3650,9 +4167,16 @@ function renderControls() {
   speedWrap.append(dial, dialVal);
   els.hand.appendChild(speedWrap);
 
-  const endBtn = button("End turn", "endturn", "primary-btn tm-end-turn");
+  const endBtn = button(endTurnLabel(), "endturn", "primary-btn tm-end-turn");
   endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
   els.hand.appendChild(endBtn);
+}
+
+// Ticket mode: ending the turn rolls the banked dice — say so on the button.
+function endTurnLabel() {
+  return isTicketMode() && isMyTurn() && dicePoolState > 0
+    ? `End turn · 🎲×${dicePoolState}`
+    : "End turn";
 }
 
 // Light refresh of just the End-turn button's enabled state (called on every
@@ -3661,7 +4185,10 @@ function renderControls() {
 // its animations have played out.
 function updateTurnControls() {
   const btn = els.hand.querySelector(".tm-end-turn");
-  if (btn) btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+  if (btn) {
+    btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+    btn.textContent = endTurnLabel();
+  }
 }
 
 // Reflect a (possibly remote) speed change on the dial + CSS transitions.
@@ -3716,13 +4243,10 @@ els.hand.addEventListener("click", (event) => {
       if (tuneDraft) closeTuning();
       else openTuning();
       break;
-    case "load": {
-      const select = els.hand.querySelector(".tm-map-select");
-      if (select?.value) {
-        socket.emit("truck_mania_load_map", { roomId: app.roomId, mapId: select.value });
-      }
+    case "mapsmenu":
+      mapsMenuOpen = !mapsMenuOpen;
+      renderControls();
       break;
-    }
     case "edit":
       enterEditor();
       break;
@@ -3788,6 +4312,9 @@ export const truckMania = {
     turnTruck = tm.turnState?.truck ?? null;
     stealVictimId = tm.turnState?.stealVictim ?? null;
     turnPickups = tm.turnState?.pickups ?? [];
+    dicePoolState = tm.turnState?.dicePool ?? 0;
+    pawnUsesState = tm.turnState?.pawnUses ?? 0;
+    courtUsesState = tm.turnState?.courtUses ?? 0;
     aiMoveState = tm.aiMove ?? null;
     applySpeed(tm.speed ?? 1);
     // Reconcile the aimed truck: locked to the turn's mover once set, else keep
@@ -3873,6 +4400,8 @@ export const truckMania = {
       renderScoreboard();
       renderDice();
       renderDecks();
+      renderTicketHighlights();
+      renderSpecialPanel();
       updateTurnControls(); // reflect turn/steal state on the End-turn button
       if (lastTurnSeen !== null && lastTurnSeen !== turnWhose && winnerState == null) {
         showTurnToast();
@@ -3903,9 +4432,12 @@ export const truckMania = {
 
     if (winnerState != null) {
       const w = playersState[winnerState];
+      const feat = isTicketMode()
+        ? `${completedColumnsOf(w)} columns complete`
+        : `${w?.points ?? ""} points`;
       els.turnStatus.textContent = winnerState === myIndex()
-        ? `You win! ${w?.points ?? ""} points`
-        : `${w?.name ?? "Opponent"} wins! ${w?.points ?? ""} points`;
+        ? `You win! ${feat}`
+        : `${w?.name ?? "Opponent"} wins! ${feat}`;
     } else {
       els.turnStatus.textContent = isMyTurn()
         ? (turnActed ? "Your turn — end when ready" : "Your turn")
@@ -3955,6 +4487,10 @@ export const truckMania = {
     turnPickups = [];
     clockQueue = [];
     speedMult = 1;
+    dicePoolState = 0;
+    pawnUsesState = 0;
+    courtUsesState = 0;
+    mapsMenuOpen = false;
     document.body.style.removeProperty("--tm-mult");
     settingsState = null;
     closeTuning();

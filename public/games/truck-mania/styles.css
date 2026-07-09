@@ -1343,3 +1343,368 @@
     flex-wrap: wrap;
   }
 }
+
+/* ==========================================================================
+   Ticket mode: chore locations, special buildings, tickets, money, dice pool
+   ========================================================================== */
+
+/* Themed buildings: icon + name drawn over chore locations and money sinks */
+
+.tm-bldg-icon {
+  font-size: 13px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+.tm-bldg-name {
+  font-size: 6.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  fill: #1c222b;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+.tm-bldg-special .tm-bldg-name {
+  fill: #f4f1ea;
+}
+
+.tm-bldg-special polygon,
+.tm-bldg-special rect {
+  stroke: #1c222b;
+  stroke-width: 2;
+}
+
+/* Chore locations named on my visible tickets glow so they're easy to spot */
+
+.tm-ticket-lit polygon,
+.tm-ticket-lit rect {
+  stroke: #ffe17a;
+  stroke-width: 3;
+  animation: tm-ticket-glow 1.6s ease-in-out infinite;
+}
+
+@keyframes tm-ticket-glow {
+  0%, 100% { filter: drop-shadow(0 0 2px rgba(255, 225, 122, 0.5)); }
+  50% { filter: drop-shadow(0 0 8px rgba(255, 225, 122, 0.95)); }
+}
+
+/* Letters printed on orange packages */
+
+.tm-pkg-letter {
+  fill: #1c222b;
+  font-weight: 900;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Dice banked this turn (rolled at turn end), shown beside the clock */
+
+.tm-pool-tag {
+  font-size: 11px;
+  font-weight: 800;
+  color: #1c222b;
+  background: #ffe17a;
+  border-radius: 999px;
+  padding: 1px 7px;
+  letter-spacing: 0.03em;
+}
+
+/* Scoreboard: completed-columns progress + tickets owed */
+
+.tm-score-tickets {
+  font-size: 12px;
+  font-weight: 800;
+  color: #ffce54;
+}
+
+/* A fully upgraded column (win-condition progress) */
+
+.tm-pb-complete .tm-pb-title {
+  box-shadow: inset 0 0 0 2px #ffe17a;
+}
+
+/* Money coins + ticket slots above the player board */
+
+.tm-money .tm-stones-count {
+  color: #e8c33c;
+}
+
+.tm-tickets {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+
+.tm-ticket {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 58px;
+  min-height: 40px;
+  border-radius: 7px;
+  border: 1.5px dashed rgba(255, 255, 255, 0.25);
+  font-size: 11px;
+}
+
+.tm-ticket-filled {
+  border-style: solid;
+  border-color: #ffce54;
+  background: rgba(255, 206, 84, 0.14);
+}
+
+.tm-ticket-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tm-ticket-name {
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--text, #eef1f4);
+  text-align: center;
+  line-height: 1.1;
+}
+
+.tm-ticket-pile {
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.35);
+  background:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.09) 0 5px, transparent 5px 10px);
+  color: var(--muted, #aeb3ba);
+  font-weight: 800;
+  width: 34px;
+}
+
+/* Special-location panel (mechanic / pawn shop / courthouse) — sits where the
+   card decks live in point mode */
+
+.tm-special {
+  position: fixed;
+  top: 84px;
+  right: calc(clamp(150px, 17vw, 210px) + 52px);
+  width: 200px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+
+.tm-special-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.tm-special-purse {
+  font-size: 12px;
+  font-weight: 800;
+  color: #e8c33c;
+}
+
+.tm-special-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tm-special-item {
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.tm-special-item:disabled {
+  opacity: 0.45;
+}
+
+.tm-special-owned {
+  color: #7bd88f;
+}
+
+.tm-special-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tm-special-select {
+  flex: 1;
+  min-width: 70px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 6px;
+  font-size: 12px;
+}
+
+.tm-special-select option {
+  color: #1a1f27;
+}
+
+.tm-special-note {
+  font-size: 11px;
+  color: var(--muted, #aeb3ba);
+}
+
+/* Mode selector in the control bar */
+
+.tm-mode-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.tm-mode-select {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.tm-mode-select option {
+  color: #1a1f27;
+}
+
+/* ==========================================================================
+   Saved maps / settings management: editable titles (✓ commits), per-row
+   trash cans with an inline are-you-sure, and a drop-up list in the bar
+   ========================================================================== */
+
+.tm-saved-wrap {
+  position: relative;
+}
+
+.tm-saved-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* In the control bar the list floats up above the button. */
+.tm-saved-wrap .tm-saved-panel {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 25;
+  padding: 10px;
+  background: rgba(16, 21, 29, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.tm-saved-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tm-saved-name {
+  flex: 1;
+  min-width: 60px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.tm-saved-name:read-only {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tm-saved-ok {
+  background: #2f9e57;
+  color: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.tm-saved-ok:hover:not(:disabled) {
+  background: #37b463;
+}
+
+.tm-saved-ok:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tm-saved-load,
+.tm-saved-del,
+.tm-saved-yes,
+.tm-saved-no {
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.tm-saved-q {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffb3ab;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-saved-yes {
+  background: #cf4a3c;
+  border-color: #cf4a3c;
+}
+
+.tm-saved-empty {
+  font-size: 12px;
+  color: var(--muted, #aeb3ba);
+  padding: 4px 2px;
+}
+
+/* Name boxes in the map editor bar and the tuning footer */
+
+.tm-editor-name {
+  flex: 0 1 150px;
+  width: 150px;
+}
+
+.tm-tune-name {
+  flex: 1;
+  min-width: 120px;
+}
