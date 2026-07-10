@@ -1,6 +1,11 @@
 // Procedural abstract city map.
 //
-// Pipeline:
+// Two generators live here. `generateCityMap` (the one the game uses) is the
+// simple orthogonal pipeline near the bottom: rectilinear streets only, square
+// corners, rectangular buildings. `generateClassicCityMap` is the original
+// curvy pipeline described below — kept around, currently unused.
+//
+// Classic pipeline:
 //  1. Build a rectilinear street grid. Two map corners are rounded into tangent
 //     arcs so the border streets flow through them — specifically NOT
 //     intersections. Prune interior walls (merging blocks) until the map has
@@ -682,47 +687,78 @@ function buildingEdges(building) {
   });
 }
 
+// March the edge's outward normal until it hits a street. Returns the
+// connector line plus the index of the segment it landed on, or null if no
+// street is in reach or another building blocks the way.
+function connectorFromEdge(edge, blockPlaced, self, segments) {
+  let hit = null;
+  for (let t = 4; t <= 70; t += 2) {
+    const px = edge.mx + edge.nx * t;
+    const py = edge.my + edge.ny * t;
+    if (px < 0 || px > MAP_W || py < 0 || py > MAP_H) break;
+    let dMin = Infinity;
+    let sMin = -1;
+    for (let s = 0; s < segments.length; s += 1) {
+      const [x1, y1, x2, y2] = segments[s];
+      const d = distSqToSegment(px, py, x1, y1, x2, y2);
+      if (d < dMin) {
+        dMin = d;
+        sMin = s;
+      }
+    }
+    if (Math.sqrt(dMin) <= STREET_W / 2 - 1) {
+      hit = { x: px, y: py, si: sMin };
+      break;
+    }
+  }
+  if (!hit) return null;
+
+  const blocked = blockPlaced.some((p) => {
+    if (p === self) return false;
+    return distSqToSegment(p.cx, p.cy, edge.mx, edge.my, hit.x, hit.y) < (p.r * 0.9) ** 2;
+  });
+  if (blocked) return null;
+
+  return {
+    si: hit.si,
+    conn: {
+      x1: Math.round(edge.mx * 10) / 10,
+      y1: Math.round(edge.my * 10) / 10,
+      x2: Math.round(hit.x * 10) / 10,
+      y2: Math.round(hit.y * 10) / 10
+    }
+  };
+}
+
 // March each edge's outward normal until it hits a street; keep the rays that
 // reach one unobstructed, then connect only a random subset of them — a
 // building never plugs into every street it could see.
 function buildingConnectors(rng, building, blockPlaced, self, segments) {
   const candidates = [];
   for (const edge of buildingEdges(building)) {
-    let hit = null;
-    for (let t = 4; t <= 70; t += 2) {
-      const px = edge.mx + edge.nx * t;
-      const py = edge.my + edge.ny * t;
-      if (px < 0 || px > MAP_W || py < 0 || py > MAP_H) break;
-      let dMin = Infinity;
-      for (const [x1, y1, x2, y2] of segments) {
-        const d = distSqToSegment(px, py, x1, y1, x2, y2);
-        if (d < dMin) dMin = d;
-      }
-      if (Math.sqrt(dMin) <= STREET_W / 2 - 1) {
-        hit = { x: px, y: py };
-        break;
-      }
-    }
-    if (!hit) continue;
-
-    const blocked = blockPlaced.some((p) => {
-      if (p === self) return false;
-      return distSqToSegment(p.cx, p.cy, edge.mx, edge.my, hit.x, hit.y) < (p.r * 0.9) ** 2;
-    });
-    if (blocked) continue;
-
-    candidates.push({
-      x1: Math.round(edge.mx * 10) / 10,
-      y1: Math.round(edge.my * 10) / 10,
-      x2: Math.round(hit.x * 10) / 10,
-      y2: Math.round(hit.y * 10) / 10
-    });
+    const c = connectorFromEdge(edge, blockPlaced, self, segments);
+    if (c) candidates.push(c.conn);
   }
-
   if (!candidates.length) return [];
   shuffle(rng, candidates);
   const keep = Math.max(1, candidates.length - randInt(rng, 1, 2));
   return candidates.slice(0, keep);
+}
+
+// Generous variant for the simple maps: every side that reaches a street gets
+// a connector, so buildings are accessible from as many sides as possible —
+// but never two spots on the same street (simple maps are all straight lines,
+// one segment each, so the segment index identifies the street).
+function buildingConnectorsGenerous(building, blockPlaced, self, segments) {
+  const connectors = [];
+  const usedStreets = new Set();
+  for (const edge of buildingEdges(building)) {
+    const c = connectorFromEdge(edge, blockPlaced, self, segments);
+    if (!c || usedStreets.has(c.si)) continue;
+    usedStreets.add(c.si);
+    connectors.push(c.conn);
+  }
+  return connectors;
 }
 
 // ---------------------------------------------------------------------------
@@ -730,14 +766,17 @@ function buildingConnectors(rng, building, blockPlaced, self, segments) {
 // ---------------------------------------------------------------------------
 
 // 24 intersections get numbered octagons — every number 1–12 appears once in
-// green and once in red. Leftovers (and the two square map corners) are
-// permanently green or red with no number. Assignment is randomized.
+// green and once in red. Two map corners (picked at random) are permanently
+// green with no number, standing in for the freely-flowing rounded corners of
+// the classic maps; any other corner competes for a number like a normal
+// intersection. Leftovers are green or red with no number. Assignment is
+// randomized.
 export function assignOctagons(rng, points) {
   const isMapCorner = (p) =>
     (p.x < 20 || p.x > MAP_W - 20) && (p.y < 20 || p.y > MAP_H - 20);
 
-  const eligible = shuffle(rng, points.filter((p) => !isMapCorner(p)));
-  const corners = points.filter((p) => isMapCorner(p));
+  const greenCorners = shuffle(rng, points.filter(isMapCorner)).slice(0, 2);
+  const eligible = shuffle(rng, points.filter((p) => !greenCorners.includes(p)));
 
   const octagons = [];
   for (let i = 0; i < eligible.length; i += 1) {
@@ -753,13 +792,10 @@ export function assignOctagons(rng, points) {
     }
     octagons.push({ x: Math.round(p.x), y: Math.round(p.y), number, color });
   }
-  for (const p of corners) {
-    octagons.push({
-      x: Math.round(p.x),
-      y: Math.round(p.y),
-      number: null,
-      color: rng() < 0.5 ? "green" : "red"
-    });
+  for (const p of greenCorners) {
+    // `corner: true` marks the light as structural — setBlankLights leaves it
+    // alone, so these two corners stay green no matter the settings.
+    octagons.push({ x: Math.round(p.x), y: Math.round(p.y), number: null, color: "green", corner: true });
   }
   return octagons;
 }
@@ -772,9 +808,10 @@ export function randomizeOctagons(octagons) {
 
 // Recolor the blank (unnumbered) stoplights in place: of the blanks, `green`
 // become green and `red` become red (dealt in a random order); any blanks past
-// green+red stay a coin flip. The 24 numbered signs are untouched.
+// green+red stay a coin flip. The 24 numbered signs and the two permanently
+// green corners are untouched.
 export function setBlankLights(octagons, green, red) {
-  const blanks = octagons.filter((o) => o.number == null);
+  const blanks = octagons.filter((o) => o.number == null && !o.corner);
   for (let i = blanks.length - 1; i > 0; i -= 1) {
     const k = Math.floor(Math.random() * (i + 1));
     [blanks[i], blanks[k]] = [blanks[k], blanks[i]];
@@ -821,10 +858,207 @@ export function deriveSpots(map) {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
+// Simple orthogonal generator
+// ---------------------------------------------------------------------------
+//
+// The current default. Orthogonal streets only — no rounded corners, no
+// diagonal avenue, no bezier curve (those produced phantom "stoplights" where
+// a curve grazed a street it never actually joined, and dead ends where a
+// curve wasn't really connected). One interior street per direction may span
+// the whole map; every other interior line gets at least one gap. All four
+// corners are square joins of the border streets; assignOctagons blanks two
+// of them green — standing in for the corners the old algorithm would have
+// rounded — and the other two are designated like any other intersection.
+// Buildings are all rectangles/squares.
+
+// Denser lines than the classic profiles: the gap pass costs intersections,
+// and there's no diagonal/curve to earn them back.
+const SIMPLE_PROFILES = {
+  classic: {
+    minCell: 120, maxCell: 185,
+    targetIntersections: 31, totalBuildings: 27,
+    blockCap: 3, minRadius: 19, maxRadius: 66
+  },
+  dense: {
+    minCell: 100, maxCell: 150,
+    targetIntersections: 38, totalBuildings: 48,
+    blockCap: 4, minRadius: 16, maxRadius: 54
+  }
+};
+
+// 24 numbered octagons + the two blank green corners.
+const SIMPLE_MIN_INTERSECTIONS = 26;
+
+// Prune interior walls in two passes. Pass 1 punches at least one gap into
+// every interior line except the designated full-span pair, so streets usually
+// stop partway instead of running border to border. Pass 2 keeps merging
+// blocks until the intersection count lands exactly on the target (the
+// stoplight settings depend on the exact count — removals that would
+// overshoot below it are skipped). Every removal must keep both endpoint
+// nodes valid (junction or straight pass-through — same no-dead-end rule as
+// the classic pruner).
+function pruneSimpleGrid(rng, walls, vLines, hLines, borders, fullV, fullH, target) {
+  const V = vLines.length;
+  const H = hLines.length;
+
+  const removable = (cand) => {
+    const ends =
+      cand.type === "v"
+        ? [[cand.vi, cand.j], [cand.vi, cand.j + 1]]
+        : [[cand.i, cand.hi], [cand.i + 1, cand.hi]];
+    return !ends.some(([vi, hi]) => {
+      const { v, h } = nodeCounts(walls, V, H, vi, hi);
+      return !nodeStaysValid(cand.type === "v" ? v - 1 : v, cand.type === "h" ? h - 1 : h);
+    });
+  };
+  const setWall = (cand, value) => {
+    if (cand.type === "v") walls.vertical[cand.vi][cand.j] = value;
+    else walls.horizontal[cand.hi][cand.i] = value;
+  };
+  const present = (cand) =>
+    cand.type === "v" ? walls.vertical[cand.vi][cand.j] : walls.horizontal[cand.hi][cand.i];
+  const countNow = () =>
+    countIntersections([...borders, ...buildInteriorStreets(walls, vLines, hLines)]);
+
+  const lines = [];
+  for (let vi = 1; vi < V - 1; vi += 1) {
+    if (vi === fullV) continue;
+    const cands = [];
+    for (let j = 0; j < H - 1; j += 1) cands.push({ type: "v", vi, j });
+    lines.push(shuffle(rng, cands));
+  }
+  for (let hi = 1; hi < H - 1; hi += 1) {
+    if (hi === fullH) continue;
+    const cands = [];
+    for (let i = 0; i < V - 1; i += 1) cands.push({ type: "h", hi, i });
+    lines.push(shuffle(rng, cands));
+  }
+  shuffle(rng, lines);
+
+  let count = countNow();
+  for (const cands of lines) {
+    for (const cand of cands) {
+      if (!removable(cand)) continue;
+      setWall(cand, false);
+      const c = countNow();
+      if (c < target) {
+        setWall(cand, true);
+        continue;
+      }
+      count = c;
+      break;
+    }
+  }
+
+  const rest = shuffle(rng, lines.flat());
+  for (const cand of rest) {
+    if (count <= target) break;
+    if (!present(cand) || !removable(cand)) continue;
+    setWall(cand, false);
+    const c = countNow();
+    if (c < target) {
+      setWall(cand, true);
+      continue;
+    }
+    count = c;
+  }
+  return count;
+}
+
+function generateSimpleOnce(rng, seed, cfg) {
+  const vLines = buildGridLines(rng, MAP_W, cfg.minCell, cfg.maxCell);
+  const hLines = buildGridLines(rng, MAP_H, cfg.minCell, cfg.maxCell);
+  const V = vLines.length;
+  const H = hLines.length;
+  const walls = makeWalls(V, H);
+  const gw = Math.ceil(MAP_W / GRID);
+  const gh = Math.ceil(MAP_H / GRID);
+
+  const rounded = { tl: 0, tr: 0, br: 0, bl: 0 };
+  const borders = buildBorderStreets(rounded);
+
+  // At most one interior street spans the whole map in each direction.
+  const fullV = V > 2 ? randInt(rng, 1, V - 2) : -1;
+  const fullH = H > 2 ? randInt(rng, 1, H - 2) : -1;
+  pruneSimpleGrid(rng, walls, vLines, hLines, borders, fullV, fullH, cfg.targetIntersections);
+
+  const streets = [...borders, ...buildInteriorStreets(walls, vLines, hLines)];
+  const segments = collectSegments(streets);
+  const clearance = buildClearanceField(segments, gw, gh);
+
+  const blocks = findRegions(clearance, gw, gh).map((cells) => ({
+    cells,
+    areaPx: cells.length * GRID * GRID,
+    placed: [],
+    buildings: [],
+    exhausted: false
+  }));
+
+  const palette = ["#c97b63", "#6b8f71", "#d4a056", "#7d8aa5", "#b8849f", "#8f7e6b"];
+  placeAllBuildings(rng, blocks, clearance, gw, segments, palette, cfg);
+
+  for (const block of blocks) {
+    block.buildings.forEach((building, i) => {
+      building.connectors = buildingConnectorsGenerous(
+        building,
+        block.placed,
+        block.placed[i],
+        segments
+      );
+    });
+  }
+
+  const outBlocks = blocks
+    .filter((b) => b.buildings.length)
+    .map((b, i) => ({ id: `block-${i}`, area: Math.round(b.areaPx), buildings: b.buildings }));
+
+  return {
+    seed,
+    width: MAP_W,
+    height: MAP_H,
+    streetWidth: STREET_W,
+    rounded: { tl: 0, tr: 0, br: 0, bl: 0 },
+    intersections: assignOctagons(rng, findIntersections(streets)),
+    streets,
+    blocks: outBlocks,
+    spots: deriveSpots({ streets, blocks: outBlocks })
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Entry points
 // ---------------------------------------------------------------------------
 
-export function generateCityMap(seed = Date.now(), { dense = false } = {}) {
+// `intersections` (optional) asks for an exact total stoplight count — the
+// blank-light settings assume it, so generation retries fresh grids until one
+// lands on it, keeping the closest valid attempt as a fallback. `buildings`
+// (optional) overrides the profile's building budget so every dropoff, pickup
+// and chore location the settings call for gets a building.
+export function generateCityMap(seed = Date.now(), { dense = false, intersections = null, buildings = null } = {}) {
+  const base = dense ? SIMPLE_PROFILES.dense : SIMPLE_PROFILES.classic;
+  const cfg = { ...base };
+  if (Number.isInteger(intersections)) {
+    cfg.targetIntersections = Math.max(SIMPLE_MIN_INTERSECTIONS, intersections);
+  }
+  if (Number.isInteger(buildings)) {
+    cfg.totalBuildings = Math.max(1, Math.min(90, buildings));
+  }
+  const rng = mulberry32(Number(seed) || 1);
+  let best = null;
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const map = generateSimpleOnce(rng, seed, cfg);
+    const n = map.intersections.length;
+    if (n === cfg.targetIntersections) return map;
+    if (n >= SIMPLE_MIN_INTERSECTIONS &&
+        (!best || Math.abs(n - cfg.targetIntersections) < Math.abs(best.intersections.length - cfg.targetIntersections))) {
+      best = map;
+    }
+  }
+  return best ?? generateSimpleOnce(rng, seed, cfg);
+}
+
+// The original curvy generator — kept around, currently unused.
+export function generateClassicCityMap(seed = Date.now(), { dense = false } = {}) {
   const cfg = dense ? PROFILES.dense : PROFILES.classic;
   const rng = mulberry32(Number(seed) || 1);
   // Regenerate until there are enough intersections for the 24 numbered

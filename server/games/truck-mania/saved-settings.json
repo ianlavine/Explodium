@@ -123,6 +123,203 @@
       "blankLights": {
         "green": 5,
         "red": 5
+      },
+      "perProtected": 8,
+      "perPickup": 6,
+      "pickupCount": 10,
+      "dropoffs": {
+        "#cf4a3c": [
+          15
+        ],
+        "#e08a3c": [
+          6,
+          4
+        ],
+        "#e8c33c": [
+          10,
+          5
+        ],
+        "#4f9d57": [
+          10,
+          5
+        ],
+        "#4a72b0": [
+          10,
+          5
+        ],
+        "#8a5bb0": [
+          10,
+          5
+        ],
+        "#8f6b52": [
+          15
+        ]
+      },
+      "intersections": 34,
+      "visibleTickets": 3,
+      "lettersToWin": 5
+    }
+  },
+  {
+    "id": "s1783696097519263",
+    "name": "Try Again",
+    "settings": {
+      "mode": "tickets",
+      "columns": {
+        "capacity": [
+          2,
+          3,
+          4,
+          4,
+          5,
+          5,
+          6
+        ],
+        "variety": [
+          1,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5
+        ],
+        "aversion": [
+          1,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5
+        ],
+        "agression": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "timestones": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "money": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      },
+      "packages": {
+        "#cf4a3c": {
+          "square": 8,
+          "circle": 7
+        },
+        "#e08a3c": {
+          "square": 15,
+          "circle": 0
+        },
+        "#e8c33c": {
+          "square": 8,
+          "circle": 7
+        },
+        "#4f9d57": {
+          "square": 9,
+          "circle": 6
+        },
+        "#4a72b0": {
+          "square": 8,
+          "circle": 7
+        },
+        "#8a5bb0": {
+          "square": 13,
+          "circle": 6
+        },
+        "#8f6b52": {
+          "square": 11,
+          "circle": 7
+        }
+      },
+      "protectedCount": 5,
+      "startingTimeStones": 7,
+      "pickupCount": 12,
+      "perPickup": 6,
+      "perProtected": 8,
+      "dropoffs": {
+        "#cf4a3c": [
+          10,
+          5
+        ],
+        "#e08a3c": [
+          10,
+          5
+        ],
+        "#e8c33c": [
+          10,
+          5
+        ],
+        "#4f9d57": [
+          10,
+          5
+        ],
+        "#4a72b0": [
+          10,
+          5
+        ],
+        "#8a5bb0": [
+          12,
+          7
+        ],
+        "#8f6b52": [
+          12,
+          6
+        ]
+      },
+      "startingMoney": 5,
+      "columnsToWin": 3,
+      "ticketLocations": 12,
+      "visibleTickets": 4,
+      "lettersToWin": 5,
+      "intersections": 31,
+      "tickets": {
+        "perFail": 1,
+        "rushPerFail": 2
+      },
+      "abilityCosts": {
+        "uturn": 3,
+        "drive-by-pickup": 4,
+        "drive-by-dropoff": 4,
+        "cheap-time": 4,
+        "day-theft": 5,
+        "swerve": 3,
+        "time-lord": 5,
+        "free-parking": 6,
+        "reverse-time": 3,
+        "extra-truck": 8
+      },
+      "pawnCosts": [
+        2,
+        5,
+        9
+      ],
+      "courtCosts": [
+        2,
+        5,
+        9
+      ],
+      "blankLights": {
+        "green": 5,
+        "red": 2
       }
     }
   }

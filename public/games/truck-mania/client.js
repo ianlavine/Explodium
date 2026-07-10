@@ -62,7 +62,7 @@ let selectedTruckId = 0;
 // spot; "build" has the player click stop lights one at a time to hand-build
 // the route. Purely a local UX choice — the move sent to the server is the
 // same either way — so it can be flipped at any point, mid-match included.
-let moveMode = "auto";
+let moveMode = "build";
 let builder = null; // build-mode session; see refreshBuilder()
 let lastTurnSeen = null; // last turn index we showed a toast for
 
@@ -87,11 +87,18 @@ function isTicketMode() {
 // The numeric tracks that count toward the ticket-mode win.
 const TICKET_TRACKS = ["capacity", "variety", "aversion", "agression", "timestones", "money"];
 
+// How many letters fill the letters column (it completes like any other).
+function lettersToWin() {
+  return Math.max(1, settingsState?.lettersToWin ?? settingsState?.protectedCount ?? 1);
+}
+
 function completedColumnsOf(player) {
-  return TICKET_TRACKS.filter((c) => {
+  let n = TICKET_TRACKS.filter((c) => {
     const vals = columnValuesFor(c);
     return vals.length && (player?.columns?.[c] ?? 0) >= vals.length - 1;
   }).length;
+  if ((player?.locations?.length ?? 0) >= lettersToWin()) n += 1;
+  return n;
 }
 
 function hasAbil(id) {
@@ -169,18 +176,19 @@ const ABILITY_ICONS = {
   "extra-truck": "🚚"
 };
 
+// Abilities are no longer a board column — the owned ones render as proper
+// cards beside the board (buildAbilityCards).
 const PB_COLUMNS = [
   { id: "capacity", title: "Capacity", color: "#e8c33c", values: [2, 3, 4, 5, 6, 7] },
   { id: "variety", title: "Variety", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] },
   { id: "aversion", title: "Aversion", color: "#4f9d57", values: [1, 2, 3, 4, 5, 6] },
   { id: "agression", title: "Agression", color: "#cf4a3c", values: [0, 1, 2, 3, 4, 5] },
   { id: "timestones", title: "Time stones", color: "#8a5bb0", values: [2, 4, 6, 8, 10, 12] },
-  { id: "locations", title: "Locations", color: "#e08a3c", values: [] },
-  { id: "abilities", title: "Abilities", color: "#8f6b52", values: [] }
+  { id: "locations", title: "Locations", color: "#e08a3c", values: [] }
 ];
 
-// Ticket mode: brown feeds the Money column; orange grants letters directly;
-// abilities are bought at the mechanic (so their column is just the owned set).
+// Ticket mode: brown feeds the Money column; orange grants letters directly —
+// and the letters column completes (lettersToWin slots) like a numeric track.
 const PB_COLUMNS_TICKETS = [
   { id: "capacity", title: "Capacity", color: "#e8c33c", values: [2, 3, 4, 5, 6, 7] },
   { id: "variety", title: "Variety", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] },
@@ -188,8 +196,7 @@ const PB_COLUMNS_TICKETS = [
   { id: "agression", title: "Agression", color: "#cf4a3c", values: [0, 1, 2, 3, 4, 5] },
   { id: "timestones", title: "Time stones", color: "#8a5bb0", values: [2, 4, 6, 8, 10, 12] },
   { id: "money", title: "Money", color: "#8f6b52", values: [2, 4, 6, 8, 10, 12] },
-  { id: "locations", title: "Letters", color: "#e08a3c", values: [] },
-  { id: "abilities", title: "Abilities", color: "#9aa0a8", values: [] }
+  { id: "locations", title: "Letters", color: "#e08a3c", values: [] }
 ];
 
 function pbColumns() {
@@ -2465,7 +2472,7 @@ function showPlayerStatsTip(player, anchor) {
     renderMoney(tip, player.money ?? 0);
     tip.appendChild(buildTicketsRow(player));
   }
-  tip.appendChild(buildPlayerBoard(player));
+  tip.appendChild(buildPlayerPanel(player));
   document.body.appendChild(tip);
   const r = anchor.getBoundingClientRect();
   const tw = tip.offsetWidth;
@@ -2906,14 +2913,15 @@ function renderMoney(parent, count) {
   parent.appendChild(wrap);
 }
 
-// The player's three ticket slots + face-down pile (ticket mode). Each visible
-// ticket names the chore location that clears it; face-down ones flip up only
-// when the owner's turn ends.
+// The player's visible ticket slots (count tunable via `visibleTickets`) +
+// face-down pile (ticket mode). Each visible ticket names the chore location
+// that clears it; face-down ones flip up only when the owner's turn ends.
 function buildTicketsRow(player) {
   const row = document.createElement("div");
   row.className = "tm-tickets";
   const byBid = buildingsByBid();
-  for (let i = 0; i < 3; i += 1) {
+  const slots = Math.max(1, settingsState?.visibleTickets ?? 3);
+  for (let i = 0; i < slots; i += 1) {
     const t = (player.tickets ?? [])[i];
     const slot = document.createElement("div");
     slot.className = `tm-ticket${t ? " tm-ticket-filled" : ""}`;
@@ -2966,11 +2974,26 @@ function buildPlayerBoard(me) {
     title.textContent = col.title;
     c.appendChild(title);
 
-    // Locations / abilities are qualitative: show the tiles the player owns
-    // rather than a numeric track.
-    if (col.id === "locations" || col.id === "abilities") {
-      const items = col.id === "locations" ? (me.locations ?? []) : (me.abilities ?? []);
-      if (!items.length) {
+    // The locations column is qualitative: the letter tiles the player owns.
+    // Ticket mode shows it as `lettersToWin` slots that fill up and complete
+    // like a numeric track; point mode just lists what's owned.
+    if (col.id === "locations") {
+      const items = me.locations ?? [];
+      if (isTicketMode()) {
+        const need = lettersToWin();
+        if (items.length >= need) {
+          c.classList.add("tm-pb-complete");
+          title.textContent = `✓ ${col.title}`;
+        }
+        const slots = Math.max(need, items.length);
+        for (let i = 0; i < slots; i += 1) {
+          const cell = document.createElement("div");
+          cell.className = `tm-pb-cell ${items[i] ? "tm-pb-tile" : "tm-pb-empty"}`;
+          cell.style.background = hexToRgba(col.color, items[i] ? 0.85 : 0.16);
+          if (items[i]) cell.textContent = items[i];
+          c.appendChild(cell);
+        }
+      } else if (!items.length) {
         const cell = document.createElement("div");
         cell.className = "tm-pb-cell tm-pb-empty";
         cell.style.background = hexToRgba(col.color, 0.16);
@@ -2980,12 +3003,7 @@ function buildPlayerBoard(me) {
           const cell = document.createElement("div");
           cell.className = "tm-pb-cell tm-pb-tile";
           cell.style.background = hexToRgba(col.color, 0.85);
-          if (col.id === "locations") {
-            cell.textContent = it;
-          } else {
-            cell.textContent = ABILITY_ICONS[it] ?? "•";
-            cell.title = ABILITY_LABELS[it] ?? it;
-          }
+          cell.textContent = it;
           c.appendChild(cell);
         });
       }
@@ -3019,6 +3037,39 @@ function buildPlayerBoard(me) {
   return board;
 }
 
+// Owned abilities as proper cards (icon + name — same idea as the mechanic's
+// shop list), stacked to the left of the player board.
+function buildAbilityCards(me) {
+  const list = me.abilities ?? [];
+  if (!list.length) return null;
+  const panel = document.createElement("div");
+  panel.className = "tm-ability-cards";
+  list.forEach((id) => {
+    const card = document.createElement("div");
+    card.className = "tm-ability-card";
+    const icon = document.createElement("span");
+    icon.className = "tm-ability-card-icon";
+    icon.textContent = ABILITY_ICONS[id] ?? "•";
+    const name = document.createElement("span");
+    name.className = "tm-ability-card-name";
+    name.textContent = ABILITY_LABELS[id] ?? id;
+    card.append(icon, name);
+    panel.appendChild(card);
+  });
+  return panel;
+}
+
+// The board plus the ability cards beside it — shared by the player's own
+// corner and the opponent hover preview.
+function buildPlayerPanel(me) {
+  const row = document.createElement("div");
+  row.className = "tm-pb-row";
+  const cards = buildAbilityCards(me);
+  if (cards) row.appendChild(cards);
+  row.appendChild(buildPlayerBoard(me));
+  return row;
+}
+
 function renderPlayerBoard() {
   els.gameBoard.querySelector(".tm-pb-wrap")?.remove();
   const me = myPlayer();
@@ -3031,7 +3082,7 @@ function renderPlayerBoard() {
     renderMoney(wrap, me.money ?? 0);
     wrap.appendChild(buildTicketsRow(me));
   }
-  wrap.appendChild(buildPlayerBoard(me));
+  wrap.appendChild(buildPlayerPanel(me));
   els.gameBoard.appendChild(wrap);
 }
 
@@ -3575,6 +3626,9 @@ function tuneColumns() {
 function openTuning() {
   if (!settingsState) return;
   const ticket = isTicketMode();
+  const squaresNow = TUNE_COLORS.reduce(
+    (n, [hex]) => n + (settingsState.packages?.[hex]?.square ?? 0), 0
+  );
   tuneDraft = {
     mode: ticket ? "tickets" : "points",
     columns: Object.fromEntries(
@@ -3586,6 +3640,12 @@ function openTuning() {
       return [hex, { square: String(p.square), circle: String(p.circle) }];
     })),
     protectedCount: String(settingsState.protectedCount ?? 6),
+    perProtected: String(settingsState.perProtected ?? (ticket ? 8 : 6)),
+    pickupCount: String(settingsState.pickupCount ?? Math.round(squaresNow / 6)),
+    perPickup: String(settingsState.perPickup ?? 6),
+    dropoffs: Object.fromEntries(TUNE_COLORS.map(([hex]) =>
+      [hex, (settingsState.dropoffs?.[hex] ?? []).join(", ")]
+    )),
     startingTimeStones: String(settingsState.startingTimeStones ?? 3),
     saveName: `Settings ${savedSettingsList.length + 1}`
   };
@@ -3593,6 +3653,8 @@ function openTuning() {
     tuneDraft.startingMoney = String(settingsState.startingMoney ?? 2);
     tuneDraft.columnsToWin = String(settingsState.columnsToWin ?? 3);
     tuneDraft.ticketLocations = String(settingsState.ticketLocations ?? 12);
+    tuneDraft.visibleTickets = String(settingsState.visibleTickets ?? 3);
+    tuneDraft.lettersToWin = String(settingsState.lettersToWin ?? settingsState.protectedCount ?? 6);
     tuneDraft.perFail = String(settingsState.tickets?.perFail ?? 1);
     tuneDraft.rushPerFail = String(settingsState.tickets?.rushPerFail ?? 2);
     tuneDraft.abilityCosts = Object.fromEntries(
@@ -3602,6 +3664,8 @@ function openTuning() {
     tuneDraft.courtCosts = (settingsState.courtCosts ?? [2, 3, 4]).join(", ");
     tuneDraft.blankGreen = String(settingsState.blankLights?.green ?? 5);
     tuneDraft.blankRed = String(settingsState.blankLights?.red ?? 5);
+    tuneDraft.intersections = String(settingsState.intersections ??
+      24 + (settingsState.blankLights?.green ?? 5) + (settingsState.blankLights?.red ?? 5));
   } else {
     tuneDraft.points = {
       square: String(settingsState.points?.square ?? 1),
@@ -3658,21 +3722,48 @@ function parseTuneDraft() {
   });
 
   const protectedCount = intField(tuneDraft.protectedCount, "Protected locations", 0, 12);
+  const perProtected = intField(tuneDraft.perProtected, "Packages per protected", 1, 12);
+  const pickupCount = intField(tuneDraft.pickupCount, "Normal pickups", 0, 60);
+  const perPickup = intField(tuneDraft.perPickup, "Packages per pickup", 1, 12);
   const startingTimeStones = intField(tuneDraft.startingTimeStones, "Starting time stones", 0, 40);
 
-  // The line-up rules (mirrored by the server before persisting). Ticket-mode
-  // protected locations hold 8 circles each instead of 6.
-  const perProtected = ticket ? 8 : 6;
-  if (Number.isInteger(protectedCount) && protectedCount >= 0) {
-    if (circles !== protectedCount * perProtected) {
-      issues.push(`Circles must total protected × ${perProtected} = ${protectedCount * perProtected} (now ${circles})`);
-    }
-    const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
-    if (orange !== protectedCount * 2) {
-      issues.push(`Orange must total protected × 2 = ${protectedCount * 2} (now ${orange})`);
-    }
+  // The line-up rules (mirrored by the server before persisting): squares
+  // fill the normal pickups exactly, circles the protected ones.
+  if (squares !== pickupCount * perPickup) {
+    issues.push(`Squares must total pickups × per pickup = ${pickupCount * perPickup} (now ${squares})`);
   }
-  if (squares % 6 !== 0) issues.push(`Squares must divide by 6 (now ${squares})`);
+  if (circles !== protectedCount * perProtected) {
+    issues.push(`Circles must total protected × per protected = ${protectedCount * perProtected} (now ${circles})`);
+  }
+  const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
+  if (ticket) {
+    // Letters are dealt evenly over the orange packages.
+    if (protectedCount > 0 ? orange % protectedCount !== 0 : orange !== 0) {
+      issues.push(`Orange must divide evenly by protected locations (now ${orange} ÷ ${protectedCount})`);
+    }
+  } else if (orange !== protectedCount * 2) {
+    issues.push(`Orange must total protected × 2 = ${protectedCount * 2} (now ${orange})`);
+  }
+
+  // Dropoffs: each number in a color's list is one dropoff building with that
+  // capacity; a color's capacities must sum to its package total.
+  const dropoffs = {};
+  TUNE_COLORS.forEach(([hex, name]) => {
+    const nums = (tuneDraft.dropoffs[hex] ?? "")
+      .split(",").map((s) => s.trim()).filter((s) => s !== "").map(Number);
+    if (nums.length > 8 || nums.some((n) => !Number.isInteger(n) || n < 1 || n > 90)) {
+      issues.push(`${name} dropoffs: comma-separated whole numbers (1–90)`);
+    }
+    dropoffs[hex] = nums;
+    const total = packages[hex].square + packages[hex].circle;
+    const sum = nums.reduce((a, b) => a + (Number.isInteger(b) ? b : 0), 0);
+    if (sum !== total) issues.push(`${name} dropoffs must sum to its ${total} packages (now ${sum})`);
+  });
+
+  const shared = {
+    columns, packages, protectedCount, startingTimeStones,
+    pickupCount, perPickup, perProtected, dropoffs
+  };
 
   if (!ticket) {
     const points = {};
@@ -3682,19 +3773,27 @@ function parseTuneDraft() {
       if (!Number.isInteger(v) || v < 0) issues.push(`${label}: a whole number ≥ 0`);
       points[k] = v | 0;
     });
-    return {
-      settings: { columns, packages, protectedCount, startingTimeStones, points },
-      issues
-    };
+    return { settings: { ...shared, points }, issues };
   }
 
   const startingMoney = intField(tuneDraft.startingMoney, "Starting money", 0, 40);
-  const columnsToWin = intField(tuneDraft.columnsToWin, "Columns to win", 1, 6);
+  const columnsToWin = intField(tuneDraft.columnsToWin, "Columns to win", 1, 7);
   const ticketLocations = intField(tuneDraft.ticketLocations, "Ticket locations", 1, 12);
+  const visibleTickets = intField(tuneDraft.visibleTickets, "Visible tickets", 1, 8);
+  const lettersToWin = intField(tuneDraft.lettersToWin, "Letters to win", 1, 12);
+  if (lettersToWin > Math.max(1, protectedCount)) {
+    issues.push("Letters to win can't exceed the protected locations");
+  }
   const perFail = intField(tuneDraft.perFail, "Tickets per failed die", 0, 6);
   const rushPerFail = intField(tuneDraft.rushPerFail, "Rush tickets per failed die", 0, 6);
   const blankGreen = intField(tuneDraft.blankGreen, "Green blank lights", 0, 40);
   const blankRed = intField(tuneDraft.blankRed, "Red blank lights", 0, 40);
+  const intersections = intField(tuneDraft.intersections, "Total intersections", 24, 44);
+  // The stoplight math: the 24 numbered + the blanks make the total; the two
+  // forced-green corners come on top and count toward neither.
+  if (intersections !== 24 + blankGreen + blankRed) {
+    issues.push(`Blanks must fit the total: 24 + ${blankGreen} green + ${blankRed} red = ${24 + blankGreen + blankRed} (total says ${intersections})`);
+  }
   const abilityCosts = {};
   Object.keys(ABILITY_LABELS).forEach((id) => {
     abilityCosts[id] = intField(tuneDraft.abilityCosts[id], `${ABILITY_LABELS[id]} cost`, 0, 99);
@@ -3711,9 +3810,10 @@ function parseTuneDraft() {
 
   return {
     settings: {
+      ...shared,
       mode: "tickets",
-      columns, packages, protectedCount, startingTimeStones,
       startingMoney, columnsToWin, ticketLocations,
+      visibleTickets, lettersToWin, intersections,
       tickets: { perFail, rushPerFail },
       abilityCosts, pawnCosts, courtCosts,
       blankLights: { green: blankGreen, red: blankRed }
@@ -3734,10 +3834,43 @@ function tuneField(value, onInput, cls = "tm-tune-input") {
   return input;
 }
 
-// Refresh the footer: issue list + Save enabled state.
+// Per-color and grand package totals from the draft (0 for junk input).
+function tunePackageTotals() {
+  let squares = 0;
+  let circles = 0;
+  const rows = {};
+  TUNE_COLORS.forEach(([hex]) => {
+    const sq = Number(tuneDraft.packages[hex].square) || 0;
+    const ci = Number(tuneDraft.packages[hex].circle) || 0;
+    rows[hex] = sq + ci;
+    squares += sq;
+    circles += ci;
+  });
+  return { rows, squares, circles };
+}
+
+// Refresh the footer (issue list + Save enabled state) and every live total
+// beside the package rows and dropoff lists.
 function updateTuneStatus() {
   const panel = document.querySelector(".tm-tuning");
   if (!panel || !tuneDraft) return;
+  const totals = tunePackageTotals();
+  panel.querySelectorAll("[data-tune-total]").forEach((el) => {
+    const key = el.dataset.tuneTotal;
+    if (key === "squares") el.textContent = String(totals.squares);
+    else if (key === "circles") el.textContent = String(totals.circles);
+    else if (key === "all") el.textContent = String(totals.squares + totals.circles);
+    else if (key.startsWith("row:")) el.textContent = String(totals.rows[key.slice(4)] ?? 0);
+    else if (key.startsWith("drop:")) {
+      const hex = key.slice(5);
+      const sum = (tuneDraft.dropoffs[hex] ?? "")
+        .split(",").map((s) => s.trim()).filter((s) => s !== "")
+        .reduce((a, s) => a + (Number.isInteger(Number(s)) ? Number(s) : 0), 0);
+      const need = totals.rows[hex] ?? 0;
+      el.textContent = `${sum}/${need}`;
+      el.classList.toggle("tm-tune-bad", sum !== need);
+    }
+  });
   const { issues } = parseTuneDraft();
   const box = panel.querySelector(".tm-tune-issues");
   box.innerHTML = "";
@@ -3791,11 +3924,40 @@ function renderTuning() {
     row(label, tuneField(tuneDraft.columns[id], (v) => { tuneDraft.columns[id] = v; }, "tm-tune-input tm-tune-list"));
   });
 
+  // A little live total that updateTuneStatus keeps current.
+  const totalSpan = (key) => {
+    const s = document.createElement("span");
+    s.className = "tm-tune-total";
+    s.dataset.tuneTotal = key;
+    return s;
+  };
+
   section("Packages (squares / circles per color)");
   TUNE_COLORS.forEach(([hex, name]) => {
     const sq = tuneField(tuneDraft.packages[hex].square, (v) => { tuneDraft.packages[hex].square = v; }, "tm-tune-input tm-tune-num");
     const ci = tuneField(tuneDraft.packages[hex].circle, (v) => { tuneDraft.packages[hex].circle = v; }, "tm-tune-input tm-tune-num");
-    const r = row(name, sq, ci);
+    const r = row(name, sq, ci, totalSpan(`row:${hex}`));
+    const dot = document.createElement("span");
+    dot.className = "tm-tune-dot";
+    dot.style.background = hex;
+    r.insertBefore(dot, r.firstChild);
+  });
+  {
+    const r = row("Totals", totalSpan("squares"), totalSpan("circles"), totalSpan("all"));
+    r.classList.add("tm-tune-totals");
+  }
+
+  section("Pickup locations");
+  row("Normal pickups", tuneField(tuneDraft.pickupCount, (v) => { tuneDraft.pickupCount = v; }, "tm-tune-input tm-tune-num"));
+  row("Squares per normal", tuneField(tuneDraft.perPickup, (v) => { tuneDraft.perPickup = v; }, "tm-tune-input tm-tune-num"));
+  row("Protected locations", tuneField(tuneDraft.protectedCount, (v) => { tuneDraft.protectedCount = v; }, "tm-tune-input tm-tune-num"));
+  row("Circles per protected", tuneField(tuneDraft.perProtected, (v) => { tuneDraft.perProtected = v; }, "tm-tune-input tm-tune-num"));
+
+  section("Dropoffs (capacities, one building each — must sum to the color's packages)");
+  TUNE_COLORS.forEach(([hex, name]) => {
+    const r = row(name,
+      tuneField(tuneDraft.dropoffs[hex], (v) => { tuneDraft.dropoffs[hex] = v; }, "tm-tune-input tm-tune-list"),
+      totalSpan(`drop:${hex}`));
     const dot = document.createElement("span");
     dot.className = "tm-tune-dot";
     dot.style.background = hex;
@@ -3803,21 +3965,23 @@ function renderTuning() {
   });
 
   section("Setup");
-  row("Protected locations", tuneField(tuneDraft.protectedCount, (v) => { tuneDraft.protectedCount = v; }, "tm-tune-input tm-tune-num"));
   row("Starting time stones", tuneField(tuneDraft.startingTimeStones, (v) => { tuneDraft.startingTimeStones = v; }, "tm-tune-input tm-tune-num"));
 
   if (tuneDraft.mode === "tickets") {
     row("Starting money", tuneField(tuneDraft.startingMoney, (v) => { tuneDraft.startingMoney = v; }, "tm-tune-input tm-tune-num"));
     row("Columns to win", tuneField(tuneDraft.columnsToWin, (v) => { tuneDraft.columnsToWin = v; }, "tm-tune-input tm-tune-num"));
+    row("Letters to win", tuneField(tuneDraft.lettersToWin, (v) => { tuneDraft.lettersToWin = v; }, "tm-tune-input tm-tune-num"));
     row("Ticket locations", tuneField(tuneDraft.ticketLocations, (v) => { tuneDraft.ticketLocations = v; }, "tm-tune-input tm-tune-num"));
+    row("Visible tickets", tuneField(tuneDraft.visibleTickets, (v) => { tuneDraft.visibleTickets = v; }, "tm-tune-input tm-tune-num"));
 
     section("Tickets (issued per failed die)");
     row("Normal", tuneField(tuneDraft.perFail, (v) => { tuneDraft.perFail = v; }, "tm-tune-input tm-tune-num"));
     row("Rush hour", tuneField(tuneDraft.rushPerFail, (v) => { tuneDraft.rushPerFail = v; }, "tm-tune-input tm-tune-num"));
 
-    section("Blank stoplights (after the 24 numbered)");
-    row("Green", tuneField(tuneDraft.blankGreen, (v) => { tuneDraft.blankGreen = v; }, "tm-tune-input tm-tune-num"));
-    row("Red", tuneField(tuneDraft.blankRed, (v) => { tuneDraft.blankRed = v; }, "tm-tune-input tm-tune-num"));
+    section("Stoplights (24 numbered + blanks = total; 2 green corners on top)");
+    row("Total intersections", tuneField(tuneDraft.intersections, (v) => { tuneDraft.intersections = v; }, "tm-tune-input tm-tune-num"));
+    row("Green blanks", tuneField(tuneDraft.blankGreen, (v) => { tuneDraft.blankGreen = v; }, "tm-tune-input tm-tune-num"));
+    row("Red blanks", tuneField(tuneDraft.blankRed, (v) => { tuneDraft.blankRed = v; }, "tm-tune-input tm-tune-num"));
 
     section("Mechanic — ability prices");
     Object.keys(ABILITY_LABELS).forEach((id) => {
@@ -3895,6 +4059,16 @@ socket.on("truck_mania_settings", ({ settings, canSave } = {}) => {
   savedSettingsList = Array.isArray(settings) ? settings : [];
   canSaveSettings = canSave !== false;
   if (tuneDraft) renderTuning(); // refresh the saved-versions list in place
+});
+
+// A save the server refused (usually a stale tab whose editor predates the
+// current rules) — surface it in the issues box instead of failing silently.
+socket.on("truck_mania_settings_error", ({ message } = {}) => {
+  const box = document.querySelector(".tm-tuning .tm-tune-issues");
+  if (!box) return;
+  const li = document.createElement("div");
+  li.textContent = `• ${message ?? "The server rejected these settings."}`;
+  box.appendChild(li);
 });
 
 // --------------------------------------------------------------------------
