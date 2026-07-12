@@ -44,7 +44,6 @@ const pendingFlies = {}; // truckId -> fly events held until the truck arrives
 // Turn + time-of-day state (mirrors the server).
 let timeState = 0; // 0-23, 0 = midnight
 let nightState = true; // theft window: 9pm–6am
-let rushState = false; // rush hour: tickets doubled
 let turnWhose = 0; // player index whose turn it is
 let turnActed = false; // this turn's truck has picked up/delivered (movement locked)
 let turnStolen = false; // this turn has performed a steal
@@ -69,6 +68,9 @@ let lastTurnSeen = null; // last turn index we showed a toast for
 // Global animation speed (×1 normal … ×3 fast), a room setting everyone
 // shares. All JS durations divide by it; CSS transitions read --tm-mult.
 let speedMult = 1;
+// The control bar folds down to a corner button (End turn stays reachable);
+// the preference sticks across sessions.
+let controlsMin = localStorage.getItem("tmControlsMin") === "1";
 let turnPickups = []; // this turn's pickups [{pkg, bid}] — the put-back rights
 let clockQueue = []; // work (e.g. a dice roll) queued until the clock-flip animation ends
 const STEAL_GAP = 44; // px a thief parks short of its victim (about a truck length)
@@ -84,8 +86,30 @@ function isTicketMode() {
   return settingsState?.mode === "tickets";
 }
 
+// Suspension mode: ticket mode plus the rule that face-down tickets ground a
+// player — no pickups or dropoffs until the pile flips up (only at turn end).
+function isSuspensionMode() {
+  return isTicketMode() && !!settingsState?.suspension;
+}
+
+function amSuspended() {
+  return isSuspensionMode() && (myPlayer()?.ticketPileCount ?? 0) > 0;
+}
+
+// Fragility rule set (ticket mode): circles are fragile packages any location
+// can hold — no variety rule; the Fragile column caps how many circles fit in
+// a truck, and delivering one pays a choice of time stones or money.
+function isFragilityMode() {
+  return isTicketMode() && !!settingsState?.fragility;
+}
+
 // The numeric tracks that count toward the ticket-mode win.
 const TICKET_TRACKS = ["capacity", "variety", "aversion", "agression", "timestones", "money"];
+const FRAGILITY_TRACKS = ["capacity", "fragile", "aversion", "agression", "timestones", "money"];
+
+function activeTracks() {
+  return isFragilityMode() ? FRAGILITY_TRACKS : TICKET_TRACKS;
+}
 
 // How many letters fill the letters column (it completes like any other).
 function lettersToWin() {
@@ -93,7 +117,7 @@ function lettersToWin() {
 }
 
 function completedColumnsOf(player) {
-  let n = TICKET_TRACKS.filter((c) => {
+  let n = activeTracks().filter((c) => {
     const vals = columnValuesFor(c);
     return vals.length && (player?.columns?.[c] ?? 0) >= vals.length - 1;
   }).length;
@@ -122,8 +146,15 @@ function activeTruck() {
 }
 
 // Does a given truck (default the active one) share its spot with another?
+// Off-board trucks (spot null) share nothing.
 function truckShares(truck) {
-  return !!truck && trucksState.some((t) => t.id !== truck.id && t.spot === truck.spot);
+  return !!truck && truck.spot != null &&
+    trucksState.some((t) => t.id !== truck.id && t.spot === truck.spot);
+}
+
+// Trucks start off the board (spot null) and drive in through an edge light.
+function isOffBoard(truck) {
+  return !!truck && truck.spot == null;
 }
 
 function anyMyTruckShares() {
@@ -150,6 +181,7 @@ let settingsState = null; // the room's tunable numbers (columns, packages, poin
 let savedSettingsList = []; // presets + saved versions, for the tuning menu
 let canSaveSettings = true;
 let tuneDraft = null; // string-field working copy while the tuning panel is open
+let lastAttachedMapId = null; // map attached by the last applied/saved settings version
 
 const ABILITY_LABELS = {
   uturn: "U-turn",
@@ -157,7 +189,6 @@ const ABILITY_LABELS = {
   "drive-by-dropoff": "Drive-by dropoff",
   "cheap-time": "Cheap time",
   "day-theft": "Day theft",
-  swerve: "Swerve",
   "time-lord": "Time lord",
   "free-parking": "Free parking",
   "reverse-time": "Reverse time",
@@ -169,7 +200,6 @@ const ABILITY_ICONS = {
   "drive-by-dropoff": "⤶",
   "cheap-time": "½",
   "day-theft": "☀",
-  swerve: "〰",
   "time-lord": "⏳",
   "free-parking": "🅿",
   "reverse-time": "⏱",
@@ -199,8 +229,14 @@ const PB_COLUMNS_TICKETS = [
   { id: "locations", title: "Letters", color: "#e08a3c", values: [] }
 ];
 
+// Fragility: no variety column — blue feeds Fragile capacity instead.
+const PB_COLUMNS_FRAGILITY = PB_COLUMNS_TICKETS.map((c) =>
+  c.id === "variety" ? { id: "fragile", title: "Fragile", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] } : c
+);
+
 function pbColumns() {
-  return isTicketMode() ? PB_COLUMNS_TICKETS : PB_COLUMNS;
+  if (!isTicketMode()) return PB_COLUMNS;
+  return isFragilityMode() ? PB_COLUMNS_FRAGILITY : PB_COLUMNS_TICKETS;
 }
 
 function hexToRgba(hex, a) {
@@ -707,12 +743,6 @@ function updateDayNight() {
   label.className = "tm-daynight-label";
   label.textContent = `${face} ${timeState < 12 ? "AM" : "PM"}`;
   dayNightEl.append(icon, label);
-  if (rushState) {
-    const rush = document.createElement("span");
-    rush.className = "tm-rush-tag";
-    rush.textContent = "⚠ RUSH";
-    dayNightEl.appendChild(rush);
-  }
   // Ticket mode: the dice banked this turn, rolled when the turn ends.
   if (isTicketMode() && dicePoolState > 0) {
     const pool = document.createElement("span");
@@ -1042,6 +1072,7 @@ function addTruckEl(layer, t) {
   const color = playersState[t.player]?.color ?? "#f4c542";
   const g = makeTruckShape(layer, color);
   g.setAttribute("data-truck", t.id);
+  if (isOffBoard(t)) g.style.display = "none"; // waiting in the garage up top
   if (t.player !== myIndex()) g.classList.add("tm-truck-foe"); // clickable steal target
   truckEls[t.id] = g;
   cargoEls[t.id] = g.querySelector(".tm-cargo");
@@ -1425,14 +1456,58 @@ function builderHead() {
   return { x: last[0], y: last[1], angle: w.endAngle };
 }
 
+// First click of an off-board turn: any stop light on the board's edge (all
+// of them, if a hand-built map has none there). The synthesized leg drives in
+// from just outside the border, so the entry light is clicked — and counted,
+// if red — like any other light, and the head ends up facing inward: every
+// light next to the entry is then a legal second click.
+function entryChoices() {
+  const octs = mapState.intersections ?? [];
+  const w = mapState.width ?? 960;
+  const h = mapState.height ?? 720;
+  const PAD = 20;
+  let idxs = octs
+    .map((_, i) => i)
+    .filter((i) => {
+      const o = octs[i];
+      return o.x < PAD || o.x > w - PAD || o.y < PAD || o.y > h - PAD;
+    });
+  if (!idxs.length) idxs = octs.map((_, i) => i);
+  const res = { octs: [], spots: [] };
+  idxs.forEach((i) => {
+    const o = octs[i];
+    let dx = 0;
+    let dy = 0;
+    if (o.x < PAD) dx = 1;
+    else if (o.x > w - PAD) dx = -1;
+    if (o.y < PAD) dy = 1;
+    else if (o.y > h - PAD) dy = -1;
+    if (!dx && !dy) {
+      dx = w / 2 - o.x;
+      dy = h / 2 - o.y;
+    }
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len;
+    dy /= len;
+    res.octs.push({
+      index: i,
+      path: [[o.x - dx * 46, o.y - dy * 46], [o.x, o.y]],
+      endAngle: (Math.atan2(dy, dx) * 180) / Math.PI
+    });
+  });
+  return res;
+}
+
 // Next-step choices from the head, with unpickable spots filtered out: the
 // truck's own spot, and occupied spots unless the occupant is stealable.
 function computeBuilderChoices() {
+  if (builder.entry && builder.waypoints.length === 0) return entryChoices();
   const head = builderHead();
-  const c = manualChoices(head.x, head.y, head.angle, hasAbil("uturn"), builder.waypoints.length === 0);
+  const firstLeg = !builder.entry && builder.waypoints.length === 0;
+  const c = manualChoices(head.x, head.y, head.angle, hasAbil("uturn"), firstLeg);
   const truck = trucksState.find((t) => t.id === builder.truckId);
   c.spots = c.spots.filter(({ index }) => {
-    if (truck && index === truck.spot) return false;
+    if (truck && truck.spot != null && index === truck.spot) return false;
     const occ = trucksState.find((t) => t.id !== builder.truckId && t.spot === index);
     if (!occ) return true;
     return occ.player !== myIndex() && canStealTarget(occ.id);
@@ -1503,12 +1578,15 @@ function builderGo() {
 
 // (Re)open the build session when it applies: build mode, our turn, movement
 // still allowed, truck parked. Cleared otherwise. Safe to call at any point.
+// A truck still off the board always builds its entry route here (even in
+// auto route mode — there's no spot to click a preview from off the board).
 function refreshBuilder() {
   const truck = activeTruck();
+  const off = isOffBoard(truck);
   const eligible =
-    moveMode === "build" && isActive() && !editor && app.roomId && boardMode === "play" &&
-    isMyTurn() && !turnActed && winnerState == null &&
-    truck && truckPos[truck.id] && truckAnim[truck.id] == null && !diceAnimating;
+    (moveMode === "build" || off) && isActive() && !editor && app.roomId && boardMode === "play" &&
+    isMyTurn() && !turnActed && winnerState == null && truck && !diceAnimating &&
+    truckAnim[truck.id] == null && (off || truckPos[truck.id]);
   if (!eligible) {
     builder = null;
     renderBuild();
@@ -1518,6 +1596,7 @@ function refreshBuilder() {
     builder = {
       truckId: truck.id,
       baseSpot: truck.spot,
+      entry: off, // first click picks an edge stop light to drive in through
       waypoints: [],
       done: false,
       choices: null
@@ -1591,10 +1670,8 @@ function renderBuildPanel() {
   const hint = document.createElement("span");
   hint.className = "tm-build-hint";
   hint.textContent = builder.done
-    ? "Route set — hit Go to roll and drive"
-    : builder.waypoints.length
-      ? "Next stop light… or a parking dot to finish"
-      : "Click the stop light you're facing";
+    ? ""
+    : "";
   panel.appendChild(hint);
 
   const undoBtn = button("Undo", "");
@@ -1689,13 +1766,38 @@ function syncTrucks(trucks) {
     });
   }
   trucksState.forEach((t) => {
+    // Still off the board: hidden here, shown as a garage truck under its
+    // owner's score chip instead.
+    if (t.spot == null) {
+      if (truckEls[t.id]) truckEls[t.id].style.display = "none";
+      return;
+    }
     const spot = mapState.spots?.[t.spot];
     if (!spot || !truckEls[t.id]) return;
+    truckEls[t.id].style.display = "";
     // Sharing a spot means a robbery in progress: the newcomer sits shy of the
     // occupant instead of stacking on top of it.
     const sharing = trucksState.some((o) => o.id !== t.id && o.spot === t.spot && o.id < t.id);
     const prev = truckSpots[t.id];
     if (prev == null) {
+      // First placement: either a fresh board render (snap into place) or the
+      // truck's drive in from off the board (animate its approved entry path).
+      truckSpots[t.id] = t.spot;
+      const pending = pendingRoutes[t.id];
+      let entry = null;
+      if (pending?.spot === t.spot) entry = pending;
+      else if (aiMoveState && aiMoveState.truckId === t.id) entry = aiMoveState;
+      delete pendingRoutes[t.id];
+      if (entry?.path?.length >= 2) {
+        const p0 = entry.path[0];
+        const [dx, dy] = polyDir(entry.path);
+        const occupied = trucksState.some((o) => o.id !== t.id && o.spot === t.spot);
+        truckPos[t.id] = { x: p0[0], y: p0[1], angle: (Math.atan2(dy, dx) * 180) / Math.PI };
+        truckTransform(t.id);
+        startDrive(t.id, entry.path, entry.endAngle, occupied ? STEAL_GAP : 0);
+        renderCargo(t.id);
+        return;
+      }
       let { x, y } = spot;
       if (sharing) {
         const rad = (spot.angle * Math.PI) / 180;
@@ -1703,7 +1805,6 @@ function syncTrucks(trucks) {
         y -= Math.sin(rad) * STEAL_GAP;
       }
       truckPos[t.id] = { x, y, angle: spot.angle };
-      truckSpots[t.id] = t.spot;
       truckTransform(t.id);
     } else if (prev !== t.spot) {
       truckSpots[t.id] = t.spot;
@@ -1785,7 +1886,7 @@ function maybeOpenSteal() {
   // Night only, unless Day theft; one steal per turn; not after acting.
   if (!isMyTurn() || (!nightState && !hasAbil("day-theft")) || turnActed || turnStolen) return;
   const me = activeTruck();
-  if (!me) return;
+  if (!me || me.spot == null) return;
   const myAggr = columnValue("agression", myPlayer());
   const victim = trucksState.find(
     (t) => t.id !== me.id && t.player !== myIndex() && t.spot === me.spot && (t.cargo?.length > 0) &&
@@ -1835,9 +1936,7 @@ function attemptSteal(pkgId) {
   const pkg = victim.cargo[vIdx];
 
   const player = myPlayer();
-  if ((me.cargo?.length ?? 0) >= columnValue("capacity", player)) return;
-  const colors = new Set((me.cargo ?? []).map((p) => p.color));
-  if (!colors.has(pkg.color) && colors.size >= columnValue("variety", player)) return;
+  if (!canHoldPkg(me, player, pkg)) return;
 
   victim.cargo.splice(vIdx, 1);
   me.cargo.push(pkg);
@@ -1855,11 +1954,7 @@ function stealNextFromVictim() {
   const victim = trucksState.find((t) => t.id === stealSession.victimId);
   if (!me || !victim) return;
   const player = myPlayer();
-  if ((me.cargo?.length ?? 0) >= columnValue("capacity", player)) return;
-  const colors = new Set((me.cargo ?? []).map((p) => p.color));
-  const pkg = (victim.cargo ?? []).find(
-    (p) => colors.has(p.color) || colors.size < columnValue("variety", player)
-  );
+  const pkg = (victim.cargo ?? []).find((p) => canHoldPkg(me, player, p));
   if (pkg) attemptSteal(pkg.id);
 }
 
@@ -2082,20 +2177,32 @@ function columnValue(colId, player) {
   return vals[Math.min(player?.columns?.[colId] ?? 0, vals.length - 1)];
 }
 
+// Mirrors the server's cargo limits so we never animate a doomed pickup or
+// steal: capacity, then variety (distinct colors) — or, in fragility mode,
+// the fragile slots circles take up (a circle uses a normal AND fragile slot).
+function canHoldPkg(truck, player, pkg) {
+  if ((truck.cargo?.length ?? 0) >= columnValue("capacity", player)) return false;
+  if (isFragilityMode()) {
+    return pkg.shape !== "circle" ||
+      (truck.cargo ?? []).filter((p) => p.shape === "circle").length < columnValue("fragile", player);
+  }
+  const colors = new Set((truck.cargo ?? []).map((p) => p.color));
+  return colors.has(pkg.color) || colors.size < columnValue("variety", player);
+}
+
 function attemptPickup(pkgId, bid) {
   const truck = activeTruck();
   if (!truck || truckShares(truck) || !usableBids().has(bid)) return;
+  if (amSuspended()) return; // face-down tickets ground package work
   const building = buildingsByBid().get(bid);
   const pkg = building?.packages?.find((p) => p.id === pkgId);
   if (!pkg) return;
 
   // Mirror the server's limits so we don't animate a doomed pickup: locked
-  // protected locations, capacity (total cargo), and variety (distinct colors).
+  // protected locations, then the cargo limits (capacity + variety/fragile).
   const player = playersState[truck.player] ?? myPlayer();
   if (building.protected && building.letter && !(player?.locations ?? []).includes(building.letter)) return;
-  if ((truck.cargo?.length ?? 0) >= columnValue("capacity", player)) return;
-  const colors = new Set((truck.cargo ?? []).map((p) => p.color));
-  if (!colors.has(pkg.color) && colors.size >= columnValue("variety", player)) return;
+  if (!canHoldPkg(truck, player, pkg)) return;
 
   const from = pkgPos[pkgId] || buildingCentroid(building);
   const to = nextDockWorld(truck.id);
@@ -2152,6 +2259,7 @@ function animateDropoff(pkg, from, to, onDone) {
 function attemptDropoff(pkgId) {
   const truck = activeTruck();
   if (!truck || truckShares(truck)) return false;
+  if (amSuspended()) return false; // face-down tickets ground package work
   const pkg = truck.cargo?.find((p) => p.id === pkgId);
   if (!pkg) return false;
   const building = usableBuildingsClient().find((b) =>
@@ -2373,7 +2481,9 @@ function onBoardClick(event) {
 
   // Build mode: clicks add to the path under construction. Anything that isn't
   // a legal next light/dot is ignored — a stray click never kills the path.
-  if (moveMode === "build") {
+  // Entering from off the board always goes through the builder, whatever the
+  // route mode.
+  if (moveMode === "build" || builder?.entry) {
     if (!builder || turnActed) return;
     const octG = event.target.closest?.(".tm-oct");
     if (octG && octG.dataset.oct != null) {
@@ -2523,6 +2633,19 @@ function renderScoreboard() {
       val.textContent = String(p.points ?? 0);
       chip.append(dot, val);
     }
+    // Trucks that haven't entered the board yet wait in a little garage row
+    // under their owner's chip.
+    const garage = trucksState.filter((t) => t.player === i && t.spot == null);
+    if (garage.length) {
+      const g = document.createElement("div");
+      g.className = "tm-score-garage";
+      garage.forEach(() => {
+        const svg = svgEl("svg", { viewBox: "-17 -13 34 24", class: "tm-garage-truck" });
+        makeTruckShape(svg, p.color);
+        g.appendChild(svg);
+      });
+      chip.appendChild(g);
+    }
     chip.addEventListener("mouseenter", () => showPlayerStatsTip(p, chip));
     chip.addEventListener("mouseleave", hidePlayerStatsTip);
     bar.appendChild(chip);
@@ -2557,10 +2680,10 @@ function setDiceHead(head, roll, settled) {
   } else if (roll.tickets > 0) {
     if (roll.mode === "tickets") {
       // Ticket mode: no points — failed dice hand out literal tickets.
-      head.textContent = `${who}: +${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} 🎫${roll.rush ? " ⚠" : ""}`;
+      head.textContent = `${who}: +${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} 🎫`;
     } else {
       const loss = roll.loss ?? roll.tickets;
-      head.textContent = `${who}: ${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} · −${loss}${roll.rush ? " ⚠" : ""}`;
+      head.textContent = `${who}: ${roll.tickets} ticket${roll.tickets > 1 ? "s" : ""} · −${loss}`;
     }
     head.classList.add("tm-dice-bad");
   } else {
@@ -2742,8 +2865,9 @@ function renderDecks() {
 // --------------------------------------------------------------------------
 
 const TRACK_LABELS = {
-  capacity: "Capacity", variety: "Variety", aversion: "Aversion",
-  agression: "Agression", timestones: "Time stones", money: "Money"
+  capacity: "Capacity", variety: "Variety", fragile: "Fragile cap.",
+  aversion: "Aversion", agression: "Agression", timestones: "Time stones",
+  money: "Money"
 };
 
 // The special building the human's active truck is parked at, if usable now.
@@ -2805,7 +2929,7 @@ function renderSpecialPanel() {
     const mkSelect = (filter) => {
       const sel = document.createElement("select");
       sel.className = "tm-special-select";
-      TICKET_TRACKS.filter(filter).forEach((c) => {
+      activeTracks().filter(filter).forEach((c) => {
         const opt = document.createElement("option");
         opt.value = c;
         opt.textContent = TRACK_LABELS[c];
@@ -2869,6 +2993,40 @@ function renderSpecialPanel() {
     panel.appendChild(list);
   }
 
+  els.gameBoard.appendChild(panel);
+}
+
+// Fragility: delivered fragile packages queue a bonus the player claims at
+// their leisure — time stones or money, at the values snapshotted when the
+// delivery happened. One offer shows at a time; picks resolve oldest-first.
+function renderFragileBonus() {
+  els.gameBoard.querySelector(".tm-fragile")?.remove();
+  const pending = myPlayer()?.pendingFragile ?? [];
+  if (!pending.length || winnerState != null) return;
+  const b = pending[0];
+  const panel = document.createElement("div");
+  panel.className = "tm-special tm-fragile";
+  const head = document.createElement("div");
+  head.className = "tm-special-head";
+  head.textContent = `◯ Fragile bonus${pending.length > 1 ? ` ×${pending.length}` : ""}`;
+  panel.appendChild(head);
+  const note = document.createElement("div");
+  note.className = "tm-special-note";
+  note.textContent = "A fragile delivery pays your pick:";
+  panel.appendChild(note);
+  const list = document.createElement("div");
+  list.className = "tm-special-list";
+  [["stones", `+${b.stones ?? 0} time stones`], ["money", `+${b.money ?? 0} 🪙`]].forEach(([choice, label]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "primary-btn tm-special-item";
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      if (app.roomId) socket.emit("truck_mania_fragile_bonus", { roomId: app.roomId, choice });
+    });
+    list.appendChild(btn);
+  });
+  panel.appendChild(list);
   els.gameBoard.appendChild(panel);
 }
 
@@ -2944,6 +3102,15 @@ function buildTicketsRow(player) {
     pile.className = "tm-ticket tm-ticket-pile";
     pile.title = "Face-down tickets — revealed when your turn ends";
     pile.textContent = `+${pileN}`;
+    // Suspension mode: the backlog is what's grounding this player.
+    if (isSuspensionMode()) {
+      pile.classList.add("tm-ticket-suspended");
+      pile.title = "Face-down tickets — suspended: no pickups or dropoffs until these flip up (at turn end)";
+      const badge = document.createElement("span");
+      badge.className = "tm-ticket-suspend-badge";
+      badge.textContent = "🚫";
+      pile.appendChild(badge);
+    }
     row.appendChild(pile);
   }
   return row;
@@ -3157,6 +3324,7 @@ function renderMap() {
   renderDecks();
   renderTicketHighlights();
   renderSpecialPanel();
+  renderFragileBonus();
 }
 
 // --------------------------------------------------------------------------
@@ -3613,7 +3781,13 @@ const TUNE_COLUMNS = [
   ["capacity", "Capacity"], ["variety", "Variety"], ["aversion", "Aversion"],
   ["agression", "Agression"], ["timestones", "Time stones"]
 ];
-const TUNE_COLUMNS_TICKETS = [...TUNE_COLUMNS, ["money", "Money"]];
+// Ticket settings carry both rule sets' columns (Variety and Fragile capacity)
+// so flipping the rule dial mid-match never lacks numbers.
+const TUNE_COLUMNS_TICKETS = [
+  ["capacity", "Capacity"], ["variety", "Variety"], ["fragile", "Fragile capacity"],
+  ["aversion", "Aversion"], ["agression", "Agression"], ["timestones", "Time stones"],
+  ["money", "Money"]
+];
 const TUNE_COLORS = [
   ["#cf4a3c", "Red"], ["#e08a3c", "Orange"], ["#e8c33c", "Yellow"],
   ["#4f9d57", "Green"], ["#4a72b0", "Blue"], ["#8a5bb0", "Purple"], ["#8f6b52", "Brown"]
@@ -3633,8 +3807,12 @@ function openTuning() {
     mode: ticket ? "tickets" : "points",
     columns: Object.fromEntries(
       (ticket ? TUNE_COLUMNS_TICKETS : TUNE_COLUMNS)
-        .map(([id]) => [id, (settingsState.columns?.[id] ?? []).join(", ")])
+        .map(([id]) => [id, (settingsState.columns?.[id] ??
+          (id === "fragile" ? [1, 2, 3, 4, 5, 6] : [])).join(", ")])
     ),
+    // Attach a saved map to this version (null = NONE — the version leaves
+    // whatever map is on the table alone). Remembers the session's last pick.
+    mapId: savedMaps.some((m) => m.id === lastAttachedMapId) ? lastAttachedMapId : null,
     packages: Object.fromEntries(TUNE_COLORS.map(([hex]) => {
       const p = settingsState.packages?.[hex] ?? { square: 0, circle: 0 };
       return [hex, { square: String(p.square), circle: String(p.circle) }];
@@ -3650,13 +3828,16 @@ function openTuning() {
     saveName: `Settings ${savedSettingsList.length + 1}`
   };
   if (ticket) {
+    // Not editable here (the rule dials in the control bar own them) —
+    // carried so a save doesn't drop the suspension/fragility rules.
+    tuneDraft.suspension = !!settingsState.suspension;
+    tuneDraft.fragility = !!settingsState.fragility;
     tuneDraft.startingMoney = String(settingsState.startingMoney ?? 2);
     tuneDraft.columnsToWin = String(settingsState.columnsToWin ?? 3);
     tuneDraft.ticketLocations = String(settingsState.ticketLocations ?? 12);
     tuneDraft.visibleTickets = String(settingsState.visibleTickets ?? 3);
     tuneDraft.lettersToWin = String(settingsState.lettersToWin ?? settingsState.protectedCount ?? 6);
     tuneDraft.perFail = String(settingsState.tickets?.perFail ?? 1);
-    tuneDraft.rushPerFail = String(settingsState.tickets?.rushPerFail ?? 2);
     tuneDraft.abilityCosts = Object.fromEntries(
       Object.keys(ABILITY_LABELS).map((id) => [id, String(settingsState.abilityCosts?.[id] ?? 0)])
     );
@@ -3670,8 +3851,7 @@ function openTuning() {
     tuneDraft.points = {
       square: String(settingsState.points?.square ?? 1),
       circle: String(settingsState.points?.circle ?? 2),
-      ticket: String(settingsState.points?.ticket ?? 1),
-      rushTicket: String(settingsState.points?.rushTicket ?? 2)
+      ticket: String(settingsState.points?.ticket ?? 1)
     };
   }
   renderTuning();
@@ -3728,12 +3908,21 @@ function parseTuneDraft() {
   const startingTimeStones = intField(tuneDraft.startingTimeStones, "Starting time stones", 0, 40);
 
   // The line-up rules (mirrored by the server before persisting): squares
-  // fill the normal pickups exactly, circles the protected ones.
-  if (squares !== pickupCount * perPickup) {
-    issues.push(`Squares must total pickups × per pickup = ${pickupCount * perPickup} (now ${squares})`);
-  }
-  if (circles !== protectedCount * perProtected) {
-    issues.push(`Circles must total protected × per protected = ${protectedCount * perProtected} (now ${circles})`);
+  // fill the normal pickups exactly, circles the protected ones. Fragility
+  // mixes the shapes freely, so only the combined total must fill every slot.
+  const fragility = ticket && !!tuneDraft.fragility;
+  if (fragility) {
+    const want = pickupCount * perPickup + protectedCount * perProtected;
+    if (squares + circles !== want) {
+      issues.push(`Packages must total pickups × per + protected × per = ${want} (now ${squares + circles})`);
+    }
+  } else {
+    if (squares !== pickupCount * perPickup) {
+      issues.push(`Squares must total pickups × per pickup = ${pickupCount * perPickup} (now ${squares})`);
+    }
+    if (circles !== protectedCount * perProtected) {
+      issues.push(`Circles must total protected × per protected = ${protectedCount * perProtected} (now ${circles})`);
+    }
   }
   const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
   if (ticket) {
@@ -3768,7 +3957,7 @@ function parseTuneDraft() {
   if (!ticket) {
     const points = {};
     [["square", "Square points"], ["circle", "Circle points"],
-     ["ticket", "Ticket loss"], ["rushTicket", "Rush-hour ticket loss"]].forEach(([k, label]) => {
+     ["ticket", "Ticket loss"]].forEach(([k, label]) => {
       const v = Number(tuneDraft.points[k]);
       if (!Number.isInteger(v) || v < 0) issues.push(`${label}: a whole number ≥ 0`);
       points[k] = v | 0;
@@ -3785,7 +3974,6 @@ function parseTuneDraft() {
     issues.push("Letters to win can't exceed the protected locations");
   }
   const perFail = intField(tuneDraft.perFail, "Tickets per failed die", 0, 6);
-  const rushPerFail = intField(tuneDraft.rushPerFail, "Rush tickets per failed die", 0, 6);
   const blankGreen = intField(tuneDraft.blankGreen, "Green blank lights", 0, 40);
   const blankRed = intField(tuneDraft.blankRed, "Red blank lights", 0, 40);
   const intersections = intField(tuneDraft.intersections, "Total intersections", 24, 44);
@@ -3812,9 +4000,11 @@ function parseTuneDraft() {
     settings: {
       ...shared,
       mode: "tickets",
+      suspension: !!tuneDraft.suspension,
+      fragility: !!tuneDraft.fragility,
       startingMoney, columnsToWin, ticketLocations,
       visibleTickets, lettersToWin, intersections,
-      tickets: { perFail, rushPerFail },
+      tickets: { perFail },
       abilityCosts, pawnCosts, courtCosts,
       blankLights: { green: blankGreen, red: blankRed }
     },
@@ -3898,7 +4088,9 @@ function renderTuning() {
 
   const title = document.createElement("div");
   title.className = "tm-tune-title";
-  title.textContent = tuneDraft.mode === "tickets" ? "Game tuning — Ticket mode" : "Game tuning — Point mode";
+  title.textContent = tuneDraft.mode === "tickets"
+    ? `Game tuning — ${tuneDraft.fragility ? "Fragility" : "Ticket mode"}${tuneDraft.suspension ? " · Suspension" : ""}`
+    : "Game tuning — Point mode";
   panel.appendChild(title);
 
   const section = (label) => {
@@ -3947,11 +4139,14 @@ function renderTuning() {
     r.classList.add("tm-tune-totals");
   }
 
+  // Fragility deals every location from one mixed bag, so the per-location
+  // counts aren't shape-bound there.
+  const frag = tuneDraft.mode === "tickets" && !!tuneDraft.fragility;
   section("Pickup locations");
   row("Normal pickups", tuneField(tuneDraft.pickupCount, (v) => { tuneDraft.pickupCount = v; }, "tm-tune-input tm-tune-num"));
-  row("Squares per normal", tuneField(tuneDraft.perPickup, (v) => { tuneDraft.perPickup = v; }, "tm-tune-input tm-tune-num"));
+  row(frag ? "Packages per normal" : "Squares per normal", tuneField(tuneDraft.perPickup, (v) => { tuneDraft.perPickup = v; }, "tm-tune-input tm-tune-num"));
   row("Protected locations", tuneField(tuneDraft.protectedCount, (v) => { tuneDraft.protectedCount = v; }, "tm-tune-input tm-tune-num"));
-  row("Circles per protected", tuneField(tuneDraft.perProtected, (v) => { tuneDraft.perProtected = v; }, "tm-tune-input tm-tune-num"));
+  row(frag ? "Packages per protected" : "Circles per protected", tuneField(tuneDraft.perProtected, (v) => { tuneDraft.perProtected = v; }, "tm-tune-input tm-tune-num"));
 
   section("Dropoffs (capacities, one building each — must sum to the color's packages)");
   TUNE_COLORS.forEach(([hex, name]) => {
@@ -3974,9 +4169,8 @@ function renderTuning() {
     row("Ticket locations", tuneField(tuneDraft.ticketLocations, (v) => { tuneDraft.ticketLocations = v; }, "tm-tune-input tm-tune-num"));
     row("Visible tickets", tuneField(tuneDraft.visibleTickets, (v) => { tuneDraft.visibleTickets = v; }, "tm-tune-input tm-tune-num"));
 
-    section("Tickets (issued per failed die)");
-    row("Normal", tuneField(tuneDraft.perFail, (v) => { tuneDraft.perFail = v; }, "tm-tune-input tm-tune-num"));
-    row("Rush hour", tuneField(tuneDraft.rushPerFail, (v) => { tuneDraft.rushPerFail = v; }, "tm-tune-input tm-tune-num"));
+    section("Tickets");
+    row("Issued per failed die", tuneField(tuneDraft.perFail, (v) => { tuneDraft.perFail = v; }, "tm-tune-input tm-tune-num"));
 
     section("Stoplights (24 numbered + blanks = total; 2 green corners on top)");
     row("Total intersections", tuneField(tuneDraft.intersections, (v) => { tuneDraft.intersections = v; }, "tm-tune-input tm-tune-num"));
@@ -3997,18 +4191,47 @@ function renderTuning() {
     row("Square delivery", tuneField(tuneDraft.points.square, (v) => { tuneDraft.points.square = v; }, "tm-tune-input tm-tune-num"));
     row("Circle delivery", tuneField(tuneDraft.points.circle, (v) => { tuneDraft.points.circle = v; }, "tm-tune-input tm-tune-num"));
     row("Ticket loss", tuneField(tuneDraft.points.ticket, (v) => { tuneDraft.points.ticket = v; }, "tm-tune-input tm-tune-num"));
-    row("Rush-hour ticket loss", tuneField(tuneDraft.points.rushTicket, (v) => { tuneDraft.points.rushTicket = v; }, "tm-tune-input tm-tune-num"));
+  }
+
+  // The map this version plays on: pick a saved map (applying the version
+  // then seats that map too) or NONE to leave the table's map alone.
+  section("Attached map (loads with these settings)");
+  {
+    const r = document.createElement("div");
+    r.className = "tm-tune-row";
+    const mapSel = document.createElement("select");
+    mapSel.className = "tm-special-select tm-tune-map";
+    [["", "NONE — keep the current map"], ...savedMaps.map((m) => [m.id, m.name])]
+      .forEach(([v, label]) => {
+        const opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = label;
+        mapSel.appendChild(opt);
+      });
+    mapSel.value = tuneDraft.mapId ?? "";
+    mapSel.addEventListener("change", () => { tuneDraft.mapId = mapSel.value || null; });
+    r.appendChild(mapSel);
+    panel.appendChild(r);
   }
 
   // Saved versions: apply one, retitle it (green ✓ commits), or trash it
   // (inline Yes / No). Deleting/renaming is local-run only, like saving.
+  // Each row hints at what applying it sets up: rules + attached map.
   section("Saved settings");
   panel.appendChild(buildSavedList({
-    items: savedSettingsList,
+    items: savedSettingsList.map((s) => ({
+      ...s,
+      hint: [
+        s.mode === "tickets" ? (s.fragility ? "Fragility" : "Variety") : "Points",
+        s.suspension ? "Susp." : null,
+        s.mapId ? `🗺 ${savedMaps.find((m) => m.id === s.mapId)?.name ?? "?"}` : null
+      ].filter(Boolean).join(" · ")
+    })),
     canManage: canSaveSettings,
     loadLabel: "Apply",
     emptyText: "No saved settings yet — name and ✓ Save below.",
     onLoad: (id) => {
+      lastAttachedMapId = savedSettingsList.find((s) => s.id === id)?.mapId ?? null;
       if (app.roomId) socket.emit("truck_mania_load_settings", { roomId: app.roomId, settingsId: id });
     },
     onRename: (id, name) => {
@@ -4042,7 +4265,10 @@ function renderTuning() {
       const parsed = parseTuneDraft();
       if (parsed.issues.length || !app.roomId) return;
       const name = (tuneDraft.saveName ?? "").trim() || `Settings ${savedSettingsList.length + 1}`;
-      socket.emit("truck_mania_save_settings", { roomId: app.roomId, name, settings: parsed.settings });
+      lastAttachedMapId = tuneDraft.mapId ?? null;
+      socket.emit("truck_mania_save_settings", {
+        roomId: app.roomId, name, settings: parsed.settings, mapId: tuneDraft.mapId ?? null
+      });
     });
     footer.appendChild(saveBtn);
   }
@@ -4131,7 +4357,16 @@ function buildSavedList({ items, canManage, loadLabel, emptyText, onLoad, onRena
     load.textContent = loadLabel;
     load.addEventListener("click", () => onLoad(item.id));
 
-    row.append(name, ok, load);
+    // Optional hint (settings rows: rules + attached map).
+    let hint = null;
+    if (item.hint) {
+      hint = document.createElement("span");
+      hint.className = "tm-saved-hint";
+      hint.textContent = item.hint;
+      hint.title = item.hint;
+    }
+
+    row.append(name, ok, ...(hint ? [hint] : []), load);
 
     if (canManage) {
       const del = document.createElement("button");
@@ -4157,7 +4392,7 @@ function buildSavedList({ items, canManage, loadLabel, emptyText, onLoad, onRena
         no.addEventListener("click", () => {
           row.classList.remove("tm-saved-confirm");
           row.innerHTML = "";
-          row.append(name, ok, load, del);
+          row.append(name, ok, ...(hint ? [hint] : []), load, del);
         });
         row.append(q, yes, no);
       });
@@ -4172,6 +4407,20 @@ function renderControls() {
   els.hand.innerHTML = "";
   els.hand.classList.remove("player-0", "player-1", "toy-rack", "flip-score");
   els.hand.classList.add("tm-controls");
+  els.hand.classList.toggle("tm-controls-min", controlsMin && !editor);
+
+  // Minimized: just a corner button to unfold, plus End turn so the game
+  // stays playable. (The editor always shows its full toolbar.)
+  if (controlsMin && !editor) {
+    const openBtn = button("⚙", "togglebar");
+    openBtn.title = "Show controls";
+    els.hand.appendChild(openBtn);
+    els.hand.appendChild(skipTurnButton());
+    const endBtn = button(endTurnLabel(), "endturn", "primary-btn tm-end-turn");
+    endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+    els.hand.appendChild(endBtn);
+    return;
+  }
 
   if (!mapsRequested) {
     mapsRequested = true;
@@ -4270,26 +4519,48 @@ function renderControls() {
   els.hand.appendChild(button("Edit map", "edit"));
   els.hand.appendChild(button("Tuning", "tuning"));
 
-  // Game mode: Points (classic) or Tickets (columns race). Switching applies
-  // that mode's default settings and deals a fitting board.
-  const modeWrap = document.createElement("label");
-  modeWrap.className = "tm-mode-wrap";
-  modeWrap.textContent = "Mode";
-  const modeSelect = document.createElement("select");
-  modeSelect.className = "tm-mode-select";
-  [["points", "Points"], ["tickets", "Tickets"]].forEach(([v, label]) => {
-    const opt = document.createElement("option");
-    opt.value = v;
-    opt.textContent = label;
-    if ((isTicketMode() ? "tickets" : "points") === v) opt.selected = true;
-    modeSelect.appendChild(opt);
-  });
-  modeSelect.addEventListener("change", () => {
+  // The rule dials (ticket play is a given now; point mode still exists but
+  // isn't offered here): Suspension on/off — face-down tickets ground your
+  // pickups & dropoffs — and Variety vs Fragility. Variety is the classic
+  // distinct-colors cargo rule; Fragility makes circles fragile packages:
+  // any cargo mix goes, the Fragile column caps circles aboard, and each
+  // fragile delivery pays a choice of time stones or money.
+  const ruleSelect = (labelText, options, current, title, onPick) => {
+    const wrap = document.createElement("label");
+    wrap.className = "tm-mode-wrap";
+    wrap.textContent = labelText;
+    const sel = document.createElement("select");
+    sel.className = "tm-mode-select";
+    sel.title = title;
+    options.forEach(([v, label]) => {
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = label;
+      if (current === v) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", () => onPick(sel.value));
+    wrap.appendChild(sel);
+    els.hand.appendChild(wrap);
+  };
+  const emitRules = (susp, frag) => {
     if (!app.roomId) return;
-    socket.emit("truck_mania_set_mode", { roomId: app.roomId, mode: modeSelect.value });
-  });
-  modeWrap.appendChild(modeSelect);
-  els.hand.appendChild(modeWrap);
+    socket.emit("truck_mania_set_rules", { roomId: app.roomId, suspension: susp, fragility: frag });
+  };
+  ruleSelect(
+    "Suspension",
+    [["off", "Off"], ["on", "On"]],
+    isSuspensionMode() ? "on" : "off",
+    "Face-down tickets block pickups & dropoffs for the whole turn",
+    (v) => emitRules(v === "on", isFragilityMode())
+  );
+  ruleSelect(
+    "Rules",
+    [["variety", "Variety"], ["fragility", "Fragility"]],
+    isFragilityMode() ? "fragility" : "variety",
+    "Variety: classic distinct-colors cargo rule. Fragility: circles are fragile — any mix goes, fragile capacity caps circles, and fragile deliveries pay stones or money.",
+    (v) => emitRules(isSuspensionMode(), v === "fragility")
+  );
 
   // AI opponents (0–3). Re-deals the board when changed.
   const aiWrap = document.createElement("label");
@@ -4341,9 +4612,15 @@ function renderControls() {
   speedWrap.append(dial, dialVal);
   els.hand.appendChild(speedWrap);
 
+  els.hand.appendChild(skipTurnButton());
+
   const endBtn = button(endTurnLabel(), "endturn", "primary-btn tm-end-turn");
   endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
   els.hand.appendChild(endBtn);
+
+  const minBtn = button("⌄", "togglebar");
+  minBtn.title = "Minimize controls";
+  els.hand.appendChild(minBtn);
 }
 
 // Ticket mode: ending the turn rolls the banked dice — say so on the button.
@@ -4351,6 +4628,28 @@ function endTurnLabel() {
   return isTicketMode() && isMyTurn() && dicePoolState > 0
     ? `End turn · 🎲×${dicePoolState}`
     : "End turn";
+}
+
+// Skip the turn for a payout (ticket mode): only while nothing has been done
+// yet — no move, pickup, dropoff, steal or special-building use. Changing the
+// clock doesn't disqualify it. Pays BOTH the time-stone and money column values.
+function canSkipTurn() {
+  return isTicketMode() && isMyTurn() && winnerState == null &&
+    turnTruck == null && !turnStolen && !turnActed && dicePoolState === 0;
+}
+
+function skipTurnLabel() {
+  const me = myPlayer();
+  return `Skip · +${columnValue("timestones", me) ?? 0}⬟ +${columnValue("money", me) ?? 0}🪙`;
+}
+
+// Build the Skip button (shown/hidden and relabeled by updateTurnControls).
+function skipTurnButton() {
+  const btn = button(skipTurnLabel(), "skipturn", "ghost-btn tm-skip-turn");
+  btn.title = "Sit this turn out (changing the clock is still allowed) and collect your time-stone and money column values";
+  btn.style.display = canSkipTurn() ? "" : "none";
+  btn.disabled = anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+  return btn;
 }
 
 // Light refresh of just the End-turn button's enabled state (called on every
@@ -4362,6 +4661,13 @@ function updateTurnControls() {
   if (btn) {
     btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
     btn.textContent = endTurnLabel();
+  }
+  // The Skip offer disappears the moment the turn's first move/action lands.
+  const skip = els.hand.querySelector(".tm-skip-turn");
+  if (skip) {
+    skip.style.display = canSkipTurn() ? "" : "none";
+    skip.disabled = anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+    skip.textContent = skipTurnLabel();
   }
 }
 
@@ -4407,6 +4713,9 @@ els.hand.addEventListener("click", (event) => {
     case "endturn":
       socket.emit("truck_mania_end_turn", { roomId: app.roomId });
       break;
+    case "skipturn":
+      socket.emit("truck_mania_skip_turn", { roomId: app.roomId });
+      break;
     case "routemode":
       moveMode = moveMode === "build" ? "auto" : "build";
       clearPreview();
@@ -4419,6 +4728,12 @@ els.hand.addEventListener("click", (event) => {
       break;
     case "mapsmenu":
       mapsMenuOpen = !mapsMenuOpen;
+      renderControls();
+      break;
+    case "togglebar":
+      controlsMin = !controlsMin;
+      localStorage.setItem("tmControlsMin", controlsMin ? "1" : "0");
+      mapsMenuOpen = false;
       renderControls();
       break;
     case "edit":
@@ -4496,7 +4811,6 @@ export const truckMania = {
     const myIds = (tm.trucks ?? []).filter((t) => t.player === myIndex()).map((t) => t.id);
     if (turnTruck != null) selectedTruckId = turnTruck;
     else if (!myIds.includes(selectedTruckId)) selectedTruckId = myIds[0] ?? 0;
-    rushState = !!tm.rush;
     playersState = tm.players ?? [];
     lastRollState = tm.lastRoll ?? null;
     decksState = tm.decks ?? null;
@@ -4576,6 +4890,7 @@ export const truckMania = {
       renderDecks();
       renderTicketHighlights();
       renderSpecialPanel();
+      renderFragileBonus();
       updateTurnControls(); // reflect turn/steal state on the End-turn button
       if (lastTurnSeen !== null && lastTurnSeen !== turnWhose && winnerState == null) {
         showTurnToast();
@@ -4613,8 +4928,17 @@ export const truckMania = {
         ? `You win! ${feat}`
         : `${w?.name ?? "Opponent"} wins! ${feat}`;
     } else {
+      // Columns done but tickets outstanding: say what's still in the way.
+      const me = myPlayer();
+      const ticketsLeft = (me?.tickets?.length ?? 0) + (me?.ticketPileCount ?? 0);
+      const columnsDone = isTicketMode() && me &&
+        completedColumnsOf(me) >= (settingsState?.columnsToWin ?? 3);
       els.turnStatus.textContent = isMyTurn()
-        ? (turnActed ? "Your turn — end when ready" : "Your turn")
+        ? (amSuspended()
+          ? "Your turn — 🚫 suspended: face-down tickets block pickups & dropoffs"
+          : columnsDone && ticketsLeft > 0
+            ? `Your turn — ✓ columns done, clear your ${ticketsLeft} 🎫 to win`
+            : turnActed ? "Your turn — end when ready" : "Your turn")
         : `${playersState[turnWhose]?.name ?? "Opponent"}'s turn…`;
     }
     return true;
@@ -4644,7 +4968,6 @@ export const truckMania = {
     winnerState = null;
     timeState = 0;
     nightState = true;
-    rushState = false;
     turnWhose = 0;
     turnActed = false;
     turnStolen = false;

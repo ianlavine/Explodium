@@ -158,6 +158,13 @@ const ADVANCING = new Set(["capacity", "variety", "aversion", "agression", "time
 // The numeric tracks per mode; completing `columnsToWin` of them wins ticket mode.
 const POINT_TRACKS = ["capacity", "variety", "aversion", "agression", "timestones"];
 const TICKET_TRACKS = [...POINT_TRACKS, "money"];
+// Fragility (a ticket-mode rule set): the variety rule is gone — any cargo
+// combo goes — and circles are fragile packages limited by the fragile-
+// capacity column instead.
+const FRAGILITY_TRACKS = ["capacity", "fragile", "aversion", "agression", "timestones", "money"];
+// Every column a ticket settings object carries (both rule sets' tracks), so
+// flipping Variety ⇄ Fragility mid-match never lacks numbers.
+const TICKET_COLUMNS = ["capacity", "variety", "fragile", "aversion", "agression", "timestones", "money"];
 
 // Chore locations tickets send players to (ticket mode). Purely thematic —
 // each is just a place on the board with no packages.
@@ -222,20 +229,30 @@ const BASE_SETTINGS = {
   },
   protectedCount: 6,
   startingTimeStones: 3,
-  // Points for delivering each shape, and lost per ticket (rush = rush hour).
-  points: { square: 1, circle: 2, ticket: 1, rushTicket: 2 }
+  // Points for delivering each shape, and lost per ticket.
+  points: { square: 1, circle: 2, ticket: 1 }
 };
 
-// Ticket mode: no points. First to fully upgrade `columnsToWin` columns wins.
+// Ticket mode: no points. First to fully upgrade `columnsToWin` columns —
+// while holding zero tickets (visible or face-down) — wins.
 // Reds crossed pile dice into a pool rolled at turn end; each failed die
 // issues literal tickets (chores at one of the 12 themed locations). Brown
 // feeds the money column — the currency spent at the mechanic / pawn shop /
 // courthouse. Orange packages carry a letter and unlock it on delivery.
 const BASE_TICKET_SETTINGS = {
   mode: "tickets",
+  // Suspension rule (the "Suspension" mode option): a player holding any
+  // face-down tickets may not pick up or drop off packages. The pile only
+  // flips up at turn end, so a backlog blocks package progress all turn.
+  suspension: false,
+  // Fragility rule set: circles are fragile packages any location can hold —
+  // no variety rule; the fragile column caps how many circles fit the truck,
+  // and delivering one pays the player's choice of time stones or money.
+  fragility: false,
   columns: {
     capacity: [2, 3, 4, 5, 6, 7],
     variety: [1, 2, 3, 4, 5, 6],
+    fragile: [1, 2, 3, 4, 5, 6],
     aversion: [1, 2, 3, 4, 5, 6],
     agression: [0, 1, 2, 3, 4, 5],
     timestones: [2, 4, 6, 8, 10, 12],
@@ -256,12 +273,12 @@ const BASE_TICKET_SETTINGS = {
   startingTimeStones: 3,
   startingMoney: 2,
   columnsToWin: 3,
-  // Tickets issued per failed die, normally and during rush hour.
-  tickets: { perFail: 1, rushPerFail: 2 },
+  // Tickets issued per failed die.
+  tickets: { perFail: 1 },
   ticketLocations: 12,
   abilityCosts: {
     uturn: 3, "drive-by-pickup": 4, "drive-by-dropoff": 4, "cheap-time": 4,
-    "day-theft": 5, swerve: 3, "time-lord": 5, "free-parking": 6,
+    "day-theft": 5, "time-lord": 5, "free-parking": 6,
     "reverse-time": 3, "extra-truck": 8
   },
   // Price of the 1st / 2nd / 3rd use in a single turn.
@@ -304,6 +321,9 @@ function migrateSettings(s) {
     for (const [color, cap] of spec) out.dropoffs[color].push(cap);
   }
   if (ticket) {
+    out.suspension ??= false;
+    out.fragility ??= false;
+    (out.columns ??= {}).fragile ??= [1, 2, 3, 4, 5, 6];
     out.blankLights ??= { green: 5, red: 5 };
     // Total stoplights the map should carry (24 numbered + the blanks) — the
     // two forced-green corners sit on top of this count.
@@ -333,8 +353,10 @@ function intIn(v, min, max) {
 // locations and how many packages each holds) and the per-color dropoff
 // capacity lists. Returns null when malformed or when the counts don't line
 // up: squares must exactly fill the normal pickups, circles the protected
-// ones, and each color's dropoff capacities must sum to its package total.
-function sanitizeCore(raw, trackCols) {
+// ones (under fragility the shapes mix freely, so only the combined total
+// must fill every slot), and each color's dropoff capacities must sum to its
+// package total.
+function sanitizeCore(raw, trackCols, fragility = false) {
   const columns = {};
   for (const col of trackCols) {
     const arr = raw.columns?.[col];
@@ -363,8 +385,12 @@ function sanitizeCore(raw, trackCols) {
   if ([protectedCount, startingTimeStones, pickupCount, perPickup, perProtected].some((v) => v === null)) {
     return null;
   }
-  if (squares !== pickupCount * perPickup) return null;
-  if (circles !== protectedCount * perProtected) return null;
+  if (fragility) {
+    if (squares + circles !== pickupCount * perPickup + protectedCount * perProtected) return null;
+  } else {
+    if (squares !== pickupCount * perPickup) return null;
+    if (circles !== protectedCount * perProtected) return null;
+  }
   const dropoffs = {};
   for (const color of LOC_COLORS) {
     const arr = raw.dropoffs?.[color];
@@ -400,7 +426,7 @@ function sanitizePointSettings(raw) {
     pickupCount, perPickup, perProtected, dropoffs
   } = core;
   const points = {};
-  for (const k of ["square", "circle", "ticket", "rushTicket"]) {
+  for (const k of ["square", "circle", "ticket"]) {
     const v = intIn(raw.points?.[k], 0, 20);
     if (v === null) return null;
     points[k] = v;
@@ -416,7 +442,8 @@ function sanitizePointSettings(raw) {
 }
 
 function sanitizeTicketSettings(raw) {
-  const core = sanitizeCore(raw, TICKET_TRACKS);
+  const fragility = raw.fragility === true;
+  const core = sanitizeCore(raw, TICKET_COLUMNS, fragility);
   if (!core) return null;
   const {
     columns, packages, circles, squares, protectedCount, startingTimeStones,
@@ -427,11 +454,10 @@ function sanitizeTicketSettings(raw) {
   const columnsToWin = intIn(raw.columnsToWin, 1, TICKET_TRACKS.length + 1);
   const ticketLocations = intIn(raw.ticketLocations, 1, TICKET_THEMES.length);
   const perFail = intIn(raw.tickets?.perFail, 0, 6);
-  const rushPerFail = intIn(raw.tickets?.rushPerFail, 0, 6);
   const visibleTickets = intIn(raw.visibleTickets, 1, 8);
   const lettersToWin = intIn(raw.lettersToWin, 1, LETTER_POOL.length);
   const intersections = intIn(raw.intersections, 24, 44);
-  if ([startingMoney, columnsToWin, ticketLocations, perFail, rushPerFail,
+  if ([startingMoney, columnsToWin, ticketLocations, perFail,
        visibleTickets, lettersToWin, intersections].some((v) => v === null)) {
     return null;
   }
@@ -463,11 +489,13 @@ function sanitizeTicketSettings(raw) {
   if (squares + circles < 6) return null;
   return {
     mode: "tickets",
+    suspension: raw.suspension === true,
+    fragility,
     columns, packages, protectedCount, startingTimeStones,
     pickupCount, perPickup, perProtected, dropoffs,
     startingMoney, columnsToWin, ticketLocations,
     visibleTickets, lettersToWin, intersections,
-    tickets: { perFail, rushPerFail },
+    tickets: { perFail },
     abilityCosts, pawnCosts, courtCosts,
     blankLights: { green, red }
   };
@@ -513,18 +541,19 @@ const WINNING_POINTS = 25;
 const START_TIME = 0;
 const faceHour = (t) => ((t + 11) % 12) + 1; // 0 -> 12, 13 -> 1, 24h -> face 1-12
 const isNight = (t) => t >= 21 || t <= 6;
-// Rush hours (7–9am, 4–6pm): every ticket costs double.
-const isRushHour = (t) => (t >= 7 && t <= 9) || (t >= 16 && t <= 18);
 // Per-turn flags. `pickups` logs this stop's pickups ({pkg, bid, drive, acted})
-// so a regretted one can be put back; `driveByPickup`/`driveByDropoff` mark the
-// one free drive-by action each ability allows per turn; `actedByDrop` records
-// that a dropoff (not a pickup) ended movement, so put-backs can't reopen it.
-// Ticket mode adds: `dicePool` (a die per red crossed, rolled at turn end) and
-// `pawnUses`/`courtUses` (each use in a turn has its own price).
+// so a regretted one can be put back; `driveByPickupBid`/`driveByDropoffBid`
+// lock each drive-by ability to ONE building per turn — any number of
+// pickups/dropoffs there stay free, acting anywhere else ends movement.
+// `actedByDrop` records that a dropoff (not a pickup) ended movement, so
+// put-backs can't reopen it. Ticket mode adds: `dicePool` (a die per red
+// crossed, rolled at turn end) and `pawnUses`/`courtUses` (each use in a turn
+// has its own price).
 const freshTurnState = () => ({
   acted: false, stolen: false, stealVictim: null, changedTime: false, truck: null,
-  pickups: [], driveByPickup: false, driveByDropoff: false, actedByDrop: false,
-  dicePool: 0, pawnUses: 0, courtUses: 0
+  pickups: [], driveByPickupBid: null, driveByDropoffBid: null, actedByDrop: false,
+  dicePool: 0, pawnUses: 0, courtUses: 0,
+  skipped: false // the turn was sat out for the skip payout
 });
 
 // Locations deck: two of each protected letter. Each letter unlocks its
@@ -533,7 +562,7 @@ const freshTurnState = () => ({
 // kept working in the clock code but is intentionally left out of the deck.
 const ABILITY_CARDS = [
   "uturn", "drive-by-pickup", "drive-by-dropoff", "cheap-time",
-  "day-theft", "swerve", "time-lord", "free-parking", "reverse-time", "extra-truck"
+  "day-theft", "time-lord", "free-parking", "reverse-time", "extra-truck"
 ];
 const buildLocationDeck = (settings) => shuffle(settingsLetters(settings).flatMap((l) => [l, l]));
 const buildAbilityDeck = () => shuffle(ABILITY_CARDS.slice());
@@ -554,7 +583,7 @@ const MAX_AI = 3;
 // When drafting an ability, the AI takes whichever of the two shown ranks first.
 const AI_ABILITY_PREF = [
   "extra-truck", "free-parking", "drive-by-dropoff", "drive-by-pickup",
-  "day-theft", "cheap-time", "time-lord", "swerve", "uturn", "reverse-time"
+  "day-theft", "cheap-time", "time-lord", "uturn", "reverse-time"
 ];
 
 // How many stones an AI will spend on one clock flip: whatever it has, up to
@@ -565,8 +594,8 @@ function aiTimeBudget(player) {
 }
 
 const emptyColumns = () => ({
-  capacity: 0, variety: 0, aversion: 0, agression: 0, timestones: 0, money: 0,
-  locations: 0, abilities: 0
+  capacity: 0, variety: 0, fragile: 0, aversion: 0, agression: 0, timestones: 0,
+  money: 0, locations: 0, abilities: 0
 });
 
 function shuffle(arr) {
@@ -645,8 +674,17 @@ function assignLocations(map, settings) {
     b.delivered = []; // flipped-to-black packages dropped here
   }
 
+  // Fragility: shapes are unrelated to protection — every location deals from
+  // one mixed bag, so any building can hold any blend of squares and circles.
+  const fragility = ticketMode && settings.fragility === true;
   const squareBag = packageColorBag("square", settings.packages);
   const circleBag = packageColorBag("circle", settings.packages);
+  const mixedBag = fragility
+    ? shuffle([
+        ...squareBag.map((color) => ({ shape: "square", color })),
+        ...circleBag.map((color) => ({ shape: "circle", color }))
+      ])
+    : null;
   const perProtected = settings.perProtected ?? (ticketMode ? 8 : 6);
   const perPickup = settings.perPickup ?? 6;
   const wantPickups = settings.protectedCount +
@@ -671,11 +709,13 @@ function assignLocations(map, settings) {
     if (b.protected) b.letter = letters[li++];
     const shape = b.protected ? "circle" : "square";
     const bag = b.protected ? circleBag : squareBag;
-    b.packages = Array.from({ length: b.protected ? perProtected : perPickup }, () => ({
-      id: `pkg${pkgSeq++}`,
-      shape,
-      color: bag.pop() ?? LOC_COLORS[0]
-    }));
+    b.packages = Array.from({ length: b.protected ? perProtected : perPickup }, () => {
+      if (fragility) {
+        const entry = mixedBag.pop() ?? { shape: "square", color: LOC_COLORS[0] };
+        return { id: `pkg${pkgSeq++}`, shape: entry.shape, color: entry.color };
+      }
+      return { id: `pkg${pkgSeq++}`, shape, color: bag.pop() ?? LOC_COLORS[0] };
+    });
   });
 
   if (ticketMode) {
@@ -732,8 +772,18 @@ export function createTruckManiaGame({ io, rooms }) {
   if (savingEnabled && JSON.stringify(savedSettings) !== JSON.stringify(loadSavedSettings())) {
     persistSavedSettings(savedSettings);
   }
+  // Each saved version also names the map it plays on (`mapId`, null = NONE:
+  // the version doesn't care which map is on the table) and carries rule hints
+  // so the list can label what applying it would set up.
   const settingsPayload = () => ({
-    settings: savedSettings.map(({ id, name }) => ({ id, name })),
+    settings: savedSettings.map(({ id, name, mapId, settings }) => ({
+      id,
+      name,
+      mapId: mapId ?? null,
+      mode: modeOf(settings),
+      suspension: settings?.suspension === true,
+      fragility: settings?.fragility === true
+    })),
     canSave: savingEnabled
   });
 
@@ -741,6 +791,12 @@ export function createTruckManiaGame({ io, rooms }) {
   // indexed by the player's current level, clamped to the column's length.
   const S = (room) => room.truckMania.settings ?? DEFAULT_SETTINGS;
   const isTicket = (room) => modeOf(S(room)) === "tickets";
+  // Fragility rule set: circles are fragile packages (see BASE_TICKET_SETTINGS).
+  const isFragility = (room) => isTicket(room) && !!S(room).fragility;
+  // Suspension rule: a face-down ticket backlog grounds the player's package
+  // work — no pickups or dropoffs until the pile flips up (only at turn end).
+  const suspended = (room, player) =>
+    isTicket(room) && !!S(room).suspension && (player?.ticketPile?.length ?? 0) > 0;
   const colValue = (room, player, col) => {
     const vals = S(room).columns[col] ?? DEFAULT_SETTINGS.columns[col] ??
       DEFAULT_TICKET_SETTINGS.columns[col] ?? [0];
@@ -755,10 +811,13 @@ export function createTruckManiaGame({ io, rooms }) {
     if (isTicket(room)) {
       if (color === "#e08a3c") return "letters";
       if (color === "#8f6b52") return "money";
+      // Fragility: no variety rule, so blue feeds the fragile-capacity column.
+      if (color === "#4a72b0" && isFragility(room)) return "fragile";
     }
     return COLOR_COLUMN[color];
   };
-  const tracksFor = (room) => (isTicket(room) ? TICKET_TRACKS : POINT_TRACKS);
+  const tracksFor = (room) =>
+    (isTicket(room) ? (isFragility(room) ? FRAGILITY_TRACKS : TICKET_TRACKS) : POINT_TRACKS);
   // Ticket-mode win: how many columns this player has completed — the numeric
   // tracks, plus the letters column once `lettersToWin` letters are unlocked.
   const completedColumns = (room, player) => {
@@ -769,12 +828,15 @@ export function createTruckManiaGame({ io, rooms }) {
     }
     return n;
   };
+  // Winning takes both: `columnsToWin` completed columns AND a clean record —
+  // no visible tickets and no face-down pile. Called wherever either half can
+  // change (column advances, letter unlocks, ticket clears).
   const checkTicketWin = (room, playerIdx) => {
     if (!isTicket(room) || room.truckMania.winner != null) return;
     const p = room.truckMania.players?.[playerIdx];
-    if (p && completedColumns(room, p) >= (S(room).columnsToWin ?? 3)) {
-      room.truckMania.winner = playerIdx;
-    }
+    if (!p || completedColumns(room, p) < (S(room).columnsToWin ?? 3)) return;
+    if ((p.tickets?.length ?? 0) > 0 || (p.ticketPile?.length ?? 0) > 0) return;
+    room.truckMania.winner = playerIdx;
   };
 
   // Map-shaping options derived from the settings: the exact stoplight count
@@ -807,6 +869,22 @@ export function createTruckManiaGame({ io, rooms }) {
     return reachable >= genOpts(settings).buildings - 4;
   }
 
+  // Put a settings version on the table: apply the numbers, seat the attached
+  // saved map when the version names one (NONE = keep whatever map is up,
+  // unless it no longer fits the numbers), and re-deal the board.
+  function applySettingsToRoom(room, settings, mapId) {
+    const modeChanged = modeOf(S(room)) !== modeOf(settings);
+    room.truckMania.settings = cloneSettings(settings);
+    const attached = savedMaps.find((m) => m.id === mapId);
+    if (attached) {
+      room.truckMania.map = hydrate(attached.map);
+    } else if (modeChanged || !mapFits(room.truckMania.map, settings)) {
+      room.truckMania.map = generateCityMap(Date.now(), genOpts(settings));
+    }
+    setupBoard(room);
+    room.truckMania.map.seed = `${room.truckMania.map.seed}-t${Date.now()}`;
+  }
+
   // Playable copy of a saved layout: fresh stoplights every time. Spots are
   // re-derived so maps saved before spots existed still get parking places.
   let hydrateCount = 0;
@@ -818,19 +896,46 @@ export function createTruckManiaGame({ io, rooms }) {
     return map;
   }
 
-  // Player 0 is the human; players 1..aiCount are AI. Trucks start on distinct
-  // random parking spots, empty.
-  function placeTrucks(map, count) {
-    const spots = map.spots ?? [];
-    if (!spots.length) return [];
-    const order = shuffle(spots.map((_, i) => i));
-    const trucks = [];
-    for (let i = 0; i < count && i < order.length; i += 1) {
-      // `facing` (degrees) tracks arrival heading so AI routing obeys the
-      // no-U-turn rule the same way the human's does.
-      trucks.push({ id: i, player: i, spot: order[i], cargo: [], facing: spots[order[i]].angle });
+  // Player 0 is the human; players 1..aiCount are AI. Trucks start off the
+  // board (spot null), lined up under their owner's score chip; each drives in
+  // through an edge stoplight on its first move. `facing` (degrees) tracks
+  // arrival heading so AI routing obeys the no-U-turn rule the same way the
+  // human's does — meaningless until the truck has entered.
+  function placeTrucks(count) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: i, player: i, spot: null, cargo: [], facing: 0
+    }));
+  }
+
+  // Where an off-board truck may enter: the stoplights sitting on the map's
+  // border streets. Hand-edited maps without any edge light fall back to every
+  // light, so entry is never impossible.
+  const EDGE_PAD = 20;
+  function edgeLights(map) {
+    const w = map.width ?? MAP_W;
+    const h = map.height ?? MAP_H;
+    const all = map.intersections ?? [];
+    const edge = all.filter((o) =>
+      o.x < EDGE_PAD || o.x > w - EDGE_PAD || o.y < EDGE_PAD || o.y > h - EDGE_PAD);
+    return edge.length ? edge : all;
+  }
+
+  // Unit vector pointing from an entry light into the board.
+  function inwardDir(map, o) {
+    const w = map.width ?? MAP_W;
+    const h = map.height ?? MAP_H;
+    let dx = 0;
+    let dy = 0;
+    if (o.x < EDGE_PAD) dx = 1;
+    else if (o.x > w - EDGE_PAD) dx = -1;
+    if (o.y < EDGE_PAD) dy = 1;
+    else if (o.y > h - EDGE_PAD) dy = -1;
+    if (!dx && !dy) {
+      dx = w / 2 - o.x;
+      dy = h / 2 - o.y;
     }
-    return trucks;
+    const len = Math.hypot(dx, dy) || 1;
+    return [dx / len, dy / len];
   }
 
   // Assign fresh locations/packages, drop trucks, and reset the player boards.
@@ -847,7 +952,7 @@ export function createTruckManiaGame({ io, rooms }) {
         settings.blankLights?.red ?? 5
       );
     }
-    room.truckMania.trucks = placeTrucks(room.truckMania.map, aiCount + 1);
+    room.truckMania.trucks = placeTrucks(aiCount + 1);
     room.truckMania.players = room.truckMania.trucks.map((t, i) => ({
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
       name: i === 0 ? "You" : `AI ${i}`,
@@ -859,6 +964,7 @@ export function createTruckManiaGame({ io, rooms }) {
       locations: [], // unlocked letters (location tiles / delivered oranges)
       abilities: [], // owned ability ids
       pendingDrafts: [], // queued "locations"/"abilities" draws awaiting a pick
+      pendingFragile: [], // fragile-delivery bonuses awaiting a stones/money pick
       tickets: [], // visible tickets, up to 3: { id, loc: building bid }
       ticketPile: [] // face-down overflow, flipped up when the turn ends
     }));
@@ -885,7 +991,6 @@ export function createTruckManiaGame({ io, rooms }) {
         hour: faceHour(time), // 1-12 clock-face hour, for the hand + octagons
         time, // 0-23, for AM/PM + day/night
         night: isNight(time),
-        rush: isRushHour(time),
         turn: room.truckMania.turn ?? 0,
         turnState: room.truckMania.turnState ?? freshTurnState(),
         winner: room.truckMania.winner ?? null,
@@ -942,6 +1047,7 @@ export function createTruckManiaGame({ io, rooms }) {
   // Load a package; returns the building it came from (truthy) or null.
   function tryPickup(room, truck, packageId) {
     const player = room.truckMania.players?.[truck.player];
+    if (suspended(room, player)) return null;
     let building = null;
     let idx = -1;
     for (const b of usableBuildings(room.truckMania.map, truck, player)) {
@@ -954,22 +1060,20 @@ export function createTruckManiaGame({ io, rooms }) {
     if (building.protected && building.letter && !(player?.locations ?? []).includes(building.letter)) {
       return null;
     }
-    if (player) {
-      if ((truck.cargo?.length ?? 0) >= colValue(room, player, "capacity")) return null;
-      const variety = colValue(room, player, "variety");
-      const colors = new Set((truck.cargo ?? []).map((p) => p.color));
-      if (!colors.has(pkg.color) && colors.size >= variety) return null;
-    }
+    if (player && !canLoadPkg(room, player, truck, pkg)) return null;
     building.packages.splice(idx, 1);
     truck.cargo.push(pkg);
     return building;
   }
 
+  // Unload one package at a matching dropoff; returns the building it landed
+  // on (truthy) or false.
   function tryDropoff(room, truck, packageId) {
     const idx = (truck.cargo ?? []).findIndex((p) => p.id === packageId);
     if (idx === -1) return false;
     const pkg = truck.cargo[idx];
     const player = room.truckMania.players?.[truck.player];
+    if (suspended(room, player)) return false;
     const building = usableBuildings(room.truckMania.map, truck, player)
       .find((b) => b.role === "dropoff" && b.dropoffColor === pkg.color &&
         (b.delivered?.length ?? 0) < (b.dropoffLimit ?? Infinity));
@@ -983,20 +1087,29 @@ export function createTruckManiaGame({ io, rooms }) {
       // No points. Circles and squares alike are worth one column step; orange
       // grants the letter printed on the package; brown pays out money (the
       // level's value) and advances the money column, mirroring time stones.
+      // Fragility flips the payouts around: purple/brown upgrades pay nothing —
+      // instead every fragile (circle) delivery offers the player's choice of
+      // time stones or money at the current column values.
       if (player) {
+        const fragility = isFragility(room);
+        if (fragility && delivered.shape === "circle") {
+          grantFragileBonus(room, player);
+        }
         if (col === "letters") {
-          if (delivered.letter && !player.locations.includes(delivered.letter)) {
+          // Repeats count: every orange delivery fills a letters-column slot,
+          // duplicate letter or not (the letter still unlocks its location).
+          if (delivered.letter) {
             player.locations.push(delivered.letter);
             checkTicketWin(room, truck.player); // letters are a completable column
           }
         } else {
-          if (col === "timestones") player.timeStones += colValue(room, player, "timestones");
-          if (col === "money") player.money += colValue(room, player, "money");
+          if (!fragility && col === "timestones") player.timeStones += colValue(room, player, "timestones");
+          if (!fragility && col === "money") player.money += colValue(room, player, "money");
           player.columns[col] = Math.min(maxLevel(room, col), player.columns[col] + 1);
           checkTicketWin(room, truck.player);
         }
       }
-      return true;
+      return building;
     }
 
     if (player) {
@@ -1015,11 +1128,36 @@ export function createTruckManiaGame({ io, rooms }) {
     } else if (player && col === "abilities") {
       player.pendingDrafts.push("abilities");
     }
-    return true;
+    return building;
   }
 
-  // Is this truck parked on the same spot as any other truck?
+  // Skip payout (ticket mode): sitting a turn out — no moving, no package
+  // work, no stealing; changing the clock is still fine — pays the player
+  // BOTH column values: their time stones level and their money level.
+  function paySkip(room, player) {
+    player.timeStones += colValue(room, player, "timestones");
+    player.money = (player.money ?? 0) + colValue(room, player, "money");
+  }
+
+  // Fragility: a delivered fragile package pays time stones OR money — the
+  // deliverer's pick — at the current column values, snapshotted here so a
+  // later upgrade doesn't change an offer already on the table. Humans get a
+  // queued choice; the AI takes stones while short on them, else the bigger pot.
+  function grantFragileBonus(room, player) {
+    const stones = colValue(room, player, "timestones");
+    const money = colValue(room, player, "money");
+    if (player.isAI) {
+      if ((player.timeStones ?? 0) < 4 || stones >= money) player.timeStones += stones;
+      else player.money += money;
+      return;
+    }
+    (player.pendingFragile ??= []).push({ stones, money });
+  }
+
+  // Is this truck parked on the same spot as any other truck? (Off-board
+  // trucks share nothing — null spots must not match each other.)
   function sharesSpot(room, truck) {
+    if (truck.spot == null) return false;
     return (room.truckMania.trucks ?? []).some((t) => t.id !== truck.id && t.spot === truck.spot);
   }
 
@@ -1062,18 +1200,17 @@ export function createTruckManiaGame({ io, rooms }) {
     const b = buildingAtTruck(room, truck);
     if (!b || b.role !== "ticket") return;
     player.tickets = player.tickets.filter((t) => t.loc !== b.bid);
+    checkTicketWin(room, truck.player); // clearing the last ticket can seal a win
   }
 
   // Park the truck at a spot. Point mode rolls one ticket die per red crossed
-  // right away (a die over the player's aversion costs a point — two during
-  // rush hour; points can go negative). Ticket mode instead banks a die per
-  // red into the turn's pool, rolled when the turn ends.
+  // right away (a die over the player's aversion costs a point; points can go
+  // negative). Ticket mode instead banks a die per red into the turn's pool,
+  // rolled when the turn ends.
   function applyMove(room, truck, spot, reds) {
     truck.spot = spot;
     const player = room.truckMania.players?.[truck.player];
-    let n = Number.isInteger(reds) ? Math.max(0, Math.min(12, reds)) : 0;
-    // Swerve: during rush hour, blow past reds with no roll at all.
-    if (n > 0 && isRushHour(room.truckMania.time) && hasAbility(player, "swerve")) n = 0;
+    const n = Number.isInteger(reds) ? Math.max(0, Math.min(12, reds)) : 0;
     if (isTicket(room)) {
       const ts = room.truckMania.turnState;
       ts.dicePool = Math.min(12, (ts.dicePool ?? 0) + n);
@@ -1085,11 +1222,10 @@ export function createTruckManiaGame({ io, rooms }) {
       const aversion = colValue(room, player, "aversion");
       const dice = Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6));
       const tickets = dice.filter((d) => d > aversion).length;
-      const rush = isRushHour(room.truckMania.time);
-      const loss = tickets * (rush ? S(room).points.rushTicket : S(room).points.ticket);
+      const loss = tickets * S(room).points.ticket;
       player.points -= loss; // may go negative
       room.truckMania.rollSeq = (room.truckMania.rollSeq || 0) + 1;
-      room.truckMania.lastRoll = { seq: room.truckMania.rollSeq, player: truck.player, dice, aversion, tickets, loss, rush };
+      room.truckMania.lastRoll = { seq: room.truckMania.rollSeq, player: truck.player, dice, aversion, tickets, loss };
     } else {
       room.truckMania.lastRoll = null;
     }
@@ -1112,10 +1248,10 @@ export function createTruckManiaGame({ io, rooms }) {
   }
 
   // Ticket mode's end-of-turn beat: roll the banked dice; every die over the
-  // player's aversion issues tickets (double during rush hour), each pointing
-  // at a random chore location. New tickets join the face-down pile, then the
-  // pile flips into free slots — so fresh tickets are only seen next turn.
-  // Returns how long clients will animate the roll (0 when nothing rolled).
+  // player's aversion issues tickets, each pointing at a random chore
+  // location. New tickets join the face-down pile, then the pile flips into
+  // free slots — so fresh tickets are only seen next turn. Returns how long
+  // clients will animate the roll (0 when nothing rolled).
   function rollTicketDice(room, playerIdx) {
     if (!isTicket(room)) return 0;
     const player = room.truckMania.players?.[playerIdx];
@@ -1126,9 +1262,7 @@ export function createTruckManiaGame({ io, rooms }) {
       const aversion = colValue(room, player, "aversion");
       const dice = Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6));
       const fails = dice.filter((d) => d > aversion).length;
-      const rush = isRushHour(room.truckMania.time);
-      const per = rush ? (S(room).tickets?.rushPerFail ?? 2) : (S(room).tickets?.perFail ?? 1);
-      const issued = fails * per;
+      const issued = fails * (S(room).tickets?.perFail ?? 1);
       const locs = ticketLocationBids(room.truckMania.map);
       for (let i = 0; i < issued && locs.length; i += 1) {
         room.truckMania.ticketSeq = (room.truckMania.ticketSeq ?? 0) + 1;
@@ -1140,7 +1274,7 @@ export function createTruckManiaGame({ io, rooms }) {
       room.truckMania.rollSeq = (room.truckMania.rollSeq || 0) + 1;
       room.truckMania.lastRoll = {
         seq: room.truckMania.rollSeq, player: playerIdx, dice, aversion,
-        tickets: issued, rush, mode: "tickets"
+        tickets: issued, mode: "tickets"
       };
       ms = diceMsFor(room.truckMania.lastRoll);
     } else {
@@ -1257,10 +1391,24 @@ export function createTruckManiaGame({ io, rooms }) {
     return graph;
   }
 
-  function canCarryColor(room, player, truck, color) {
-    const variety = colValue(room, player, "variety");
+  // How many fragile packages (circles) a truck is holding.
+  const fragileCount = (truck) => (truck.cargo ?? []).filter((p) => p.shape === "circle").length;
+
+  // The cargo-mix rule for one more package, capacity aside: variety mode
+  // limits distinct colors; fragility mode instead caps circles at the
+  // fragile-capacity column (a circle takes a normal slot AND a fragile slot).
+  function canCarryPkg(room, player, truck, pkg) {
+    if (isFragility(room)) {
+      return pkg.shape !== "circle" || fragileCount(truck) < colValue(room, player, "fragile");
+    }
     const colors = new Set((truck.cargo ?? []).map((p) => p.color));
-    return colors.has(color) || colors.size < variety;
+    return colors.has(pkg.color) || colors.size < colValue(room, player, "variety");
+  }
+
+  // The full load check: room in the hold plus the cargo-mix rule.
+  function canLoadPkg(room, player, truck, pkg) {
+    return (truck.cargo?.length ?? 0) < colValue(room, player, "capacity") &&
+      canCarryPkg(room, player, truck, pkg);
   }
 
   function lastSegAngle(path) {
@@ -1305,11 +1453,63 @@ export function createTruckManiaGame({ io, rooms }) {
     return true;
   }
 
+  // Total length of a polyline, for drive-animation pacing.
+  function pathLen(path) {
+    let len = 0;
+    for (let i = 1; i < path.length; i += 1) {
+      len += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+    }
+    return len;
+  }
+
+  // Drive an off-board truck onto the board: in through an entry light near
+  // the destination, with a short off-board lead-in so clients animate the
+  // arrival from beyond the border. The entry light counts like any other
+  // light on the way (red = a die); lights near the destination stay exempt
+  // as usual. Tries a few nearby lights and a few entry headings (straight in
+  // or turning onto the border street) and keeps the least-red route.
+  function aiEnterTruck(room, truck, player, destSpotIdx) {
+    const map = room.truckMania.map;
+    const dest = (map.spots ?? [])[destSpotIdx];
+    if (!dest) return false;
+    const graph = getAiGraph(room);
+    const canUturn = hasAbility(player, "uturn");
+    const lights = [...edgeLights(map)].sort((a, b) =>
+      Math.hypot(a.x - dest.x, a.y - dest.y) - Math.hypot(b.x - dest.x, b.y - dest.y));
+    let best = null;
+    for (const light of lights.slice(0, 4)) {
+      const [ix, iy] = inwardDir(map, light);
+      const inward = (Math.atan2(iy, ix) * 180) / Math.PI;
+      for (const heading of [inward, inward - 90, inward + 90]) {
+        const route = findRouteDirected(
+          graph, map.intersections, light.x, light.y, heading, dest.x, dest.y, canUturn
+        );
+        if (!route) continue;
+        const reds = route.reds + (light.color === "red" ? 1 : 0);
+        const len = pathLen(route.path);
+        if (!best || reds < best.reds || (reds === best.reds && len < best.len)) {
+          best = { light, ix, iy, route, reds, len };
+        }
+      }
+    }
+    if (!best) return false;
+    const path = [
+      [best.light.x - best.ix * 46, best.light.y - best.iy * 46],
+      ...best.route.path
+    ];
+    truck.facing = best.route.endAngle;
+    applyMove(room, truck, destSpotIdx, best.reds);
+    room.truckMania.aiMove = { truckId: truck.id, path, endAngle: best.route.endAngle };
+    room.truckMania.driveMs = Math.max(450, (pathLen(path) / TRUCK_SPEED) * 1000) + 300;
+    return true;
+  }
+
   // Drive `truck` from its current spot to `destSpotIdx`, greening a red on the
   // way if affordable, then applying the move (rolling tickets) and recording
   // the path for the client. Returns whether it drove. Shared by the move beat
-  // and a steal's getaway.
+  // and a steal's getaway. Off-board trucks enter from the edge instead.
   function aiDriveTruckTo(room, truck, player, destSpotIdx) {
+    if (truck.spot == null) return aiEnterTruck(room, truck, player, destSpotIdx);
     const map = room.truckMania.map;
     const spots = map.spots ?? [];
     const here = spots[truck.spot];
@@ -1384,18 +1584,24 @@ export function createTruckManiaGame({ io, rooms }) {
     const col = columnForColor(room, color);
     const lvl = player.columns[col] ?? 0;
     if (isTicket(room)) {
-      if (col === "letters") return 1.0; // unlocks a protected letter
+      const fragility = isFragility(room);
+      // Fragility: a delivered circle also pays stones or money on top.
+      const fragileBonus = fragility && shape === "circle"
+        ? 0.15 * Math.max(colValue(room, player, "timestones"), colValue(room, player, "money"))
+        : 0;
+      if (col === "letters") return 1.0 + fragileBonus; // unlocks a protected letter
       const max = Math.max(1, maxLevel(room, col));
-      if (lvl >= max) return 0.2; // column already complete
+      if (lvl >= max) return 0.2 + fragileBonus; // column already complete
       let v = 1;
-      if (col === "timestones") v += 0.15 * colValue(room, player, "timestones");
-      else if (col === "money") v += 0.15 * colValue(room, player, "money");
+      // Purple/brown pay nothing per upgrade under fragility — only circles do.
+      if (col === "timestones") v += fragility ? 0 : 0.15 * colValue(room, player, "timestones");
+      else if (col === "money") v += fragility ? 0 : 0.15 * colValue(room, player, "money");
       else if (col === "capacity") v += lvl < 2 ? 1.2 : lvl < 4 ? 0.6 : 0.1;
-      else if (col === "variety") v += lvl < 2 ? 1.0 : lvl < 4 ? 0.5 : 0.1;
+      else if (col === "variety" || col === "fragile") v += lvl < 2 ? 1.0 : lvl < 4 ? 0.5 : 0.1;
       else if (col === "aversion") v += lvl < 3 ? 0.7 : 0.2;
       else if (col === "agression") v += lvl < 3 ? 0.4 : 0.1;
       v += (lvl / max) * 1.5; // race to top out the column
-      return v;
+      return v + fragileBonus;
     }
     let v = shapePts(room, shape);
     if (col === "timestones") v += 0.25 * colValue(room, player, "timestones");
@@ -1409,36 +1615,43 @@ export function createTruckManiaGame({ io, rooms }) {
   }
 
   // Expected cost of crossing `reds` red lights now: per-die ticket odds from
-  // aversion, doubled in rush hour, zero with Swerve. Point mode counts lost
-  // points; ticket mode counts issued tickets (each roughly a chore trip).
+  // aversion. Point mode counts lost points; ticket mode counts issued
+  // tickets (each roughly a chore trip).
   function ticketRisk(room, player, reds) {
     if (!reds) return 0;
-    const rush = isRushHour(room.truckMania.time);
-    if (rush && hasAbility(player, "swerve")) return 0;
     const aversion = colValue(room, player, "aversion");
     const perTicket = isTicket(room)
-      ? (rush ? (S(room).tickets?.rushPerFail ?? 2) : (S(room).tickets?.perFail ?? 1)) * 0.9
-      : (rush ? S(room).points.rushTicket : S(room).points.ticket);
+      ? (S(room).tickets?.perFail ?? 1) * 0.9
+      : S(room).points.ticket;
     return reds * ((6 - aversion) / 6) * perTicket;
   }
 
   // Worth of parking at a pickup: simulate the greedy load (capacity, variety,
   // locked letters, dead colors respected), best packages first.
   function pickupValue(room, truck, player, b) {
-    if (b.role !== "pickup") return 0;
+    if (b.role !== "pickup" || suspended(room, player)) return 0;
     if (b.protected && b.letter && !(player.locations ?? []).includes(b.letter)) return 0;
     const map = room.truckMania.map;
     let space = colValue(room, player, "capacity") - (truck.cargo?.length ?? 0);
     if (space <= 0) return 0;
+    const fragility = isFragility(room);
     const variety = colValue(room, player, "variety");
     const colors = new Set((truck.cargo ?? []).map((p) => p.color));
+    let fragileSpace = fragility
+      ? colValue(room, player, "fragile") - fragileCount(truck)
+      : Infinity;
     const pkgs = (b.packages ?? [])
       .filter((p) => colorDeliverable(map, p.color))
       .sort((a, c) => deliveryValue(room, player, c.color, c.shape) - deliveryValue(room, player, a.color, a.shape));
     let v = 0;
     for (const p of pkgs) {
       if (space <= 0) break;
-      if (!colors.has(p.color)) {
+      if (fragility) {
+        if (p.shape === "circle") {
+          if (fragileSpace <= 0) continue;
+          fragileSpace -= 1;
+        }
+      } else if (!colors.has(p.color)) {
         if (colors.size >= variety) continue;
         colors.add(p.color);
       }
@@ -1451,7 +1664,7 @@ export function createTruckManiaGame({ io, rooms }) {
   // Worth of parking at a dropoff: everything in the hold it can unload there,
   // with a big bonus when the points would win the game outright.
   function dropoffValue(room, truck, player, b) {
-    if (b.role !== "dropoff") return 0;
+    if (b.role !== "dropoff" || suspended(room, player)) return 0;
     const space = (b.dropoffLimit ?? Infinity) - (b.delivered?.length ?? 0);
     if (space <= 0) return 0;
     const matching = (truck.cargo ?? []).filter((p) => p.color === b.dropoffColor).slice(0, space);
@@ -1512,8 +1725,12 @@ export function createTruckManiaGame({ io, rooms }) {
       if (gap <= 0) continue;
       const vs = spots[v.spot];
       if (!vs) continue;
+      const fragility = isFragility(room);
       const variety = colValue(room, player, "variety");
       const colors = new Set((thief.cargo ?? []).map((p) => p.color));
+      let fragileSpace = fragility
+        ? colValue(room, player, "fragile") - fragileCount(thief)
+        : Infinity;
       let space = capacity - (thief.cargo?.length ?? 0);
       let taken = 0;
       let value = 0;
@@ -1522,7 +1739,12 @@ export function createTruckManiaGame({ io, rooms }) {
         .sort((a, c) => deliveryValue(room, player, c.color, c.shape) - deliveryValue(room, player, a.color, a.shape));
       for (const p of opts) {
         if (taken >= gap || space <= 0) break;
-        if (!colors.has(p.color)) {
+        if (fragility) {
+          if (p.shape === "circle") {
+            if (fragileSpace <= 0) continue;
+            fragileSpace -= 1;
+          }
+        } else if (!colors.has(p.color)) {
           if (colors.size >= variety) continue;
           colors.add(p.color);
         }
@@ -1541,12 +1763,18 @@ export function createTruckManiaGame({ io, rooms }) {
 
   // Every worthwhile destination for one truck: usable pickups/dropoffs on free
   // spots (its own spot included, at distance 0), plus the best steal. Each is
-  // { kind, spot, d, value, victim? }.
+  // { kind, spot, d, value, victim? }. An off-board truck measures distance
+  // from the nearest entry light and can't line up a steal on the way in.
   function aiCandidates(room, truck, player, occupied) {
     const map = room.truckMania.map;
     const spots = map.spots ?? [];
-    const here = spots[truck.spot];
-    if (!here) return [];
+    const here = truck.spot != null ? spots[truck.spot] : null;
+    if (truck.spot != null && !here) return [];
+    const entries = here ? null : edgeLights(map);
+    if (!here && !entries.length) return [];
+    const distTo = (s) => (here
+      ? Math.hypot(s.x - here.x, s.y - here.y)
+      : Math.min(...entries.map((o) => Math.hypot(s.x - o.x, s.y - o.y))));
     const out = [];
     spots.forEach((s, i) => {
       if (i !== truck.spot && occupied?.has(i)) return;
@@ -1565,7 +1793,7 @@ export function createTruckManiaGame({ io, rooms }) {
         value = specialValue(room, player, b);
       }
       if (value <= 0) return;
-      out.push({ kind: "move", spot: i, d: Math.hypot(s.x - here.x, s.y - here.y), value });
+      out.push({ kind: "move", spot: i, d: distTo(s), value });
     });
     const steal = aiStealTarget(room, truck, player);
     if (steal) out.push(steal);
@@ -1591,7 +1819,7 @@ export function createTruckManiaGame({ io, rooms }) {
       const occupied = new Set(room.truckMania.trucks.filter((t) => t.id !== truck.id).map((t) => t.spot));
       for (const c of aiCandidates(room, truck, player, occupied)) cands.push({ ...c, truck });
     }
-    if (!cands.length) return false;
+    if (!cands.length && !isTicket(room)) return false;
     cands.sort((a, b) => (b.value - b.d * 0.0005) - (a.value - a.d * 0.0005));
 
     let best = null;
@@ -1599,6 +1827,9 @@ export function createTruckManiaGame({ io, rooms }) {
       let score;
       if (c.spot === c.truck.spot) {
         score = c.value; // already parked there — no drive, no tickets
+      } else if (c.truck.spot == null) {
+        // Entering from the edge: assume roughly one light on the way in.
+        score = c.value - ticketRisk(room, player, 1) - c.d * 0.0005;
       } else {
         const here = spots[c.truck.spot];
         const dest = spots[c.spot];
@@ -1610,6 +1841,18 @@ export function createTruckManiaGame({ io, rooms }) {
         score = c.value - ticketRisk(room, player, reds) - c.d * 0.0005;
       }
       if (!best || score > best.score) best = { ...c, score };
+    }
+
+    // Sitting the turn out pays the stone+money column values (ticket mode) —
+    // take the payout when nothing on the board beats it.
+    if (isTicket(room)) {
+      const skipValue = 0.15 *
+        (colValue(room, player, "timestones") + colValue(room, player, "money"));
+      if (!best || best.score < skipValue) {
+        paySkip(room, player);
+        room.truckMania.turnState.skipped = true;
+        return false;
+      }
     }
     if (!best) return false;
 
@@ -1623,7 +1866,7 @@ export function createTruckManiaGame({ io, rooms }) {
     // tickets without ending the turn, so if one sits near the way to the
     // chosen target, stop there first — the act beat drives the second leg
     // (aiContinue) and acts at the real target as usual.
-    if (best.kind === "move" && (player.tickets?.length ?? 0) > 0) {
+    if (best.kind === "move" && best.truck.spot != null && (player.tickets?.length ?? 0) > 0) {
       const here = spots[best.truck.spot];
       const dest = spots[best.spot];
       const occupied = new Set(
@@ -1671,7 +1914,7 @@ export function createTruckManiaGame({ io, rooms }) {
     for (let guard = 0; guard < 12 && taken < gap; guard += 1) {
       if ((thief.cargo?.length ?? 0) >= capacity) break;
       const opts = (victim.cargo ?? [])
-        .filter((p) => canCarryColor(room, player, thief, p.color))
+        .filter((p) => canCarryPkg(room, player, thief, p))
         .sort((a, c) =>
           (colorDeliverable(map, c.color) ? deliveryValue(room, player, c.color, c.shape) : 0) -
           (colorDeliverable(map, a.color) ? deliveryValue(room, player, a.color, a.shape) : 0));
@@ -1714,6 +1957,7 @@ export function createTruckManiaGame({ io, rooms }) {
   // usable building (the whole block with Free parking): unload first to free
   // capacity, then load the best packages available.
   function aiActPhase(room, idx) {
+    if (room.truckMania.turnState?.skipped) return false; // sat out for the payout
     const actorId = room.truckMania.aiActor;
     const trucks = room.truckMania.trucks ?? [];
     const truck = trucks.find((t) => t.id === actorId && t.player === idx) ??
@@ -1767,6 +2011,7 @@ export function createTruckManiaGame({ io, rooms }) {
           player.tickets.shift();
           ts.courtUses = (ts.courtUses ?? 0) + 1;
         }
+        checkTicketWin(room, idx); // paying off the last ticket can seal a win
       }
     }
 
@@ -1783,7 +2028,7 @@ export function createTruckManiaGame({ io, rooms }) {
       for (let guard = 0; guard < 12; guard += 1) {
         if (truck.cargo.length >= colValue(room, player, "capacity")) break;
         const pkgs = (b.packages ?? [])
-          .filter((p) => canCarryColor(room, player, truck, p.color) && colorDeliverable(map, p.color))
+          .filter((p) => canCarryPkg(room, player, truck, p) && colorDeliverable(map, p.color))
           .sort((a, c) => deliveryValue(room, player, c.color, c.shape) - deliveryValue(room, player, a.color, a.shape));
         if (!pkgs.length || !tryPickup(room, truck, pkgs[0].id)) break;
       }
@@ -1839,11 +2084,12 @@ export function createTruckManiaGame({ io, rooms }) {
     id: "truck-mania",
 
     createRoomState() {
-      // New rooms open on the most recently saved tuning and map; only when
-      // nothing is saved do the defaults and a fresh generation kick in.
+      // New rooms open on the most recently saved tuning and its attached map
+      // (the latest saved map when the version says NONE); only when nothing
+      // is saved do the ticket defaults and a fresh generation kick in.
       const latest = savedSettings[savedSettings.length - 1];
-      const settings = cloneSettings(latest?.settings ?? DEFAULT_SETTINGS);
-      const lastMap = savedMaps[savedMaps.length - 1];
+      const settings = cloneSettings(latest?.settings ?? DEFAULT_TICKET_SETTINGS);
+      const lastMap = savedMaps.find((m) => m.id === latest?.mapId) ?? savedMaps[savedMaps.length - 1];
       const map = lastMap ? hydrate(lastMap.map) : generateCityMap(Date.now(), genOpts(settings));
       const state = {
         truckMania: { map, time: START_TIME, trucks: [], settings }
@@ -1864,8 +2110,10 @@ export function createTruckManiaGame({ io, rooms }) {
       });
 
       // Save a named settings version (local runs only), then apply it to this
-      // room — the board re-deals under the new numbers.
-      socket.on("truck_mania_save_settings", ({ roomId, name, settings } = {}) => {
+      // room — the board re-deals under the new numbers. `mapId` attaches a
+      // saved map to the version (null/unknown = NONE), and the attached map
+      // is seated right away, same as a later load would.
+      socket.on("truck_mania_save_settings", ({ roomId, name, settings, mapId } = {}) => {
         if (!savingEnabled) return;
         const room = playerRoom(socket, roomId);
         if (!room) return;
@@ -1881,38 +2129,26 @@ export function createTruckManiaGame({ io, rooms }) {
         const entry = {
           id: `s${Date.now()}${Math.floor(Math.random() * 1000)}`,
           name: String(name || "Untitled").slice(0, 40),
+          mapId: savedMaps.find((m) => m.id === mapId)?.id ?? null,
           settings: clean
         };
         savedSettings.push(entry);
         persistSavedSettings(savedSettings);
         clearAiTimer(roomId);
-        const modeChanged = modeOf(S(room)) !== modeOf(clean);
-        room.truckMania.settings = cloneSettings(clean);
-        // The board must fit the numbers (mode, stoplight count, building
-        // demand) — regenerate under the new settings when it doesn't.
-        if (modeChanged || !mapFits(room.truckMania.map, clean)) {
-          room.truckMania.map = generateCityMap(Date.now(), genOpts(clean));
-        }
-        setupBoard(room);
-        room.truckMania.map.seed = `${room.truckMania.map.seed}-t${Date.now()}`;
+        applySettingsToRoom(room, clean, entry.mapId);
         emitState(roomId, room);
         io.to(roomId).emit("truck_mania_settings", settingsPayload());
       });
 
-      // Apply a saved settings version to this room (re-deals).
+      // Apply a saved settings version to this room (re-deals). The version's
+      // attached map (when it names one) comes with it.
       socket.on("truck_mania_load_settings", ({ roomId, settingsId } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room) return;
         const entry = savedSettings.find((s) => s.id === settingsId);
         if (!entry) return;
         clearAiTimer(roomId);
-        const modeChanged = modeOf(S(room)) !== modeOf(entry.settings);
-        room.truckMania.settings = cloneSettings(entry.settings);
-        if (modeChanged || !mapFits(room.truckMania.map, entry.settings)) {
-          room.truckMania.map = generateCityMap(Date.now(), genOpts(entry.settings));
-        }
-        setupBoard(room);
-        room.truckMania.map.seed = `${room.truckMania.map.seed}-t${Date.now()}`;
+        applySettingsToRoom(room, entry.settings, entry.mapId);
         emitState(roomId, room);
       });
 
@@ -2051,8 +2287,8 @@ export function createTruckManiaGame({ io, rooms }) {
       });
 
       // Load a package onto the human's truck. Normally ends the turn's
-      // movement; Drive-by pickup exempts the first pickup of the turn (one
-      // drive-by per turn at most). Blocked while sharing a spot.
+      // movement; Drive-by pickup exempts every pickup at one building per
+      // turn. Blocked while sharing a spot.
       socket.on("truck_mania_pickup", ({ roomId, truckId = 0, packageId } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
@@ -2062,8 +2298,12 @@ export function createTruckManiaGame({ io, rooms }) {
         if (building) {
           const ts = room.truckMania.turnState;
           ts.truck = truck.id;
-          const driveBy = hasAbility(room.truckMania.players?.[0], "drive-by-pickup") && !ts.driveByPickup;
-          if (driveBy) ts.driveByPickup = true;
+          // Drive-by pickup: any number of pickups at ONE building per turn
+          // stay free — the first drive-by locks in the building; picking up
+          // anywhere else ends movement as usual.
+          const driveBy = hasAbility(room.truckMania.players?.[0], "drive-by-pickup") &&
+            (ts.driveByPickupBid == null || ts.driveByPickupBid === building.bid);
+          if (driveBy) ts.driveByPickupBid = building.bid;
           else ts.acted = true;
           ts.pickups.push({ pkg: packageId, bid: building.bid, drive: driveBy });
           emitState(roomId, room);
@@ -2090,23 +2330,32 @@ export function createTruckManiaGame({ io, rooms }) {
         if (!building) return;
         (building.packages ??= []).push(truck.cargo.splice(ci, 1)[0]);
         ts.pickups.splice(li, 1);
-        if (entry.drive) ts.driveByPickup = false;
-        else ts.acted = ts.pickups.some((e) => !e.drive) || ts.actedByDrop;
+        if (entry.drive) {
+          // Regretting the last drive-by pickup frees the ability to lock a
+          // different building this turn.
+          if (!ts.pickups.some((e) => e.drive)) ts.driveByPickupBid = null;
+        } else {
+          ts.acted = ts.pickups.some((e) => !e.drive) || ts.actedByDrop;
+        }
         emitState(roomId, room);
       });
 
       // Drop off a package from the human's truck at a matching dropoff.
-      // Drive-by dropoff exempts the first dropoff of the turn, same rule.
+      // Drive-by dropoff exempts every dropoff at one building per turn.
       socket.on("truck_mania_dropoff", ({ roomId, truckId = 0, packageId } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
         const truck = humanTruck(room, truckId);
         if (!truck || sharesSpot(room, truck)) return;
-        if (tryDropoff(room, truck, packageId)) {
+        const dropBuilding = tryDropoff(room, truck, packageId);
+        if (dropBuilding) {
           const ts = room.truckMania.turnState;
           ts.truck = truck.id;
-          const driveBy = hasAbility(room.truckMania.players?.[0], "drive-by-dropoff") && !ts.driveByDropoff;
-          if (driveBy) ts.driveByDropoff = true;
+          // Drive-by dropoff: any number of dropoffs at ONE building per turn
+          // stay free — the first drive-by locks in the building.
+          const driveBy = hasAbility(room.truckMania.players?.[0], "drive-by-dropoff") &&
+            (ts.driveByDropoffBid == null || ts.driveByDropoffBid === dropBuilding.bid);
+          if (driveBy) ts.driveByDropoffBid = dropBuilding.bid;
           else {
             ts.acted = true;
             ts.actedByDrop = true;
@@ -2126,6 +2375,26 @@ export function createTruckManiaGame({ io, rooms }) {
         if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
         const mine = (room.truckMania.trucks ?? []).filter((t) => t.player === 0);
         if (mine.some((t) => sharesSpot(room, t))) return;
+        const rollMs = rollTicketDice(room, 0);
+        advanceTurn(roomId, rollMs);
+      });
+
+      // Skip the turn for the payout (ticket mode): allowed only while nothing
+      // has been done yet — no move, no pickup/dropoff/steal, no special-
+      // building use. A clock change doesn't disqualify it. Pays the time-
+      // stone + money column values, then ends the turn like end_turn would
+      // (face-down tickets still flip up).
+      socket.on("truck_mania_skip_turn", ({ roomId } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
+        if (!isTicket(room)) return;
+        const ts = room.truckMania.turnState;
+        if (ts.truck != null || ts.stolen || ts.acted) return;
+        const mine = (room.truckMania.trucks ?? []).filter((t) => t.player === 0);
+        if (mine.some((t) => sharesSpot(room, t))) return;
+        const player = room.truckMania.players?.[0];
+        if (player) paySkip(room, player);
+        ts.skipped = true;
         const rollMs = rollTicketDice(room, 0);
         advanceTurn(roomId, rollMs);
       });
@@ -2176,7 +2445,8 @@ export function createTruckManiaGame({ io, rooms }) {
         const ts = room.truckMania.turnState;
         const uses = ts.pawnUses ?? 0;
         if (uses >= 3) return;
-        if (!TICKET_TRACKS.includes(from) || !TICKET_TRACKS.includes(to) || from === to) return;
+        const tracks = tracksFor(room);
+        if (!tracks.includes(from) || !tracks.includes(to) || from === to) return;
         const costs = S(room).pawnCosts ?? [2, 3, 4];
         const cost = costs[Math.min(uses, costs.length - 1)];
         if ((player.money ?? 0) < cost) return;
@@ -2211,21 +2481,83 @@ export function createTruckManiaGame({ io, rooms }) {
         player.tickets.splice(i, 1); // the freed slot stays empty until turn end
         ts.courtUses = uses + 1;
         endMovementAt(room, truck);
+        checkTicketWin(room, 0); // paying off the last ticket can seal a win
         emitState(roomId, room);
       });
 
-      // Switch between point mode (classic) and ticket mode: applies the most
+      // Cash a fragile-delivery bonus (fragility rule set): the player picks
+      // time stones or money from the oldest offer in their queue. Allowed at
+      // any time — the amounts were snapshotted when the delivery happened.
+      socket.on("truck_mania_fragile_bonus", ({ roomId, choice } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        const idx = room.players.indexOf(socket.id);
+        const players = room.truckMania.players ?? [];
+        const player = players[idx] ?? players[0];
+        if (!player?.pendingFragile?.length || !["stones", "money"].includes(choice)) return;
+        const bonus = player.pendingFragile.shift();
+        if (choice === "stones") player.timeStones += bonus.stones ?? 0;
+        else player.money = (player.money ?? 0) + (bonus.money ?? 0);
+        emitState(roomId, room);
+      });
+
+      // The rule dials the menu shows now that ticket play is a given:
+      // Suspension on/off and Variety vs Fragility. Both live on the room's
+      // settings. Flipping fragility re-deals (the columns and package dealing
+      // change); flipping suspension alone just toggles the rule. A room still
+      // sitting on point-mode settings gets the latest saved ticket settings.
+      socket.on("truck_mania_set_rules", ({ roomId, suspension, fragility } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        const wantS = suspension === true;
+        const wantF = fragility === true;
+        if (!isTicket(room)) {
+          clearAiTimer(roomId);
+          const latest = [...savedSettings].reverse().find((e) => modeOf(e.settings) === "tickets");
+          const settings = cloneSettings(latest?.settings ?? DEFAULT_TICKET_SETTINGS);
+          settings.suspension = wantS;
+          settings.fragility = wantF;
+          room.truckMania.settings = settings;
+          room.truckMania.map = generateCityMap(Date.now(), genOpts(settings));
+          setupBoard(room);
+          emitState(roomId, room);
+          return;
+        }
+        const cur = S(room);
+        if (!!cur.suspension === wantS && !!cur.fragility === wantF) return;
+        const fragilityChanged = !!cur.fragility !== wantF;
+        room.truckMania.settings = { ...cloneSettings(cur), suspension: wantS, fragility: wantF };
+        if (fragilityChanged) {
+          clearAiTimer(roomId);
+          setupBoard(room);
+          room.truckMania.map.seed = `${room.truckMania.map.seed}-r${Date.now()}`;
+        }
+        emitState(roomId, room);
+      });
+
+      // Switch between point mode (classic), ticket mode, and suspension mode
+      // (tickets + the face-down-tickets-ground-you rule): applies the most
       // recently saved settings of that mode (that mode's defaults when none
-      // are saved) and generates a fitting map.
+      // are saved) and generates a fitting map. Tickets ⇄ Suspension share a
+      // board, so that switch just flips the rule without re-dealing.
       socket.on("truck_mania_set_mode", ({ roomId, mode } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || (mode !== "points" && mode !== "tickets")) return;
-        if (modeOf(S(room)) === mode) return;
+        if (!room || !["points", "tickets", "suspension"].includes(mode)) return;
+        const base = mode === "points" ? "points" : "tickets";
+        const wantSuspension = mode === "suspension";
+        if (modeOf(S(room)) === base) {
+          if (base === "points" || !!S(room).suspension === wantSuspension) return;
+          room.truckMania.settings = { ...cloneSettings(S(room)), suspension: wantSuspension };
+          emitState(roomId, room);
+          return;
+        }
         clearAiTimer(roomId);
-        const latest = [...savedSettings].reverse().find((e) => modeOf(e.settings) === mode);
-        room.truckMania.settings = cloneSettings(
-          latest?.settings ?? (mode === "tickets" ? DEFAULT_TICKET_SETTINGS : DEFAULT_SETTINGS)
+        const latest = [...savedSettings].reverse().find((e) => modeOf(e.settings) === base);
+        const settings = cloneSettings(
+          latest?.settings ?? (base === "tickets" ? DEFAULT_TICKET_SETTINGS : DEFAULT_SETTINGS)
         );
+        if (base === "tickets") settings.suspension = wantSuspension;
+        room.truckMania.settings = settings;
         room.truckMania.map = generateCityMap(Date.now(), genOpts(S(room)));
         setupBoard(room);
         emitState(roomId, room);
@@ -2315,7 +2647,8 @@ export function createTruckManiaGame({ io, rooms }) {
         const trucks = room.truckMania.trucks ?? [];
         const thief = humanTruck(room, truckId);
         const victim = trucks.find((t) => t.id === victimTruckId);
-        if (!thief || !victim || victim.id === thief.id || thief.spot !== victim.spot) return;
+        if (!thief || !victim || victim.id === thief.id) return;
+        if (thief.spot == null || thief.spot !== victim.spot) return;
         const players = room.truckMania.players ?? [];
         const thiefP = players[thief.player];
         const victimP = players[victim.player];
@@ -2328,10 +2661,7 @@ export function createTruckManiaGame({ io, rooms }) {
         const idx = (victim.cargo ?? []).findIndex((p) => p.id === packageId);
         if (idx === -1) return;
         const pkg = victim.cargo[idx];
-        if ((thief.cargo?.length ?? 0) >= colValue(room, thiefP, "capacity")) return;
-        const variety = colValue(room, thiefP, "variety");
-        const colors = new Set((thief.cargo ?? []).map((p) => p.color));
-        if (!colors.has(pkg.color) && colors.size >= variety) return;
+        if (!canLoadPkg(room, thiefP, thief, pkg)) return;
         victim.cargo.splice(idx, 1);
         thief.cargo.push(pkg);
         ts.stolen = true;

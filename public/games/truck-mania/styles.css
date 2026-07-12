@@ -719,16 +719,6 @@
   75% { transform: translate(-1px, 2px) rotate(13deg); }
 }
 
-.tm-rush-tag {
-  font-size: 11px;
-  font-weight: 800;
-  color: #fff;
-  background: #cf4a3c;
-  border-radius: 999px;
-  padding: 1px 7px;
-  letter-spacing: 0.03em;
-}
-
 .tm-pip {
   width: 5px;
   height: 5px;
@@ -1625,6 +1615,35 @@
   color: var(--muted, #aeb3ba);
 }
 
+/* Fragile-delivery bonus prompt (fragility rules) — sits left of the special
+   panel's slot so the two never cover each other */
+
+.tm-fragile {
+  right: calc(clamp(150px, 17vw, 210px) + 52px + 212px);
+  width: 170px;
+  border-color: rgba(74, 114, 176, 0.55);
+}
+
+/* Rule/map hints on saved-settings rows */
+
+.tm-saved-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--muted, #aeb3ba);
+}
+
+/* The attached-map picker in the tuning panel */
+
+.tm-tune-map {
+  flex: 1;
+  max-width: 100%;
+}
+
 /* Mode selector in the control bar */
 
 .tm-mode-wrap {
@@ -1761,4 +1780,48 @@
 .tm-tune-name {
   flex: 1;
   min-width: 120px;
+}
+
+/* Minimized control bar: a corner button + End turn */
+
+.tm-controls.tm-controls-min {
+  padding: 8px 10px;
+  gap: 8px;
+  max-width: none;
+}
+
+/* Garage: trucks waiting off-board, lined up under their owner's score chip */
+
+.tm-score-garage {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 3px;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.tm-garage-truck {
+  width: 30px;
+  height: 21px;
+  display: block;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.4));
+}
+
+/* Suspension mode: the face-down pile that's grounding the player */
+
+.tm-ticket-suspended {
+  position: relative;
+  border-color: #cf4a3c;
+  box-shadow: 0 0 0 1px rgba(207, 74, 60, 0.6);
+}
+
+.tm-ticket-suspend-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  font-size: 12px;
+  line-height: 1;
 }
