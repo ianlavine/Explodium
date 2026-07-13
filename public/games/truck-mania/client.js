@@ -45,6 +45,7 @@ const pendingFlies = {}; // truckId -> fly events held until the truck arrives
 let timeState = 0; // 0-23, 0 = midnight
 let nightState = true; // theft window: 9pm–6am
 let turnWhose = 0; // player index whose turn it is
+let maxAiState = 3; // free AI seats (4 minus the room's humans) — bounds the AI picker
 let turnActed = false; // this turn's truck has picked up/delivered (movement locked)
 let turnStolen = false; // this turn has performed a steal
 let turnChangedTime = false; // this turn has changed the clock
@@ -131,6 +132,13 @@ function hasAbil(id) {
 
 function myIndex() {
   return app.myPlayerIndex ?? 0;
+}
+
+// A seat's name as this screen should show it: your own seat reads "You"
+// (with two humans the server names the seats P1/P2, since one shared label
+// can't say "You" on both screens).
+function seatName(i) {
+  return i === myIndex() ? "You" : playersState[i]?.name ?? "Player";
 }
 
 function myTruckList() {
@@ -2673,7 +2681,7 @@ function makeDieEl(d, settled, aversion) {
 }
 
 function setDiceHead(head, roll, settled) {
-  const who = playersState[roll.player]?.name ?? "Player";
+  const who = seatName(roll.player);
   head.className = "tm-dice-head";
   if (!settled) {
     head.textContent = `${who} rolling…`;
@@ -3125,7 +3133,7 @@ function buildPlayerBoard(me) {
   const header = document.createElement("div");
   header.className = "tm-pb-header";
   header.style.background = me.color;
-  header.textContent = me.name || "Player";
+  header.textContent = seatName(playersState.indexOf(me));
   board.appendChild(header);
 
   const grid = document.createElement("div");
@@ -4562,14 +4570,15 @@ function renderControls() {
     (v) => emitRules(isSuspensionMode(), v === "fragility")
   );
 
-  // AI opponents (0–3). Re-deals the board when changed.
+  // AI opponents (0 up to the free seats: 3 solo, 2 with two humans).
+  // Re-deals the board when changed.
   const aiWrap = document.createElement("label");
   aiWrap.className = "tm-ai-wrap";
   aiWrap.textContent = "AI";
   const aiSelect = document.createElement("select");
   aiSelect.className = "tm-ai-select";
-  const currentAi = Math.max(0, (playersState.length || 1) - 1);
-  for (let n = 0; n <= 3; n += 1) {
+  const currentAi = playersState.filter((p) => p.isAI).length;
+  for (let n = 0; n <= maxAiState; n += 1) {
     const opt = document.createElement("option");
     opt.value = String(n);
     opt.textContent = String(n);
@@ -4795,6 +4804,7 @@ export const truckMania = {
     timeState = tm.time ?? 0;
     nightState = !!tm.night;
     turnWhose = tm.turn ?? 0;
+    maxAiState = tm.maxAi ?? 3;
     turnActed = !!tm.turnState?.acted;
     turnStolen = !!tm.turnState?.stolen;
     turnChangedTime = !!tm.turnState?.changedTime;

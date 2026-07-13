@@ -579,7 +579,12 @@ function drawFromDeck(d, choice) {
 }
 
 const PLAYER_COLORS = ["#3ac0c0", "#e0559c", "#e0a13a", "#7b6fe0"]; // teal, pink, amber, violet
-const MAX_AI = 3;
+// One seat per color: the room's humans hold the first seats, AI fill in
+// behind — a solo room can face up to 3 AI, a two-human room up to 2. Solo
+// rooms list the same socket twice, hence the Set (and the floor of 1 covers
+// a board dealt before the lobby has filled the seats).
+const humanCount = (room) => Math.max(1, new Set(room.players ?? []).size);
+const maxAiFor = (room) => PLAYER_COLORS.length - humanCount(room);
 // When drafting an ability, the AI takes whichever of the two shown ranks first.
 const AI_ABILITY_PREF = [
   "extra-truck", "free-parking", "drive-by-dropoff", "drive-by-pickup",
@@ -896,11 +901,11 @@ export function createTruckManiaGame({ io, rooms }) {
     return map;
   }
 
-  // Player 0 is the human; players 1..aiCount are AI. Trucks start off the
-  // board (spot null), lined up under their owner's score chip; each drives in
+  // Humans hold the first seats, AI the rest. Trucks start off the board
+  // (spot null), lined up under their owner's score chip; each drives in
   // through an edge stoplight on its first move. `facing` (degrees) tracks
   // arrival heading so AI routing obeys the no-U-turn rule the same way the
-  // human's does — meaningless until the truck has entered.
+  // humans' does — meaningless until the truck has entered.
   function placeTrucks(count) {
     return Array.from({ length: count }, (_, i) => ({
       id: i, player: i, spot: null, cargo: [], facing: 0
@@ -942,7 +947,9 @@ export function createTruckManiaGame({ io, rooms }) {
   function setupBoard(room) {
     const settings = S(room);
     const ticketMode = modeOf(settings) === "tickets";
-    const aiCount = Math.max(0, Math.min(MAX_AI, room.truckMania.aiCount ?? 3));
+    const humans = humanCount(room);
+    const maxAi = maxAiFor(room);
+    const aiCount = Math.max(0, Math.min(maxAi, room.truckMania.aiCount ?? maxAi));
     room.truckMania.aiCount = aiCount;
     assignLocations(room.truckMania.map, settings);
     if (ticketMode) {
@@ -952,11 +959,13 @@ export function createTruckManiaGame({ io, rooms }) {
         settings.blankLights?.red ?? 5
       );
     }
-    room.truckMania.trucks = placeTrucks(aiCount + 1);
+    room.truckMania.trucks = placeTrucks(humans + aiCount);
     room.truckMania.players = room.truckMania.trucks.map((t, i) => ({
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
-      name: i === 0 ? "You" : `AI ${i}`,
-      isAI: i !== 0,
+      // A lone human is just "You"; with more, seats get names both screens
+      // can agree on (each client shows its own seat as "You" locally).
+      name: i >= humans ? `AI ${i - humans + 1}` : humans === 1 ? "You" : `P${i + 1}`,
+      isAI: i >= humans,
       columns: emptyColumns(),
       timeStones: settings.startingTimeStones,
       money: settings.startingMoney ?? 0,
@@ -974,7 +983,7 @@ export function createTruckManiaGame({ io, rooms }) {
     room.truckMania.abilityDeck = ticketMode ? [] : buildAbilityDeck();
     room.truckMania.aiGraph = null; // rebuilt lazily against the current map
     room.truckMania.time = START_TIME;
-    room.truckMania.turn = 0; // player index whose turn it is; 0 is the human
+    room.truckMania.turn = 0; // player index whose turn it is; 0 is the first human
     room.truckMania.turnState = freshTurnState();
     room.truckMania.aiMove = null; // transient: an AI's chosen path, for the client to animate
     room.truckMania.aiActor = null; // which of an AI's trucks is acting this turn
@@ -994,6 +1003,7 @@ export function createTruckManiaGame({ io, rooms }) {
         turn: room.truckMania.turn ?? 0,
         turnState: room.truckMania.turnState ?? freshTurnState(),
         winner: room.truckMania.winner ?? null,
+        maxAi: maxAiFor(room), // free seats — bounds the AI-count picker
         speed: roomSpeed(room),
         settings: S(room),
         aiMove: room.truckMania.aiMove ?? null,
@@ -1026,6 +1036,11 @@ export function createTruckManiaGame({ io, rooms }) {
     if (!room.players.includes(socket.id)) return null;
     return room;
   }
+
+  // The seat (player index) a socket holds: humans occupy the first seats in
+  // room.players order. Solo rooms list the same socket twice, so indexOf
+  // still lands on 0.
+  const seatOf = (room, socket) => room.players.indexOf(socket.id);
 
   // ---- Shared action core (used by both the socket handlers and the AI) ----
 
@@ -1161,12 +1176,12 @@ export function createTruckManiaGame({ io, rooms }) {
     return (room.truckMania.trucks ?? []).some((t) => t.id !== truck.id && t.spot === truck.spot);
   }
 
-  // Resolve the human's acting truck for this action: it must belong to the
-  // human (player 0), and — since only one truck may act per turn — must match
+  // Resolve a human's acting truck for this action: it must belong to that
+  // human's seat, and — since only one truck may act per turn — must match
   // the truck already active this turn, if any.
-  function humanTruck(room, truckId) {
+  function humanTruck(room, seat, truckId) {
     const t = (room.truckMania.trucks ?? []).find((x) => x.id === truckId);
-    if (!t || t.player !== 0) return null;
+    if (!t || t.player !== seat) return null;
     const ts = room.truckMania.turnState;
     if (ts.truck !== null && ts.truck !== truckId) return null;
     return t;
@@ -2098,6 +2113,13 @@ export function createTruckManiaGame({ io, rooms }) {
       return state;
     },
 
+    // createRoomState deals before the lobby has filled the seats, so a
+    // two-human room starts dealt for one. Re-deal once the player list is
+    // known so every human gets a truck (and the AI count fits the free seats).
+    onRoomCreated(roomId, room) {
+      if (humanCount(room) > 1) setupBoard(room);
+    },
+
     emitState,
 
     registerHandlers(socket) {
@@ -2252,7 +2274,7 @@ export function createTruckManiaGame({ io, rooms }) {
         io.to(roomId).emit("truck_mania_settings", settingsPayload());
       });
 
-      // Drive the human's truck (id 0) to a new spot. Only on the human's turn,
+      // Drive one of the player's trucks to a new spot. Only on their turn,
       // and only before it has acted (a pickup/delivery ends movement). Moving
       // onto another truck's spot is allowed — that's how a steal is set up. The
       // client routes and reports how many red lights the path crosses; each red
@@ -2260,8 +2282,9 @@ export function createTruckManiaGame({ io, rooms }) {
       socket.on("truck_mania_move_truck", ({ roomId, truckId = 0, spot, reds } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room) return;
-        if (room.truckMania.turn !== 0 || room.truckMania.turnState.acted) return;
-        const truck = humanTruck(room, truckId);
+        const seat = seatOf(room, socket);
+        if (room.truckMania.turn !== seat || room.truckMania.turnState.acted) return;
+        const truck = humanTruck(room, seat, truckId);
         const spotCount = room.truckMania.map.spots?.length ?? 0;
         if (!truck || !Number.isInteger(spot) || spot < 0 || spot >= spotCount) return;
         if (truck.spot === spot) return;
@@ -2272,7 +2295,7 @@ export function createTruckManiaGame({ io, rooms }) {
         const occupant = (room.truckMania.trucks ?? []).find((t) => t.id !== truck.id && t.spot === spot);
         if (occupant) {
           const ts = room.truckMania.turnState;
-          const meP = room.truckMania.players?.[0];
+          const meP = room.truckMania.players?.[seat];
           const occP = room.truckMania.players?.[occupant.player];
           const canRob = !ts.stolen && (isNight(room.truckMania.time) || hasAbility(meP, "day-theft")) &&
             meP && occP &&
@@ -2286,13 +2309,14 @@ export function createTruckManiaGame({ io, rooms }) {
         emitState(roomId, room);
       });
 
-      // Load a package onto the human's truck. Normally ends the turn's
+      // Load a package onto the player's truck. Normally ends the turn's
       // movement; Drive-by pickup exempts every pickup at one building per
       // turn. Blocked while sharing a spot.
       socket.on("truck_mania_pickup", ({ roomId, truckId = 0, packageId } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
-        const truck = humanTruck(room, truckId);
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
+        const truck = humanTruck(room, seat, truckId);
         if (!truck || sharesSpot(room, truck)) return;
         const building = tryPickup(room, truck, packageId);
         if (building) {
@@ -2301,7 +2325,7 @@ export function createTruckManiaGame({ io, rooms }) {
           // Drive-by pickup: any number of pickups at ONE building per turn
           // stay free — the first drive-by locks in the building; picking up
           // anywhere else ends movement as usual.
-          const driveBy = hasAbility(room.truckMania.players?.[0], "drive-by-pickup") &&
+          const driveBy = hasAbility(room.truckMania.players?.[seat], "drive-by-pickup") &&
             (ts.driveByPickupBid == null || ts.driveByPickupBid === building.bid);
           if (driveBy) ts.driveByPickupBid = building.bid;
           else ts.acted = true;
@@ -2315,8 +2339,9 @@ export function createTruckManiaGame({ io, rooms }) {
       // whatever the pickup consumed (the drive-by, or the movement lock).
       socket.on("truck_mania_putback", ({ roomId, truckId = 0, packageId } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
-        const truck = humanTruck(room, truckId);
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
+        const truck = humanTruck(room, seat, truckId);
         if (!truck || sharesSpot(room, truck)) return;
         const ts = room.truckMania.turnState;
         const li = ts.pickups.findIndex((e) => e.pkg === packageId);
@@ -2340,12 +2365,13 @@ export function createTruckManiaGame({ io, rooms }) {
         emitState(roomId, room);
       });
 
-      // Drop off a package from the human's truck at a matching dropoff.
+      // Drop off a package from the player's truck at a matching dropoff.
       // Drive-by dropoff exempts every dropoff at one building per turn.
       socket.on("truck_mania_dropoff", ({ roomId, truckId = 0, packageId } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
-        const truck = humanTruck(room, truckId);
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
+        const truck = humanTruck(room, seat, truckId);
         if (!truck || sharesSpot(room, truck)) return;
         const dropBuilding = tryDropoff(room, truck, packageId);
         if (dropBuilding) {
@@ -2353,7 +2379,7 @@ export function createTruckManiaGame({ io, rooms }) {
           ts.truck = truck.id;
           // Drive-by dropoff: any number of dropoffs at ONE building per turn
           // stay free — the first drive-by locks in the building.
-          const driveBy = hasAbility(room.truckMania.players?.[0], "drive-by-dropoff") &&
+          const driveBy = hasAbility(room.truckMania.players?.[seat], "drive-by-dropoff") &&
             (ts.driveByDropoffBid == null || ts.driveByDropoffBid === dropBuilding.bid);
           if (driveBy) ts.driveByDropoffBid = dropBuilding.bid;
           else {
@@ -2367,15 +2393,16 @@ export function createTruckManiaGame({ io, rooms }) {
         }
       });
 
-      // End the human's turn. Blocked while any of the player's trucks shares a
+      // End the player's turn. Blocked while any of the player's trucks shares a
       // spot with another truck — you can't end on the same space as another.
       // Ticket mode rolls the turn's banked dice here.
       socket.on("truck_mania_end_turn", ({ roomId } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
-        const mine = (room.truckMania.trucks ?? []).filter((t) => t.player === 0);
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
+        const mine = (room.truckMania.trucks ?? []).filter((t) => t.player === seat);
         if (mine.some((t) => sharesSpot(room, t))) return;
-        const rollMs = rollTicketDice(room, 0);
+        const rollMs = rollTicketDice(room, seat);
         advanceTurn(roomId, rollMs);
       });
 
@@ -2386,25 +2413,26 @@ export function createTruckManiaGame({ io, rooms }) {
       // (face-down tickets still flip up).
       socket.on("truck_mania_skip_turn", ({ roomId } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
         if (!isTicket(room)) return;
         const ts = room.truckMania.turnState;
         if (ts.truck != null || ts.stolen || ts.acted) return;
-        const mine = (room.truckMania.trucks ?? []).filter((t) => t.player === 0);
+        const mine = (room.truckMania.trucks ?? []).filter((t) => t.player === seat);
         if (mine.some((t) => sharesSpot(room, t))) return;
-        const player = room.truckMania.players?.[0];
+        const player = room.truckMania.players?.[seat];
         if (player) paySkip(room, player);
         ts.skipped = true;
-        const rollMs = rollTicketDice(room, 0);
+        const rollMs = rollTicketDice(room, seat);
         advanceTurn(roomId, rollMs);
       });
 
       // ---- Ticket-mode special locations (all end the turn's movement) ----
 
-      // The human's truck parked (alone) at a given special building, or null.
-      const specialTruck = (room, truckId, kind) => {
-        if (!isTicket(room) || room.truckMania.turn !== 0 || room.truckMania.winner != null) return null;
-        const truck = humanTruck(room, truckId);
+      // The player's truck parked (alone) at a given special building, or null.
+      const specialTruck = (room, seat, truckId, kind) => {
+        if (!isTicket(room) || room.truckMania.turn !== seat || room.truckMania.winner != null) return null;
+        const truck = humanTruck(room, seat, truckId);
         if (!truck || sharesSpot(room, truck)) return null;
         const b = buildingAtTruck(room, truck);
         return b && b.role === "special" && b.special === kind ? truck : null;
@@ -2421,15 +2449,16 @@ export function createTruckManiaGame({ io, rooms }) {
       socket.on("truck_mania_buy_ability", ({ roomId, truckId = 0, ability } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room) return;
-        const truck = specialTruck(room, truckId, "mechanic");
-        const player = room.truckMania.players?.[0];
+        const seat = seatOf(room, socket);
+        const truck = specialTruck(room, seat, truckId, "mechanic");
+        const player = room.truckMania.players?.[seat];
         if (!truck || !player) return;
         if (!ABILITY_CARDS.includes(ability) || player.abilities.includes(ability)) return;
         const cost = S(room).abilityCosts?.[ability];
         if (!Number.isInteger(cost) || (player.money ?? 0) < cost) return;
         player.money -= cost;
         player.abilities.push(ability);
-        if (ability === "extra-truck") spawnExtraTruck(room, 0);
+        if (ability === "extra-truck") spawnExtraTruck(room, seat);
         endMovementAt(room, truck);
         emitState(roomId, room);
       });
@@ -2439,8 +2468,9 @@ export function createTruckManiaGame({ io, rooms }) {
       socket.on("truck_mania_pawn", ({ roomId, truckId = 0, from, to } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room) return;
-        const truck = specialTruck(room, truckId, "pawnshop");
-        const player = room.truckMania.players?.[0];
+        const seat = seatOf(room, socket);
+        const truck = specialTruck(room, seat, truckId, "pawnshop");
+        const player = room.truckMania.players?.[seat];
         if (!truck || !player) return;
         const ts = room.truckMania.turnState;
         const uses = ts.pawnUses ?? 0;
@@ -2457,7 +2487,7 @@ export function createTruckManiaGame({ io, rooms }) {
         player.columns[to] += 1;
         ts.pawnUses = uses + 1;
         endMovementAt(room, truck);
-        checkTicketWin(room, 0);
+        checkTicketWin(room, seat);
         emitState(roomId, room);
       });
 
@@ -2466,8 +2496,9 @@ export function createTruckManiaGame({ io, rooms }) {
       socket.on("truck_mania_pay_ticket", ({ roomId, truckId = 0, ticketId } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room) return;
-        const truck = specialTruck(room, truckId, "courthouse");
-        const player = room.truckMania.players?.[0];
+        const seat = seatOf(room, socket);
+        const truck = specialTruck(room, seat, truckId, "courthouse");
+        const player = room.truckMania.players?.[seat];
         if (!truck || !player) return;
         const ts = room.truckMania.turnState;
         const uses = ts.courtUses ?? 0;
@@ -2481,7 +2512,7 @@ export function createTruckManiaGame({ io, rooms }) {
         player.tickets.splice(i, 1); // the freed slot stays empty until turn end
         ts.courtUses = uses + 1;
         endMovementAt(room, truck);
-        checkTicketWin(room, 0); // paying off the last ticket can seal a win
+        checkTicketWin(room, seat); // paying off the last ticket can seal a win
         emitState(roomId, room);
       });
 
@@ -2567,10 +2598,11 @@ export function createTruckManiaGame({ io, rooms }) {
       // octagons carrying that number (green <-> red) and advancing the time of
       // day. The hand normally sweeps clockwise (one stone per hour, AM/PM flips
       // as it passes 12); Reverse-time lets a player take the cheaper spin. Only
-      // on the human's turn.
+      // on the acting player's own turn.
       socket.on("truck_mania_set_hour", ({ roomId, hour } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
         if (!Number.isInteger(hour) || hour < 1 || hour > 12) return;
 
         const t = room.truckMania.time ?? START_TIME;
@@ -2578,9 +2610,7 @@ export function createTruckManiaGame({ io, rooms }) {
         const targetPos = hour % 12; // 12 -> 0
         if (targetPos === curPos) return; // hand already there
 
-        const idx = room.players.indexOf(socket.id);
-        const players = room.truckMania.players ?? [];
-        const player = players[idx] ?? players[0];
+        const player = room.truckMania.players?.[seat];
         const ts = room.truckMania.turnState;
         // Time normally changes once per turn; Time lord lifts that cap.
         if (ts.changedTime && !hasAbility(player, "time-lord")) return;
@@ -2640,12 +2670,13 @@ export function createTruckManiaGame({ io, rooms }) {
       // movement, but the thief must then move off the shared spot to continue.
       socket.on("truck_mania_steal", ({ roomId, truckId = 0, victimTruckId, packageId } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || room.truckMania.turn !== 0 || room.truckMania.winner != null) return;
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
         const ts = room.truckMania.turnState;
         if (ts.acted) return;
         if (ts.stolen && ts.stealVictim !== victimTruckId) return; // one victim per turn
         const trucks = room.truckMania.trucks ?? [];
-        const thief = humanTruck(room, truckId);
+        const thief = humanTruck(room, seat, truckId);
         const victim = trucks.find((t) => t.id === victimTruckId);
         if (!thief || !victim || victim.id === thief.id) return;
         if (thief.spot == null || thief.spot !== victim.spot) return;
@@ -2682,14 +2713,15 @@ export function createTruckManiaGame({ io, rooms }) {
         emitState(roomId, room);
       });
 
-      // Choose how many AI opponents (0–3). Re-deals the board (fresh turn back
-      // to the human) with that many trucks. Bumps the seed so the client fully
-      // rebuilds (new truck set).
+      // Choose how many AI opponents (0 up to the free seats: 3 solo, 2 with
+      // two humans). Re-deals the board (fresh turn back to the first human)
+      // with that many trucks. Bumps the seed so the client fully rebuilds
+      // (new truck set).
       socket.on("truck_mania_set_opponents", ({ roomId, count } = {}) => {
         const room = playerRoom(socket, roomId);
         if (!room) return;
         clearAiTimer(roomId);
-        const n = Math.max(0, Math.min(MAX_AI, Number(count) | 0));
+        const n = Math.max(0, Math.min(maxAiFor(room), Number(count) | 0));
         room.truckMania.aiCount = n;
         setupBoard(room);
         room.truckMania.map.seed = `${room.truckMania.map.seed}-o${n}-${Date.now()}`;

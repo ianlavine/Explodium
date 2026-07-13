@@ -4,6 +4,8 @@
 //   createRoomState  - per-room game state merged into the room object
 //   emitState        - pushes the current room state to the room's sockets
 //   registerHandlers - installs the game's socket event handlers
+//   onRoomCreated    - (optional) called once the room exists with its final
+//                      player list, for state that depends on who's seated
 //   bot (optional)   - { id, normalizeLevel, onRoomCreated } for AI opponents
 import { createExplodiumGame } from "./games/explodium/game.js";
 import { createToyBattleGame } from "./games/toy-battle/game.js";
@@ -43,6 +45,7 @@ export function createLobby(io) {
       turn: playerA,
       ...game.createRoomState()
     });
+    game.onRoomCreated?.(roomId, rooms.get(roomId));
     return roomId;
   }
 
