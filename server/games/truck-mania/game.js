@@ -163,8 +163,10 @@ const TICKET_TRACKS = [...POINT_TRACKS, "money"];
 // capacity column instead.
 const FRAGILITY_TRACKS = ["capacity", "fragile", "aversion", "agression", "timestones", "money"];
 // Every column a ticket settings object carries (both rule sets' tracks), so
-// flipping Variety ⇄ Fragility mid-match never lacks numbers.
-const TICKET_COLUMNS = ["capacity", "variety", "fragile", "aversion", "agression", "timestones", "money"];
+// flipping Variety ⇄ Fragility mid-match never lacks numbers. `letters` is the
+// orange column under the Choosing rule: each value is 0 or 1 — 1 means that
+// upgrade step grants a pick of any still-locked protected location.
+const TICKET_COLUMNS = ["capacity", "variety", "fragile", "aversion", "agression", "timestones", "money", "letters"];
 
 // Chore locations tickets send players to (ticket mode). Purely thematic —
 // each is just a place on the board with no packages.
@@ -249,6 +251,10 @@ const BASE_TICKET_SETTINGS = {
   // no variety rule; the fragile column caps how many circles fit the truck,
   // and delivering one pays the player's choice of time stones or money.
   fragility: false,
+  // Choosing rule: orange packages carry no letters — orange is a real board
+  // column instead (pawn-shop swappable, completes like any other). Its values
+  // are 0/1 flags: a 1 step lets the player unlock any locked location.
+  choosing: false,
   columns: {
     capacity: [2, 3, 4, 5, 6, 7],
     variety: [1, 2, 3, 4, 5, 6],
@@ -256,7 +262,8 @@ const BASE_TICKET_SETTINGS = {
     aversion: [1, 2, 3, 4, 5, 6],
     agression: [0, 1, 2, 3, 4, 5],
     timestones: [2, 4, 6, 8, 10, 12],
-    money: [2, 4, 6, 8, 10, 12]
+    money: [2, 4, 6, 8, 10, 12],
+    letters: [0, 1, 1, 1, 1, 1, 1]
   },
   // Circles fill the protected locations (8 each in this mode); squares the
   // normal pickups (6 each); orange still totals protected × 2 (2 per letter).
@@ -323,7 +330,9 @@ function migrateSettings(s) {
   if (ticket) {
     out.suspension ??= false;
     out.fragility ??= false;
+    out.choosing ??= false;
     (out.columns ??= {}).fragile ??= [1, 2, 3, 4, 5, 6];
+    out.columns.letters ??= [0, 1, 1, 1, 1, 1, 1];
     out.blankLights ??= { green: 5, red: 5 };
     // Total stoplights the map should carry (24 numbered + the blanks) — the
     // two forced-green corners sit on top of this count.
@@ -443,8 +452,11 @@ function sanitizePointSettings(raw) {
 
 function sanitizeTicketSettings(raw) {
   const fragility = raw.fragility === true;
+  const choosing = raw.choosing === true;
   const core = sanitizeCore(raw, TICKET_COLUMNS, fragility);
   if (!core) return null;
+  // The letters column is 0/1 flags (1 = that upgrade grants a location pick).
+  if (core.columns.letters.some((v) => v !== 0 && v !== 1)) return null;
   const {
     columns, packages, circles, squares, protectedCount, startingTimeStones,
     pickupCount, perPickup, perProtected, dropoffs
@@ -482,15 +494,17 @@ function sanitizeTicketSettings(raw) {
   // two forced-green corners come on top and count toward neither).
   if (intersections !== 24 + green + red) return null;
   // Orange packages carry the letters, dealt evenly — so their total must
-  // divide by the protected-location count.
+  // divide by the protected-location count. Under Choosing nothing is printed
+  // on them, so any orange count goes.
   const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
-  if (protectedCount > 0 ? orange % protectedCount !== 0 : orange !== 0) return null;
+  if (!choosing && (protectedCount > 0 ? orange % protectedCount !== 0 : orange !== 0)) return null;
   if (lettersToWin > Math.max(1, protectedCount)) return null;
   if (squares + circles < 6) return null;
   return {
     mode: "tickets",
     suspension: raw.suspension === true,
     fragility,
+    choosing,
     columns, packages, protectedCount, startingTimeStones,
     pickupCount, perPickup, perProtected, dropoffs,
     startingMoney, columnsToWin, ticketLocations,
@@ -600,7 +614,7 @@ function aiTimeBudget(player) {
 
 const emptyColumns = () => ({
   capacity: 0, variety: 0, fragile: 0, aversion: 0, agression: 0, timestones: 0,
-  money: 0, locations: 0, abilities: 0
+  money: 0, letters: 0, locations: 0, abilities: 0
 });
 
 function shuffle(arr) {
@@ -736,7 +750,10 @@ function assignLocations(map, settings) {
     }
 
     // Print letters on the orange packages, dealt evenly (the settings check
-    // that the orange total divides by the protected-location count).
+    // that the orange total divides by the protected-location count). Under
+    // Choosing the packages stay blank — orange advances the letters column
+    // and the player picks which location to unlock.
+    if (settings.choosing === true) return;
     const orangePkgs = [];
     for (const b of pickups) {
       for (const p of b.packages) if (p.color === "#e08a3c") orangePkgs.push(p);
@@ -787,7 +804,8 @@ export function createTruckManiaGame({ io, rooms }) {
       mapId: mapId ?? null,
       mode: modeOf(settings),
       suspension: settings?.suspension === true,
-      fragility: settings?.fragility === true
+      fragility: settings?.fragility === true,
+      choosing: settings?.choosing === true
     })),
     canSave: savingEnabled
   });
@@ -798,6 +816,9 @@ export function createTruckManiaGame({ io, rooms }) {
   const isTicket = (room) => modeOf(S(room)) === "tickets";
   // Fragility rule set: circles are fragile packages (see BASE_TICKET_SETTINGS).
   const isFragility = (room) => isTicket(room) && !!S(room).fragility;
+  // Choosing rule: orange is a real 0/1-flag column — each 1 step grants a
+  // pick of any locked protected location (no letters on the packages).
+  const isChoosing = (room) => isTicket(room) && !!S(room).choosing;
   // Suspension rule: a face-down ticket backlog grounds the player's package
   // work — no pickups or dropoffs until the pile flips up (only at turn end).
   const suspended = (room, player) =>
@@ -821,13 +842,19 @@ export function createTruckManiaGame({ io, rooms }) {
     }
     return COLOR_COLUMN[color];
   };
-  const tracksFor = (room) =>
-    (isTicket(room) ? (isFragility(room) ? FRAGILITY_TRACKS : TICKET_TRACKS) : POINT_TRACKS);
+  // Under Choosing the letters column joins the numeric tracks outright —
+  // pawn-shop swappable and completed at its top step like the rest.
+  const tracksFor = (room) => {
+    if (!isTicket(room)) return POINT_TRACKS;
+    const base = isFragility(room) ? FRAGILITY_TRACKS : TICKET_TRACKS;
+    return isChoosing(room) ? [...base, "letters"] : base;
+  };
   // Ticket-mode win: how many columns this player has completed — the numeric
-  // tracks, plus the letters column once `lettersToWin` letters are unlocked.
+  // tracks, plus (outside Choosing, where letters already count as a numeric
+  // track) the letters column once `lettersToWin` letters are unlocked.
   const completedColumns = (room, player) => {
     let n = tracksFor(room).filter((c) => (player?.columns?.[c] ?? 0) >= maxLevel(room, c)).length;
-    if (isTicket(room)) {
+    if (isTicket(room) && !isChoosing(room)) {
       const need = S(room).lettersToWin ?? S(room).protectedCount ?? 0;
       if (need > 0 && (player?.locations?.length ?? 0) >= need) n += 1;
     }
@@ -974,6 +1001,7 @@ export function createTruckManiaGame({ io, rooms }) {
       abilities: [], // owned ability ids
       pendingDrafts: [], // queued "locations"/"abilities" draws awaiting a pick
       pendingFragile: [], // fragile-delivery bonuses awaiting a stones/money pick
+      pendingPicks: 0, // Choosing: location unlocks awaiting a board click
       tickets: [], // visible tickets, up to 3: { id, loc: building bid }
       ticketPile: [] // face-down overflow, flipped up when the turn ends
     }));
@@ -1111,9 +1139,18 @@ export function createTruckManiaGame({ io, rooms }) {
           grantFragileBonus(room, player);
         }
         if (col === "letters") {
-          // Repeats count: every orange delivery fills a letters-column slot,
-          // duplicate letter or not (the letter still unlocks its location).
-          if (delivered.letter) {
+          if (isChoosing(room)) {
+            // Choosing: orange advances the letters column like any other
+            // track; a step whose flag is 1 grants a pick of a locked location.
+            const next = Math.min(maxLevel(room, "letters"), (player.columns.letters ?? 0) + 1);
+            if (next > (player.columns.letters ?? 0)) {
+              player.columns.letters = next;
+              if ((S(room).columns.letters?.[next] ?? 0) >= 1) grantLocationPick(room, player);
+              checkTicketWin(room, truck.player);
+            }
+          } else if (delivered.letter) {
+            // Repeats count: every orange delivery fills a letters-column slot,
+            // duplicate letter or not (the letter still unlocks its location).
             player.locations.push(delivered.letter);
             checkTicketWin(room, truck.player); // letters are a completable column
           }
@@ -1167,6 +1204,22 @@ export function createTruckManiaGame({ io, rooms }) {
       return;
     }
     (player.pendingFragile ??= []).push({ stones, money });
+  }
+
+  // Choosing: a 1-flag letters step grants a pick of any still-locked
+  // protected location. Humans get a queued pick (resolved by clicking a lit
+  // building); the AI takes the best locked letter — a stocked one if any.
+  function grantLocationPick(room, player) {
+    const locked = settingsLetters(S(room)).filter((l) => !player.locations.includes(l));
+    if (!locked.length) return; // everything already unlocked — nothing to pick
+    if (player.isAI) {
+      const buildings = (room.truckMania.map.blocks ?? []).flatMap((bl) => bl.buildings ?? []);
+      const stocked = locked.find((l) => buildings.some((b) =>
+        b.role === "pickup" && b.protected && b.letter === l && (b.packages?.length ?? 0) > 0));
+      player.locations.push(stocked ?? locked[0]);
+      return;
+    }
+    player.pendingPicks = (player.pendingPicks ?? 0) + 1;
   }
 
   // Is this truck parked on the same spot as any other truck? (Off-board
@@ -1604,7 +1657,10 @@ export function createTruckManiaGame({ io, rooms }) {
       const fragileBonus = fragility && shape === "circle"
         ? 0.15 * Math.max(colValue(room, player, "timestones"), colValue(room, player, "money"))
         : 0;
-      if (col === "letters") return 1.0 + fragileBonus; // unlocks a protected letter
+      // Outside Choosing, letters isn't a numeric column — a delivery just
+      // unlocks the printed letter. Under Choosing it falls through and is
+      // scored like any other track (its payout being the location picks).
+      if (col === "letters" && !isChoosing(room)) return 1.0 + fragileBonus;
       const max = Math.max(1, maxLevel(room, col));
       if (lvl >= max) return 0.2 + fragileBonus; // column already complete
       let v = 1;
@@ -1692,8 +1748,9 @@ export function createTruckManiaGame({ io, rooms }) {
     }
     if (isTicket(room)) {
       // Would these deliveries top out a column? That's a win-condition step.
+      // (Under Choosing, letters is a real column and counts too.)
       const col = columnForColor(room, b.dropoffColor);
-      if (col !== "letters" &&
+      if ((col !== "letters" || isChoosing(room)) &&
         (player.columns[col] ?? 0) + matching.length >= maxLevel(room, col)) {
         v += 3;
       }
@@ -2529,6 +2586,24 @@ export function createTruckManiaGame({ io, rooms }) {
         const bonus = player.pendingFragile.shift();
         if (choice === "stones") player.timeStones += bonus.stones ?? 0;
         else player.money = (player.money ?? 0) + (bonus.money ?? 0);
+        emitState(roomId, room);
+      });
+
+      // Resolve a queued location pick (Choosing rule): the player clicks a
+      // still-locked protected location on the board to unlock its letter.
+      // Allowed at any time, like the fragile bonus — the pick was earned when
+      // the letters column stepped onto a 1.
+      socket.on("truck_mania_pick_location", ({ roomId, letter } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room || !isChoosing(room)) return;
+        const idx = room.players.indexOf(socket.id);
+        const players = room.truckMania.players ?? [];
+        const player = players[idx] ?? players[0];
+        if (!player || (player.pendingPicks ?? 0) <= 0) return;
+        if (!settingsLetters(S(room)).includes(letter)) return;
+        if (player.locations.includes(letter)) return;
+        player.locations.push(letter);
+        player.pendingPicks -= 1;
         emitState(roomId, room);
       });
 

@@ -34,12 +34,35 @@
   stroke-width: 1;
 }
 
-/* Protected locations: dark outline + lettered badge */
+/* Protected locations: dark outline + lettered badge. Ones the local player
+   hasn't unlocked yet (.tm-locked, kept current by renderProtectedLocks) read
+   shut: black border + darker grey inside; unlocking fades the fill back to
+   the normal pickup grey. */
 
 .tm-building polygon.tm-protected,
 .tm-building rect.tm-protected {
   stroke: #1c222b;
   stroke-width: 2.5;
+  transition: fill calc(0.5s / var(--tm-mult, 1)) ease;
+}
+
+.tm-building.tm-locked polygon.tm-protected,
+.tm-building.tm-locked rect.tm-protected {
+  fill: #878d95;
+  stroke: #07090c;
+}
+
+/* Choosing: a pick is owed — the locked locations glow as click targets. */
+
+.tm-building.tm-pick-target {
+  cursor: pointer;
+}
+
+.tm-building.tm-pick-target polygon.tm-protected,
+.tm-building.tm-pick-target rect.tm-protected {
+  stroke: #ffe17a;
+  stroke-width: 3.5;
+  animation: tm-ticket-glow 1.6s ease-in-out infinite;
 }
 
 .tm-loc-letter-bg {

@@ -104,12 +104,21 @@ function isFragilityMode() {
   return isTicketMode() && !!settingsState?.fragility;
 }
 
-// The numeric tracks that count toward the ticket-mode win.
+// Choosing rule (ticket mode): orange packages carry no letters — orange is a
+// real 0/1-flag board column instead, and each 1 step lets the player unlock
+// any still-locked protected location by clicking it on the board.
+function isChoosingMode() {
+  return isTicketMode() && !!settingsState?.choosing;
+}
+
+// The numeric tracks that count toward the ticket-mode win. Under Choosing
+// the letters column joins them (pawn-shop swappable, completes at the top).
 const TICKET_TRACKS = ["capacity", "variety", "aversion", "agression", "timestones", "money"];
 const FRAGILITY_TRACKS = ["capacity", "fragile", "aversion", "agression", "timestones", "money"];
 
 function activeTracks() {
-  return isFragilityMode() ? FRAGILITY_TRACKS : TICKET_TRACKS;
+  const base = isFragilityMode() ? FRAGILITY_TRACKS : TICKET_TRACKS;
+  return isChoosingMode() ? [...base, "letters"] : base;
 }
 
 // How many letters fill the letters column (it completes like any other).
@@ -122,7 +131,9 @@ function completedColumnsOf(player) {
     const vals = columnValuesFor(c);
     return vals.length && (player?.columns?.[c] ?? 0) >= vals.length - 1;
   }).length;
-  if ((player?.locations?.length ?? 0) >= lettersToWin()) n += 1;
+  // Outside Choosing (where letters already counts as a numeric track above),
+  // the letters column completes on unlocked-letter count.
+  if (!isChoosingMode() && (player?.locations?.length ?? 0) >= lettersToWin()) n += 1;
   return n;
 }
 
@@ -244,7 +255,13 @@ const PB_COLUMNS_FRAGILITY = PB_COLUMNS_TICKETS.map((c) =>
 
 function pbColumns() {
   if (!isTicketMode()) return PB_COLUMNS;
-  return isFragilityMode() ? PB_COLUMNS_FRAGILITY : PB_COLUMNS_TICKETS;
+  const cols = isFragilityMode() ? PB_COLUMNS_FRAGILITY : PB_COLUMNS_TICKETS;
+  // Choosing: the letters column is a real numeric track (0/1 pick flags), so
+  // it renders through the generic column path instead of the tile list.
+  if (!isChoosingMode()) return cols;
+  return cols.map((c) => c.id === "locations"
+    ? { id: "letters", title: "Letters", color: "#e08a3c", values: [0, 1, 1, 1, 1, 1, 1] }
+    : c);
 }
 
 function hexToRgba(hex, a) {
@@ -1135,6 +1152,25 @@ function renderTicketHighlights() {
   (myPlayer()?.tickets ?? []).forEach((t) => {
     svg.querySelector(`.tm-building[data-bldg="${t.loc}"]`)?.classList.add("tm-ticket-lit");
   });
+}
+
+// Protected locations, as this screen's player sees them: still-locked ones
+// read shut — black border, darker grey inside — and the fill turns back to
+// the normal pickup grey once the letter is unlocked. While a Choosing pick
+// is owed, the locked ones also glow as click targets.
+function renderProtectedLocks() {
+  const svg = els.gameBoard.querySelector(".tm-map");
+  if (!svg || !mapState) return;
+  const mine = myPlayer()?.locations ?? [];
+  const picking = (myPlayer()?.pendingPicks ?? 0) > 0;
+  (mapState.blocks ?? []).forEach((bl) => (bl.buildings ?? []).forEach((b) => {
+    if (b.role !== "pickup" || !b.protected || !b.letter) return;
+    const el = svg.querySelector(`.tm-building[data-bldg="${b.bid}"]`);
+    if (!el) return;
+    const locked = !mine.includes(b.letter);
+    el.classList.toggle("tm-locked", locked);
+    el.classList.toggle("tm-pick-target", locked && picking);
+  }));
 }
 
 // --------------------------------------------------------------------------
@@ -2457,7 +2493,22 @@ function anyTruckAnimating() {
 }
 
 function onBoardClick(event) {
-  if (editor || !app.roomId || !isMyTurn() || diceAnimating || anyTruckAnimating()) return;
+  if (editor || !app.roomId) return;
+
+  // Choosing: an owed location pick resolves by clicking a glowing locked
+  // location — allowed even off-turn, like claiming a fragile bonus.
+  if ((myPlayer()?.pendingPicks ?? 0) > 0) {
+    const pickEl = event.target.closest?.(".tm-building.tm-pick-target");
+    if (pickEl) {
+      const b = buildingsByBid().get(Number(pickEl.dataset.bldg));
+      if (b?.letter) {
+        socket.emit("truck_mania_pick_location", { roomId: app.roomId, letter: b.letter });
+        return;
+      }
+    }
+  }
+
+  if (!isMyTurn() || diceAnimating || anyTruckAnimating()) return;
 
   // Steal from the truck we've pulled up behind: click the glowing truck to
   // take its next package, or a specific package in its dock.
@@ -2875,7 +2926,7 @@ function renderDecks() {
 const TRACK_LABELS = {
   capacity: "Capacity", variety: "Variety", fragile: "Fragile cap.",
   aversion: "Aversion", agression: "Agression", timestones: "Time stones",
-  money: "Money"
+  money: "Money", letters: "Letters"
 };
 
 // The special building the human's active truck is parked at, if usable now.
@@ -3035,6 +3086,25 @@ function renderFragileBonus() {
     list.appendChild(btn);
   });
   panel.appendChild(list);
+  els.gameBoard.appendChild(panel);
+}
+
+// Choosing: an owed location pick. The locked protected locations glow
+// (renderProtectedLocks) — this panel just says what the glow is asking for.
+function renderPickPrompt() {
+  els.gameBoard.querySelector(".tm-pick-prompt")?.remove();
+  const n = myPlayer()?.pendingPicks ?? 0;
+  if (!n || winnerState != null) return;
+  const panel = document.createElement("div");
+  panel.className = "tm-special tm-pick-prompt";
+  const head = document.createElement("div");
+  head.className = "tm-special-head";
+  head.textContent = `📍 Unlock a location${n > 1 ? ` ×${n}` : ""}`;
+  panel.appendChild(head);
+  const note = document.createElement("div");
+  note.className = "tm-special-note";
+  note.textContent = "Click a glowing locked location on the map to unlock it.";
+  panel.appendChild(note);
   els.gameBoard.appendChild(panel);
 }
 
@@ -3331,8 +3401,10 @@ function renderMap() {
   renderDice();
   renderDecks();
   renderTicketHighlights();
+  renderProtectedLocks();
   renderSpecialPanel();
   renderFragileBonus();
+  renderPickPrompt();
 }
 
 // --------------------------------------------------------------------------
@@ -3790,11 +3862,13 @@ const TUNE_COLUMNS = [
   ["agression", "Agression"], ["timestones", "Time stones"]
 ];
 // Ticket settings carry both rule sets' columns (Variety and Fragile capacity)
-// so flipping the rule dial mid-match never lacks numbers.
+// so flipping the rule dial mid-match never lacks numbers. Letters is the
+// orange column under Choosing: 0/1 per step, 1 = that upgrade grants a pick
+// of any locked location.
 const TUNE_COLUMNS_TICKETS = [
   ["capacity", "Capacity"], ["variety", "Variety"], ["fragile", "Fragile capacity"],
   ["aversion", "Aversion"], ["agression", "Agression"], ["timestones", "Time stones"],
-  ["money", "Money"]
+  ["money", "Money"], ["letters", "Letters (0/1, Choosing)"]
 ];
 const TUNE_COLORS = [
   ["#cf4a3c", "Red"], ["#e08a3c", "Orange"], ["#e8c33c", "Yellow"],
@@ -3816,7 +3890,8 @@ function openTuning() {
     columns: Object.fromEntries(
       (ticket ? TUNE_COLUMNS_TICKETS : TUNE_COLUMNS)
         .map(([id]) => [id, (settingsState.columns?.[id] ??
-          (id === "fragile" ? [1, 2, 3, 4, 5, 6] : [])).join(", ")])
+          (id === "fragile" ? [1, 2, 3, 4, 5, 6]
+            : id === "letters" ? [0, 1, 1, 1, 1, 1, 1] : [])).join(", ")])
     ),
     // Attach a saved map to this version (null = NONE — the version leaves
     // whatever map is on the table alone). Remembers the session's last pick.
@@ -3840,6 +3915,8 @@ function openTuning() {
     // carried so a save doesn't drop the suspension/fragility rules.
     tuneDraft.suspension = !!settingsState.suspension;
     tuneDraft.fragility = !!settingsState.fragility;
+    // Choosing IS edited here — it's a property of the saved version.
+    tuneDraft.choosing = !!settingsState.choosing;
     tuneDraft.startingMoney = String(settingsState.startingMoney ?? 2);
     tuneDraft.columnsToWin = String(settingsState.columnsToWin ?? 3);
     tuneDraft.ticketLocations = String(settingsState.ticketLocations ?? 12);
@@ -3891,6 +3968,8 @@ function parseTuneDraft() {
       issues.push(`${label}: comma-separated whole numbers (0–99)`);
     } else if (nums.length < 2 || nums.length > 12) {
       issues.push(`${label}: needs 2–12 values`);
+    } else if (id === "letters" && nums.some((n) => n !== 0 && n !== 1)) {
+      issues.push(`${label}: values must be 0 or 1 (1 = that step grants a location pick)`);
     }
     columns[id] = nums;
   });
@@ -3934,8 +4013,9 @@ function parseTuneDraft() {
   }
   const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
   if (ticket) {
-    // Letters are dealt evenly over the orange packages.
-    if (protectedCount > 0 ? orange % protectedCount !== 0 : orange !== 0) {
+    // Letters are dealt evenly over the orange packages — unless Choosing is
+    // on, where the packages stay blank and any orange count goes.
+    if (!tuneDraft.choosing && (protectedCount > 0 ? orange % protectedCount !== 0 : orange !== 0)) {
       issues.push(`Orange must divide evenly by protected locations (now ${orange} ÷ ${protectedCount})`);
     }
   } else if (orange !== protectedCount * 2) {
@@ -4010,6 +4090,7 @@ function parseTuneDraft() {
       mode: "tickets",
       suspension: !!tuneDraft.suspension,
       fragility: !!tuneDraft.fragility,
+      choosing: !!tuneDraft.choosing,
       startingMoney, columnsToWin, ticketLocations,
       visibleTickets, lettersToWin, intersections,
       tickets: { perFail },
@@ -4097,7 +4178,7 @@ function renderTuning() {
   const title = document.createElement("div");
   title.className = "tm-tune-title";
   title.textContent = tuneDraft.mode === "tickets"
-    ? `Game tuning — ${tuneDraft.fragility ? "Fragility" : "Ticket mode"}${tuneDraft.suspension ? " · Suspension" : ""}`
+    ? `Game tuning — ${tuneDraft.fragility ? "Fragility" : "Ticket mode"}${tuneDraft.suspension ? " · Suspension" : ""}${tuneDraft.choosing ? " · Choosing" : ""}`
     : "Game tuning — Point mode";
   panel.appendChild(title);
 
@@ -4173,6 +4254,21 @@ function renderTuning() {
   if (tuneDraft.mode === "tickets") {
     row("Starting money", tuneField(tuneDraft.startingMoney, (v) => { tuneDraft.startingMoney = v; }, "tm-tune-input tm-tune-num"));
     row("Columns to win", tuneField(tuneDraft.columnsToWin, (v) => { tuneDraft.columnsToWin = v; }, "tm-tune-input tm-tune-num"));
+    // Choosing: orange packages carry no letters — orange is a real 0/1
+    // column (the Letters list above) and each 1 step grants a free pick of
+    // any locked location, clicked on the board.
+    {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "tm-tune-check";
+      cb.checked = !!tuneDraft.choosing;
+      cb.title = "Orange becomes a 0/1 column (see Letters above); 1 steps let you click any locked location to unlock it";
+      cb.addEventListener("change", () => {
+        tuneDraft.choosing = cb.checked;
+        updateTuneStatus();
+      });
+      row("Choosing (pick locations)", cb);
+    }
     row("Letters to win", tuneField(tuneDraft.lettersToWin, (v) => { tuneDraft.lettersToWin = v; }, "tm-tune-input tm-tune-num"));
     row("Ticket locations", tuneField(tuneDraft.ticketLocations, (v) => { tuneDraft.ticketLocations = v; }, "tm-tune-input tm-tune-num"));
     row("Visible tickets", tuneField(tuneDraft.visibleTickets, (v) => { tuneDraft.visibleTickets = v; }, "tm-tune-input tm-tune-num"));
@@ -4232,6 +4328,7 @@ function renderTuning() {
       hint: [
         s.mode === "tickets" ? (s.fragility ? "Fragility" : "Variety") : "Points",
         s.suspension ? "Susp." : null,
+        s.choosing ? "Choose" : null,
         s.mapId ? `🗺 ${savedMaps.find((m) => m.id === s.mapId)?.name ?? "?"}` : null
       ].filter(Boolean).join(" · ")
     })),
@@ -4899,8 +4996,10 @@ export const truckMania = {
       renderDice();
       renderDecks();
       renderTicketHighlights();
+      renderProtectedLocks();
       renderSpecialPanel();
       renderFragileBonus();
+      renderPickPrompt();
       updateTurnControls(); // reflect turn/steal state on the End-turn button
       if (lastTurnSeen !== null && lastTurnSeen !== turnWhose && winnerState == null) {
         showTurnToast();

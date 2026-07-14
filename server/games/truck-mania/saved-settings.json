@@ -863,5 +863,178 @@
         "red": 2
       }
     }
+  },
+  {
+    "id": "s1783916857307984",
+    "name": "More Fragile",
+    "mapId": null,
+    "settings": {
+      "mode": "tickets",
+      "suspension": true,
+      "fragility": true,
+      "columns": {
+        "capacity": [
+          2,
+          3,
+          4,
+          4,
+          5,
+          5,
+          6
+        ],
+        "variety": [
+          1,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5
+        ],
+        "fragile": [
+          1,
+          1,
+          2,
+          2,
+          3,
+          3,
+          4
+        ],
+        "aversion": [
+          1,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5
+        ],
+        "agression": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "timestones": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "money": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      },
+      "packages": {
+        "#cf4a3c": {
+          "square": 10,
+          "circle": 6
+        },
+        "#e08a3c": {
+          "square": 10,
+          "circle": 5
+        },
+        "#e8c33c": {
+          "square": 10,
+          "circle": 6
+        },
+        "#4f9d57": {
+          "square": 10,
+          "circle": 7
+        },
+        "#4a72b0": {
+          "square": 14,
+          "circle": 2
+        },
+        "#8a5bb0": {
+          "square": 13,
+          "circle": 7
+        },
+        "#8f6b52": {
+          "square": 13,
+          "circle": 7
+        }
+      },
+      "protectedCount": 5,
+      "startingTimeStones": 12,
+      "pickupCount": 10,
+      "perPickup": 8,
+      "perProtected": 8,
+      "dropoffs": {
+        "#cf4a3c": [
+          10,
+          6
+        ],
+        "#e08a3c": [
+          10,
+          5
+        ],
+        "#e8c33c": [
+          10,
+          6
+        ],
+        "#4f9d57": [
+          10,
+          7
+        ],
+        "#4a72b0": [
+          10,
+          6
+        ],
+        "#8a5bb0": [
+          12,
+          8
+        ],
+        "#8f6b52": [
+          12,
+          8
+        ]
+      },
+      "startingMoney": 3,
+      "columnsToWin": 3,
+      "ticketLocations": 12,
+      "visibleTickets": 4,
+      "lettersToWin": 5,
+      "intersections": 31,
+      "tickets": {
+        "perFail": 1
+      },
+      "abilityCosts": {
+        "uturn": 3,
+        "drive-by-pickup": 4,
+        "drive-by-dropoff": 4,
+        "cheap-time": 4,
+        "day-theft": 5,
+        "time-lord": 5,
+        "free-parking": 6,
+        "reverse-time": 3,
+        "extra-truck": 8
+      },
+      "pawnCosts": [
+        2,
+        5,
+        9
+      ],
+      "courtCosts": [
+        2,
+        5,
+        9
+      ],
+      "blankLights": {
+        "green": 5,
+        "red": 2
+      }
+    }
   }
 ]
