@@ -49,6 +49,7 @@ let maxAiState = 3; // free AI seats (4 minus the room's humans) — bounds the 
 let turnActed = false; // this turn's truck has picked up/delivered (movement locked)
 let turnStolen = false; // this turn has performed a steal
 let turnChangedTime = false; // this turn has changed the clock
+let turnStartChoice = null; // Free rules: the turn-opening stones/money pick, once made
 let stealVictimId = null; // which truck was robbed this turn
 let aiMoveState = null; // { truckId, path, endAngle } — an AI's chosen drive to animate
 
@@ -104,11 +105,34 @@ function isFragilityMode() {
   return isTicketMode() && !!settingsState?.fragility;
 }
 
-// Choosing rule (ticket mode): orange packages carry no letters — orange is a
+// Free rule set (ticket mode): no cargo-mix rule at all — brown is out of
+// the game entirely (no column, no packages, no dropoffs), circles are plain
+// packages, and each turn opens with the player's forced pick of time stones
+// or money.
+function isFreeMode() {
+  return isTicketMode() && !!settingsState?.free;
+}
+
+// Choosing rule (ticket mode): blue packages carry no letters — letters is a
 // real 0/1-flag board column instead, and each 1 step lets the player unlock
 // any still-locked protected location by clicking it on the board.
 function isChoosingMode() {
   return isTicketMode() && !!settingsState?.choosing;
+}
+
+// Keep going (ticket mode option): pay time stones after a terminal stop to
+// reopen movement. While on, the two drive-by abilities are out of the game.
+function keepGoingEnabled() {
+  return isTicketMode() && !!settingsState?.keepGoing;
+}
+
+function keepGoingCost() {
+  return settingsState?.keepGoingCost ?? 3;
+}
+
+// Free rules: is my turn stuck waiting on the opening stones-or-money pick?
+function startPickPending() {
+  return isFreeMode() && isMyTurn() && winnerState == null && !turnStartChoice;
 }
 
 // The numeric tracks that count toward the ticket-mode win. Under Choosing
@@ -117,7 +141,9 @@ const TICKET_TRACKS = ["capacity", "variety", "aversion", "agression", "timeston
 const FRAGILITY_TRACKS = ["capacity", "fragile", "aversion", "agression", "timestones", "money"];
 
 function activeTracks() {
-  const base = isFragilityMode() ? FRAGILITY_TRACKS : TICKET_TRACKS;
+  let base = isFragilityMode() ? FRAGILITY_TRACKS : TICKET_TRACKS;
+  // Free: the variety (brown) column doesn't exist at all.
+  if (isFreeMode()) base = base.filter((c) => c !== "variety");
   return isChoosingMode() ? [...base, "letters"] : base;
 }
 
@@ -236,31 +262,34 @@ const PB_COLUMNS = [
   { id: "locations", title: "Locations", color: "#e08a3c", values: [] }
 ];
 
-// Ticket mode: brown feeds the Money column; orange grants letters directly —
+// Ticket mode: orange feeds the Money column; blue grants letters directly —
 // and the letters column completes (lettersToWin slots) like a numeric track.
+// Brown feeds Variety (Fragile capacity under Fragility; nothing under Free).
 const PB_COLUMNS_TICKETS = [
   { id: "capacity", title: "Capacity", color: "#e8c33c", values: [2, 3, 4, 5, 6, 7] },
-  { id: "variety", title: "Variety", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] },
+  { id: "variety", title: "Variety", color: "#8f6b52", values: [1, 2, 3, 4, 5, 6] },
   { id: "aversion", title: "Aversion", color: "#4f9d57", values: [1, 2, 3, 4, 5, 6] },
   { id: "agression", title: "Agression", color: "#cf4a3c", values: [0, 1, 2, 3, 4, 5] },
   { id: "timestones", title: "Time stones", color: "#8a5bb0", values: [2, 4, 6, 8, 10, 12] },
-  { id: "money", title: "Money", color: "#8f6b52", values: [2, 4, 6, 8, 10, 12] },
-  { id: "locations", title: "Letters", color: "#e08a3c", values: [] }
+  { id: "money", title: "Money", color: "#e08a3c", values: [2, 4, 6, 8, 10, 12] },
+  { id: "locations", title: "Letters", color: "#4a72b0", values: [] }
 ];
 
-// Fragility: no variety column — blue feeds Fragile capacity instead.
+// Fragility: no variety column — brown feeds Fragile capacity instead.
 const PB_COLUMNS_FRAGILITY = PB_COLUMNS_TICKETS.map((c) =>
-  c.id === "variety" ? { id: "fragile", title: "Fragile", color: "#4a72b0", values: [1, 2, 3, 4, 5, 6] } : c
+  c.id === "variety" ? { id: "fragile", title: "Fragile", color: "#8f6b52", values: [1, 2, 3, 4, 5, 6] } : c
 );
 
 function pbColumns() {
   if (!isTicketMode()) return PB_COLUMNS;
-  const cols = isFragilityMode() ? PB_COLUMNS_FRAGILITY : PB_COLUMNS_TICKETS;
+  let cols = isFragilityMode() ? PB_COLUMNS_FRAGILITY : PB_COLUMNS_TICKETS;
+  // Free: brown is out of the game — its column simply isn't there.
+  if (isFreeMode()) cols = cols.filter((c) => c.id !== "variety");
   // Choosing: the letters column is a real numeric track (0/1 pick flags), so
   // it renders through the generic column path instead of the tile list.
   if (!isChoosingMode()) return cols;
   return cols.map((c) => c.id === "locations"
-    ? { id: "letters", title: "Letters", color: "#e08a3c", values: [0, 1, 1, 1, 1, 1, 1] }
+    ? { id: "letters", title: "Letters", color: "#4a72b0", values: [0, 1, 1, 1, 1, 1, 1] }
     : c);
 }
 
@@ -743,6 +772,7 @@ function renderClock() {
   wrap.addEventListener("click", (event) => {
     const hourElement = event.target.closest("[data-hour]");
     if (!hourElement || !app.roomId || !isActive() || editor || stealSession || !isMyTurn() || diceAnimating) return;
+    if (startPickPending()) return; // Free rules: collect stones/money first
     if (turnChangedTime && !hasAbil("time-lord")) return; // time changes once per turn
     const hour = Number(hourElement.dataset.hour);
     const cost = hourCost(hour);
@@ -1630,6 +1660,7 @@ function refreshBuilder() {
   const eligible =
     (moveMode === "build" || off) && isActive() && !editor && app.roomId && boardMode === "play" &&
     isMyTurn() && !turnActed && winnerState == null && truck && !diceAnimating &&
+    !startPickPending() && // Free rules: no route building before the pick
     truckAnim[truck.id] == null && (off || truckPos[truck.id]);
   if (!eligible) {
     builder = null;
@@ -2226,6 +2257,7 @@ function columnValue(colId, player) {
 // the fragile slots circles take up (a circle uses a normal AND fragile slot).
 function canHoldPkg(truck, player, pkg) {
   if ((truck.cargo?.length ?? 0) >= columnValue("capacity", player)) return false;
+  if (isFreeMode()) return true; // no cargo-mix rule at all
   if (isFragilityMode()) {
     return pkg.shape !== "circle" ||
       (truck.cargo ?? []).filter((p) => p.shape === "circle").length < columnValue("fragile", player);
@@ -2509,6 +2541,7 @@ function onBoardClick(event) {
   }
 
   if (!isMyTurn() || diceAnimating || anyTruckAnimating()) return;
+  if (startPickPending()) return; // Free rules: nothing moves before the pick
 
   // Steal from the truck we've pulled up behind: click the glowing truck to
   // take its next package, or a specific package in its dock.
@@ -2932,6 +2965,7 @@ const TRACK_LABELS = {
 // The special building the human's active truck is parked at, if usable now.
 function specialBuildingHere() {
   if (!isTicketMode() || !isMyTurn() || winnerState != null || !mapState) return null;
+  if (startPickPending()) return null; // Free rules: the pick comes first
   const truck = activeTruck();
   if (!truck || truckShares(truck) || truckAnim[truck.id] != null) return null;
   const spot = mapState.spots?.[truck.spot];
@@ -2940,7 +2974,11 @@ function specialBuildingHere() {
 }
 
 function renderSpecialPanel() {
-  els.gameBoard.querySelector(".tm-special")?.remove();
+  // Remove only the shop panel itself — the other prompts (.tm-fragile,
+  // .tm-pick-prompt, .tm-start-pick) share the tm-special base class for
+  // styling, and this runs on every truck arrival: a bare ".tm-special"
+  // selector would tear down whichever prompt happened to match first.
+  els.gameBoard.querySelector(".tm-special-shop")?.remove();
   const b = specialBuildingHere();
   if (!b) return;
   const me = myPlayer();
@@ -2948,7 +2986,7 @@ function renderSpecialPanel() {
   const truck = activeTruck();
 
   const panel = document.createElement("div");
-  panel.className = "tm-special";
+  panel.className = "tm-special tm-special-shop";
   const head = document.createElement("div");
   head.className = "tm-special-head";
   head.textContent = `${b.icon ?? ""} ${b.name ?? ""}`;
@@ -2963,16 +3001,27 @@ function renderSpecialPanel() {
     const list = document.createElement("div");
     list.className = "tm-special-list";
     Object.keys(ABILITY_LABELS).forEach((id) => {
+      // Keep going bars the two drive-by abilities from the game entirely.
+      if (keepGoingEnabled() && (id === "drive-by-pickup" || id === "drive-by-dropoff")) return;
       const owned = (me?.abilities ?? []).includes(id);
+      // Each ability is one card — a rival owning it takes it off the shelf.
+      const ownerIdx = playersState.findIndex((p) => (p.abilities ?? []).includes(id));
+      const taken = !owned && ownerIdx !== -1;
       const cost = costs[id];
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "ghost-btn tm-special-item";
       btn.textContent = owned
         ? `✓ ${ABILITY_ICONS[id]} ${ABILITY_LABELS[id]}`
-        : `${ABILITY_ICONS[id]} ${ABILITY_LABELS[id]} · ${cost ?? "?"} 🪙`;
-      btn.disabled = owned || !Number.isInteger(cost) || cost > money;
+        : taken
+          ? `✗ ${ABILITY_ICONS[id]} ${ABILITY_LABELS[id]} · ${seatName(ownerIdx)}`
+          : `${ABILITY_ICONS[id]} ${ABILITY_LABELS[id]} · ${cost ?? "?"} 🪙`;
+      btn.disabled = owned || taken || !Number.isInteger(cost) || cost > money;
       if (owned) btn.classList.add("tm-special-owned");
+      if (taken) {
+        btn.classList.add("tm-special-taken");
+        btn.title = `Owned by ${seatName(ownerIdx)} — each ability has a single card`;
+      }
       btn.addEventListener("click", () => {
         socket.emit("truck_mania_buy_ability", { roomId: app.roomId, truckId: truck.id, ability: id });
       });
@@ -3105,6 +3154,41 @@ function renderPickPrompt() {
   note.className = "tm-special-note";
   note.textContent = "Click a glowing locked location on the map to unlock it.";
   panel.appendChild(note);
+  els.gameBoard.appendChild(panel);
+}
+
+// Free rules: every turn opens with a forced pick — time stones or money at
+// the player's current column values. Nothing else (moving, the clock,
+// package work, ending the turn) is allowed until it's made.
+function renderStartPick() {
+  els.gameBoard.querySelector(".tm-start-pick")?.remove();
+  if (!startPickPending()) return;
+  const me = myPlayer();
+  const stones = columnValue("timestones", me) ?? 0;
+  const money = columnValue("money", me) ?? 0;
+  const panel = document.createElement("div");
+  panel.className = "tm-special tm-start-pick";
+  const head = document.createElement("div");
+  head.className = "tm-special-head";
+  head.textContent = "▶ Start of turn";
+  panel.appendChild(head);
+  const note = document.createElement("div");
+  note.className = "tm-special-note";
+  note.textContent = "Free rules: collect one before doing anything else:";
+  panel.appendChild(note);
+  const list = document.createElement("div");
+  list.className = "tm-special-list";
+  [["stones", `+${stones} time stones`], ["money", `+${money} 🪙`]].forEach(([choice, label]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "primary-btn tm-special-item";
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      if (app.roomId) socket.emit("truck_mania_start_pick", { roomId: app.roomId, choice });
+    });
+    list.appendChild(btn);
+  });
+  panel.appendChild(list);
   els.gameBoard.appendChild(panel);
 }
 
@@ -3405,6 +3489,7 @@ function renderMap() {
   renderSpecialPanel();
   renderFragileBonus();
   renderPickPrompt();
+  renderStartPick();
 }
 
 // --------------------------------------------------------------------------
@@ -3911,12 +3996,14 @@ function openTuning() {
     saveName: `Settings ${savedSettingsList.length + 1}`
   };
   if (ticket) {
-    // Not editable here (the rule dials in the control bar own them) —
-    // carried so a save doesn't drop the suspension/fragility rules.
+    // The rule dials live here now — properties of the saved version, like
+    // everything else in the panel.
     tuneDraft.suspension = !!settingsState.suspension;
-    tuneDraft.fragility = !!settingsState.fragility;
-    // Choosing IS edited here — it's a property of the saved version.
+    tuneDraft.rules = settingsState.free ? "free"
+      : settingsState.fragility ? "fragility" : "variety";
     tuneDraft.choosing = !!settingsState.choosing;
+    tuneDraft.keepGoing = !!settingsState.keepGoing;
+    tuneDraft.keepGoingCost = String(settingsState.keepGoingCost ?? 3);
     tuneDraft.startingMoney = String(settingsState.startingMoney ?? 2);
     tuneDraft.columnsToWin = String(settingsState.columnsToWin ?? 3);
     tuneDraft.ticketLocations = String(settingsState.ticketLocations ?? 12);
@@ -3952,6 +4039,9 @@ function closeTuning() {
 function parseTuneDraft() {
   const issues = [];
   const ticket = tuneDraft.mode === "tickets";
+  // Free rules: brown isn't in the game — its numbers stay saved but sit out
+  // of every line-up check.
+  const freeRules = ticket && tuneDraft.rules === "free";
   const intField = (raw, label, min, max) => {
     const v = Number(raw);
     if (!Number.isInteger(v) || v < min || v > max) {
@@ -3980,10 +4070,12 @@ function parseTuneDraft() {
   TUNE_COLORS.forEach(([hex, name]) => {
     const sq = Number(tuneDraft.packages[hex].square);
     const ci = Number(tuneDraft.packages[hex].circle);
-    if (!Number.isInteger(sq) || sq < 0 || !Number.isInteger(ci) || ci < 0) {
+    const ignored = freeRules && hex === "#8f6b52";
+    if (!ignored && (!Number.isInteger(sq) || sq < 0 || !Number.isInteger(ci) || ci < 0)) {
       issues.push(`${name} packages: counts must be whole numbers`);
     }
     packages[hex] = { square: sq | 0, circle: ci | 0 };
+    if (ignored) return; // kept, but out of the totals
     squares += sq | 0;
     circles += ci | 0;
   });
@@ -3996,9 +4088,10 @@ function parseTuneDraft() {
 
   // The line-up rules (mirrored by the server before persisting): squares
   // fill the normal pickups exactly, circles the protected ones. Fragility
-  // mixes the shapes freely, so only the combined total must fill every slot.
-  const fragility = ticket && !!tuneDraft.fragility;
-  if (fragility) {
+  // and Free mix the shapes freely, so only the combined total must fill
+  // every slot.
+  const mixed = ticket && (tuneDraft.rules === "fragility" || tuneDraft.rules === "free");
+  if (mixed) {
     const want = pickupCount * perPickup + protectedCount * perProtected;
     if (squares + circles !== want) {
       issues.push(`Packages must total pickups × per + protected × per = ${want} (now ${squares + circles})`);
@@ -4011,15 +4104,18 @@ function parseTuneDraft() {
       issues.push(`Circles must total protected × per protected = ${protectedCount * perProtected} (now ${circles})`);
     }
   }
-  const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
   if (ticket) {
-    // Letters are dealt evenly over the orange packages — unless Choosing is
-    // on, where the packages stay blank and any orange count goes.
-    if (!tuneDraft.choosing && (protectedCount > 0 ? orange % protectedCount !== 0 : orange !== 0)) {
-      issues.push(`Orange must divide evenly by protected locations (now ${orange} ÷ ${protectedCount})`);
+    // Letters are dealt evenly over the blue packages — unless Choosing is
+    // on, where the packages stay blank and any blue count goes.
+    const blue = packages["#4a72b0"].square + packages["#4a72b0"].circle;
+    if (!tuneDraft.choosing && (protectedCount > 0 ? blue % protectedCount !== 0 : blue !== 0)) {
+      issues.push(`Blue (letters) must divide evenly by protected locations (now ${blue} ÷ ${protectedCount})`);
     }
-  } else if (orange !== protectedCount * 2) {
-    issues.push(`Orange must total protected × 2 = ${protectedCount * 2} (now ${orange})`);
+  } else {
+    const orange = packages["#e08a3c"].square + packages["#e08a3c"].circle;
+    if (orange !== protectedCount * 2) {
+      issues.push(`Orange must total protected × 2 = ${protectedCount * 2} (now ${orange})`);
+    }
   }
 
   // Dropoffs: each number in a color's list is one dropoff building with that
@@ -4028,10 +4124,11 @@ function parseTuneDraft() {
   TUNE_COLORS.forEach(([hex, name]) => {
     const nums = (tuneDraft.dropoffs[hex] ?? "")
       .split(",").map((s) => s.trim()).filter((s) => s !== "").map(Number);
+    dropoffs[hex] = nums;
+    if (freeRules && hex === "#8f6b52") return; // kept, but out of the checks
     if (nums.length > 8 || nums.some((n) => !Number.isInteger(n) || n < 1 || n > 90)) {
       issues.push(`${name} dropoffs: comma-separated whole numbers (1–90)`);
     }
-    dropoffs[hex] = nums;
     const total = packages[hex].square + packages[hex].circle;
     const sum = nums.reduce((a, b) => a + (Number.isInteger(b) ? b : 0), 0);
     if (sum !== total) issues.push(`${name} dropoffs must sum to its ${total} packages (now ${sum})`);
@@ -4083,14 +4180,18 @@ function parseTuneDraft() {
   };
   const pawnCosts = stepCosts(tuneDraft.pawnCosts, "Pawn shop prices");
   const courtCosts = stepCosts(tuneDraft.courtCosts, "Courthouse prices");
+  const keepGoingCostVal = intField(tuneDraft.keepGoingCost, "Keep going cost", 0, 40);
 
   return {
     settings: {
       ...shared,
       mode: "tickets",
       suspension: !!tuneDraft.suspension,
-      fragility: !!tuneDraft.fragility,
+      fragility: tuneDraft.rules === "fragility",
+      free: tuneDraft.rules === "free",
       choosing: !!tuneDraft.choosing,
+      keepGoing: !!tuneDraft.keepGoing,
+      keepGoingCost: keepGoingCostVal,
       startingMoney, columnsToWin, ticketLocations,
       visibleTickets, lettersToWin, intersections,
       tickets: { perFail },
@@ -4114,7 +4215,9 @@ function tuneField(value, onInput, cls = "tm-tune-input") {
 }
 
 // Per-color and grand package totals from the draft (0 for junk input).
+// Under Free rules brown sits out of the grand totals — it isn't in the game.
 function tunePackageTotals() {
+  const freeRules = tuneDraft.mode === "tickets" && tuneDraft.rules === "free";
   let squares = 0;
   let circles = 0;
   const rows = {};
@@ -4122,6 +4225,7 @@ function tunePackageTotals() {
     const sq = Number(tuneDraft.packages[hex].square) || 0;
     const ci = Number(tuneDraft.packages[hex].circle) || 0;
     rows[hex] = sq + ci;
+    if (freeRules && hex === "#8f6b52") return;
     squares += sq;
     circles += ci;
   });
@@ -4146,8 +4250,9 @@ function updateTuneStatus() {
         .split(",").map((s) => s.trim()).filter((s) => s !== "")
         .reduce((a, s) => a + (Number.isInteger(Number(s)) ? Number(s) : 0), 0);
       const need = totals.rows[hex] ?? 0;
+      const ignored = tuneDraft.mode === "tickets" && tuneDraft.rules === "free" && hex === "#8f6b52";
       el.textContent = `${sum}/${need}`;
-      el.classList.toggle("tm-tune-bad", sum !== need);
+      el.classList.toggle("tm-tune-bad", !ignored && sum !== need);
     }
   });
   const { issues } = parseTuneDraft();
@@ -4178,7 +4283,7 @@ function renderTuning() {
   const title = document.createElement("div");
   title.className = "tm-tune-title";
   title.textContent = tuneDraft.mode === "tickets"
-    ? `Game tuning — ${tuneDraft.fragility ? "Fragility" : "Ticket mode"}${tuneDraft.suspension ? " · Suspension" : ""}${tuneDraft.choosing ? " · Choosing" : ""}`
+    ? `Game tuning — ${tuneDraft.rules === "free" ? "Free" : tuneDraft.rules === "fragility" ? "Fragility" : "Variety"}${tuneDraft.suspension ? " · Suspension" : ""}${tuneDraft.choosing ? " · Choosing" : ""}${tuneDraft.keepGoing ? " · Keep going" : ""}`
     : "Game tuning — Point mode";
   panel.appendChild(title);
 
@@ -4200,9 +4305,19 @@ function renderTuning() {
     return r;
   };
 
+  // Free rules: brown isn't in the game — its rows stay visible (the numbers
+  // are kept in the saved version) but grey out and sit out of the math.
+  const freeRules = tuneDraft.mode === "tickets" && tuneDraft.rules === "free";
+  const offRow = (r) => {
+    r.classList.add("tm-tune-off");
+    r.title = "Free rules: brown isn't in the game — kept, but ignored";
+    r.querySelectorAll("input").forEach((i) => { i.disabled = true; });
+  };
+
   section("Board columns (first = start; count = column length)");
   tuneColumns().forEach(([id, label]) => {
-    row(label, tuneField(tuneDraft.columns[id], (v) => { tuneDraft.columns[id] = v; }, "tm-tune-input tm-tune-list"));
+    const r = row(label, tuneField(tuneDraft.columns[id], (v) => { tuneDraft.columns[id] = v; }, "tm-tune-input tm-tune-list"));
+    if (freeRules && id === "variety") offRow(r);
   });
 
   // A little live total that updateTuneStatus keeps current.
@@ -4222,15 +4337,17 @@ function renderTuning() {
     dot.className = "tm-tune-dot";
     dot.style.background = hex;
     r.insertBefore(dot, r.firstChild);
+    if (freeRules && hex === "#8f6b52") offRow(r);
   });
   {
     const r = row("Totals", totalSpan("squares"), totalSpan("circles"), totalSpan("all"));
     r.classList.add("tm-tune-totals");
   }
 
-  // Fragility deals every location from one mixed bag, so the per-location
-  // counts aren't shape-bound there.
-  const frag = tuneDraft.mode === "tickets" && !!tuneDraft.fragility;
+  // Fragility/Free deal every location from one mixed bag, so the
+  // per-location counts aren't shape-bound there.
+  const frag = tuneDraft.mode === "tickets" &&
+    (tuneDraft.rules === "fragility" || tuneDraft.rules === "free");
   section("Pickup locations");
   row("Normal pickups", tuneField(tuneDraft.pickupCount, (v) => { tuneDraft.pickupCount = v; }, "tm-tune-input tm-tune-num"));
   row(frag ? "Packages per normal" : "Squares per normal", tuneField(tuneDraft.perPickup, (v) => { tuneDraft.perPickup = v; }, "tm-tune-input tm-tune-num"));
@@ -4246,6 +4363,7 @@ function renderTuning() {
     dot.className = "tm-tune-dot";
     dot.style.background = hex;
     r.insertBefore(dot, r.firstChild);
+    if (freeRules && hex === "#8f6b52") offRow(r);
   });
 
   section("Setup");
@@ -4254,21 +4372,54 @@ function renderTuning() {
   if (tuneDraft.mode === "tickets") {
     row("Starting money", tuneField(tuneDraft.startingMoney, (v) => { tuneDraft.startingMoney = v; }, "tm-tune-input tm-tune-num"));
     row("Columns to win", tuneField(tuneDraft.columnsToWin, (v) => { tuneDraft.columnsToWin = v; }, "tm-tune-input tm-tune-num"));
-    // Choosing: orange packages carry no letters — orange is a real 0/1
-    // column (the Letters list above) and each 1 step grants a free pick of
-    // any locked location, clicked on the board.
-    {
+
+    // The rule dials — saved with (and applied by) each settings version,
+    // exactly like Choosing always was.
+    section("Rules");
+    const check = (checked, title, onChange) => {
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.className = "tm-tune-check";
-      cb.checked = !!tuneDraft.choosing;
-      cb.title = "Orange becomes a 0/1 column (see Letters above); 1 steps let you click any locked location to unlock it";
+      cb.checked = checked;
+      cb.title = title;
       cb.addEventListener("change", () => {
-        tuneDraft.choosing = cb.checked;
+        onChange(cb.checked);
         updateTuneStatus();
       });
-      row("Choosing (pick locations)", cb);
+      return cb;
+    };
+    {
+      const sel = document.createElement("select");
+      sel.className = "tm-special-select";
+      sel.title = "Variety: classic distinct-colors cargo rule (brown advances it). Fragility: circles are fragile — any mix goes, the Fragile column caps circles, fragile deliveries pay stones or money. Free: no cargo rule at all — brown is out of the game entirely (no column, packages or dropoffs), circles are plain packages, and each turn opens with a pick of time stones or money.";
+      [["variety", "Variety"], ["fragility", "Fragility"], ["free", "Free"]].forEach(([v, label]) => {
+        const opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = label;
+        sel.appendChild(opt);
+      });
+      sel.value = tuneDraft.rules ?? "variety";
+      sel.addEventListener("change", () => {
+        tuneDraft.rules = sel.value;
+        renderTuning(); // labels + the greyed-out brown rows follow the rules
+      });
+      row("Rules", sel);
     }
+    row("Suspension", check(!!tuneDraft.suspension,
+      "Face-down tickets block pickups & dropoffs for the whole turn",
+      (v) => { tuneDraft.suspension = v; }));
+    // Choosing: blue packages carry no letters — letters is a real 0/1
+    // column (the Letters list above) and each 1 step grants a free pick of
+    // any locked location, clicked on the board.
+    row("Choosing (pick locations)", check(!!tuneDraft.choosing,
+      "Blue becomes a 0/1 column (see Letters above); 1 steps let you click any locked location to unlock it",
+      (v) => { tuneDraft.choosing = v; }));
+    row("Keep going", check(!!tuneDraft.keepGoing,
+      "After a terminal stop, pay time stones to keep moving (and change time again). Removes both drive-by abilities from the game.",
+      (v) => { tuneDraft.keepGoing = v; }));
+    row("Keep going cost", tuneField(tuneDraft.keepGoingCost, (v) => { tuneDraft.keepGoingCost = v; }, "tm-tune-input tm-tune-num"));
+
+    section("Win & tickets");
     row("Letters to win", tuneField(tuneDraft.lettersToWin, (v) => { tuneDraft.lettersToWin = v; }, "tm-tune-input tm-tune-num"));
     row("Ticket locations", tuneField(tuneDraft.ticketLocations, (v) => { tuneDraft.ticketLocations = v; }, "tm-tune-input tm-tune-num"));
     row("Visible tickets", tuneField(tuneDraft.visibleTickets, (v) => { tuneDraft.visibleTickets = v; }, "tm-tune-input tm-tune-num"));
@@ -4326,9 +4477,10 @@ function renderTuning() {
     items: savedSettingsList.map((s) => ({
       ...s,
       hint: [
-        s.mode === "tickets" ? (s.fragility ? "Fragility" : "Variety") : "Points",
+        s.mode === "tickets" ? (s.free ? "Free" : s.fragility ? "Fragility" : "Variety") : "Points",
         s.suspension ? "Susp." : null,
         s.choosing ? "Choose" : null,
+        s.keepGoing ? "KeepGo" : null,
         s.mapId ? `🗺 ${savedMaps.find((m) => m.id === s.mapId)?.name ?? "?"}` : null
       ].filter(Boolean).join(" · ")
     })),
@@ -4521,8 +4673,9 @@ function renderControls() {
     openBtn.title = "Show controls";
     els.hand.appendChild(openBtn);
     els.hand.appendChild(skipTurnButton());
+    els.hand.appendChild(keepGoingButton());
     const endBtn = button(endTurnLabel(), "endturn", "primary-btn tm-end-turn");
-    endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+    endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping || startPickPending();
     els.hand.appendChild(endBtn);
     return;
   }
@@ -4624,48 +4777,8 @@ function renderControls() {
   els.hand.appendChild(button("Edit map", "edit"));
   els.hand.appendChild(button("Tuning", "tuning"));
 
-  // The rule dials (ticket play is a given now; point mode still exists but
-  // isn't offered here): Suspension on/off — face-down tickets ground your
-  // pickups & dropoffs — and Variety vs Fragility. Variety is the classic
-  // distinct-colors cargo rule; Fragility makes circles fragile packages:
-  // any cargo mix goes, the Fragile column caps circles aboard, and each
-  // fragile delivery pays a choice of time stones or money.
-  const ruleSelect = (labelText, options, current, title, onPick) => {
-    const wrap = document.createElement("label");
-    wrap.className = "tm-mode-wrap";
-    wrap.textContent = labelText;
-    const sel = document.createElement("select");
-    sel.className = "tm-mode-select";
-    sel.title = title;
-    options.forEach(([v, label]) => {
-      const opt = document.createElement("option");
-      opt.value = v;
-      opt.textContent = label;
-      if (current === v) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    sel.addEventListener("change", () => onPick(sel.value));
-    wrap.appendChild(sel);
-    els.hand.appendChild(wrap);
-  };
-  const emitRules = (susp, frag) => {
-    if (!app.roomId) return;
-    socket.emit("truck_mania_set_rules", { roomId: app.roomId, suspension: susp, fragility: frag });
-  };
-  ruleSelect(
-    "Suspension",
-    [["off", "Off"], ["on", "On"]],
-    isSuspensionMode() ? "on" : "off",
-    "Face-down tickets block pickups & dropoffs for the whole turn",
-    (v) => emitRules(v === "on", isFragilityMode())
-  );
-  ruleSelect(
-    "Rules",
-    [["variety", "Variety"], ["fragility", "Fragility"]],
-    isFragilityMode() ? "fragility" : "variety",
-    "Variety: classic distinct-colors cargo rule. Fragility: circles are fragile — any mix goes, fragile capacity caps circles, and fragile deliveries pay stones or money.",
-    (v) => emitRules(isSuspensionMode(), v === "fragility")
-  );
+  // The rule dials (Suspension, Variety/Fragility/Free, Keep going) live in
+  // the Tuning panel now — they're part of each saved settings version.
 
   // AI opponents (0 up to the free seats: 3 solo, 2 with two humans).
   // Re-deals the board when changed.
@@ -4719,9 +4832,10 @@ function renderControls() {
   els.hand.appendChild(speedWrap);
 
   els.hand.appendChild(skipTurnButton());
+  els.hand.appendChild(keepGoingButton());
 
   const endBtn = button(endTurnLabel(), "endturn", "primary-btn tm-end-turn");
-  endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+  endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping || startPickPending();
   els.hand.appendChild(endBtn);
 
   const minBtn = button("⌄", "togglebar");
@@ -4740,7 +4854,7 @@ function endTurnLabel() {
 // yet — no move, pickup, dropoff, steal or special-building use. Changing the
 // clock doesn't disqualify it. Pays BOTH the time-stone and money column values.
 function canSkipTurn() {
-  return isTicketMode() && isMyTurn() && winnerState == null &&
+  return isTicketMode() && isMyTurn() && winnerState == null && !startPickPending() &&
     turnTruck == null && !turnStolen && !turnActed && dicePoolState === 0;
 }
 
@@ -4758,6 +4872,21 @@ function skipTurnButton() {
   return btn;
 }
 
+// Keep going (when the option is on): after movement has ended at a terminal
+// stop, pay time stones to reopen movement — and another time change.
+function canKeepGoing() {
+  return keepGoingEnabled() && isMyTurn() && winnerState == null && turnActed &&
+    (myPlayer()?.timeStones ?? 0) >= keepGoingCost();
+}
+
+function keepGoingButton() {
+  const btn = button(`Keep going · −${keepGoingCost()}⬟`, "keepgoing", "ghost-btn tm-keep-going");
+  btn.title = "Pay time stones to keep moving (and change time again) this turn";
+  btn.style.display = canKeepGoing() ? "" : "none";
+  btn.disabled = anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+  return btn;
+}
+
 // Light refresh of just the End-turn button's enabled state (called on every
 // state update, without rebuilding the whole control bar). Also disabled while
 // any truck is mid-drive or the clock is mid-flip, so a turn can't end before
@@ -4765,7 +4894,7 @@ function skipTurnButton() {
 function updateTurnControls() {
   const btn = els.hand.querySelector(".tm-end-turn");
   if (btn) {
-    btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+    btn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping || startPickPending();
     btn.textContent = endTurnLabel();
   }
   // The Skip offer disappears the moment the turn's first move/action lands.
@@ -4774,6 +4903,13 @@ function updateTurnControls() {
     skip.style.display = canSkipTurn() ? "" : "none";
     skip.disabled = anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
     skip.textContent = skipTurnLabel();
+  }
+  // Keep going appears only once movement has ended (and it's affordable).
+  const kg = els.hand.querySelector(".tm-keep-going");
+  if (kg) {
+    kg.style.display = canKeepGoing() ? "" : "none";
+    kg.disabled = anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
+    kg.textContent = `Keep going · −${keepGoingCost()}⬟`;
   }
 }
 
@@ -4821,6 +4957,9 @@ els.hand.addEventListener("click", (event) => {
       break;
     case "skipturn":
       socket.emit("truck_mania_skip_turn", { roomId: app.roomId });
+      break;
+    case "keepgoing":
+      socket.emit("truck_mania_keep_going", { roomId: app.roomId });
       break;
     case "routemode":
       moveMode = moveMode === "build" ? "auto" : "build";
@@ -4905,6 +5044,7 @@ export const truckMania = {
     turnActed = !!tm.turnState?.acted;
     turnStolen = !!tm.turnState?.stolen;
     turnChangedTime = !!tm.turnState?.changedTime;
+    turnStartChoice = tm.turnState?.startChoice ?? null;
     turnTruck = tm.turnState?.truck ?? null;
     stealVictimId = tm.turnState?.stealVictim ?? null;
     turnPickups = tm.turnState?.pickups ?? [];
@@ -5000,6 +5140,7 @@ export const truckMania = {
       renderSpecialPanel();
       renderFragileBonus();
       renderPickPrompt();
+      renderStartPick();
       updateTurnControls(); // reflect turn/steal state on the End-turn button
       if (lastTurnSeen !== null && lastTurnSeen !== turnWhose && winnerState == null) {
         showTurnToast();
@@ -5043,7 +5184,9 @@ export const truckMania = {
       const columnsDone = isTicketMode() && me &&
         completedColumnsOf(me) >= (settingsState?.columnsToWin ?? 3);
       els.turnStatus.textContent = isMyTurn()
-        ? (amSuspended()
+        ? (startPickPending()
+          ? "Your turn — collect time stones or money first (Free rules)"
+          : amSuspended()
           ? "Your turn — 🚫 suspended: face-down tickets block pickups & dropoffs"
           : columnsDone && ticketsLeft > 0
             ? `Your turn — ✓ columns done, clear your ${ticketsLeft} 🎫 to win`
@@ -5081,6 +5224,7 @@ export const truckMania = {
     turnActed = false;
     turnStolen = false;
     turnChangedTime = false;
+    turnStartChoice = null;
     turnTruck = null;
     selectedTruckId = 0;
     stealVictimId = null;

@@ -65,6 +65,15 @@
           4,
           5,
           6
+        ],
+        "letters": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
         ]
       },
       "packages": {
@@ -167,7 +176,11 @@
       "visibleTickets": 3,
       "lettersToWin": 5,
       "suspension": false,
-      "fragility": false
+      "fragility": false,
+      "free": false,
+      "choosing": false,
+      "keepGoing": false,
+      "keepGoingCost": 3
     }
   },
   {
@@ -236,6 +249,15 @@
           4,
           5,
           6
+        ],
+        "letters": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
         ]
       },
       "packages": {
@@ -340,7 +362,11 @@
         "red": 2
       },
       "suspension": false,
-      "fragility": false
+      "fragility": false,
+      "free": false,
+      "choosing": false,
+      "keepGoing": false,
+      "keepGoingCost": 3
     }
   },
   {
@@ -409,6 +435,15 @@
           4,
           5,
           6
+        ],
+        "letters": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
         ]
       },
       "packages": {
@@ -513,7 +548,11 @@
         "red": 2
       },
       "suspension": false,
-      "fragility": false
+      "fragility": false,
+      "free": false,
+      "choosing": false,
+      "keepGoing": false,
+      "keepGoingCost": 3
     }
   },
   {
@@ -586,6 +625,15 @@
           6,
           7,
           8
+        ],
+        "letters": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
         ]
       },
       "packages": {
@@ -688,7 +736,11 @@
       "blankLights": {
         "green": 5,
         "red": 2
-      }
+      },
+      "free": false,
+      "choosing": false,
+      "keepGoing": false,
+      "keepGoingCost": 3
     }
   },
   {
@@ -761,6 +813,15 @@
           6,
           7,
           8
+        ],
+        "letters": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
         ]
       },
       "packages": {
@@ -861,7 +922,11 @@
       "blankLights": {
         "green": 5,
         "red": 2
-      }
+      },
+      "free": false,
+      "choosing": false,
+      "keepGoing": false,
+      "keepGoingCost": 3
     }
   },
   {
@@ -934,6 +999,15 @@
           6,
           7,
           8
+        ],
+        "letters": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
         ]
       },
       "packages": {
@@ -1002,6 +1076,203 @@
         ]
       },
       "startingMoney": 3,
+      "columnsToWin": 3,
+      "ticketLocations": 12,
+      "visibleTickets": 4,
+      "lettersToWin": 5,
+      "intersections": 31,
+      "tickets": {
+        "perFail": 1
+      },
+      "abilityCosts": {
+        "uturn": 3,
+        "drive-by-pickup": 4,
+        "drive-by-dropoff": 4,
+        "cheap-time": 4,
+        "day-theft": 5,
+        "time-lord": 5,
+        "free-parking": 6,
+        "reverse-time": 3,
+        "extra-truck": 8
+      },
+      "pawnCosts": [
+        2,
+        5,
+        9
+      ],
+      "courtCosts": [
+        2,
+        5,
+        9
+      ],
+      "blankLights": {
+        "green": 5,
+        "red": 2
+      },
+      "free": false,
+      "choosing": false,
+      "keepGoing": false,
+      "keepGoingCost": 3
+    }
+  },
+  {
+    "id": "s1784126282203307",
+    "name": "Free 1",
+    "mapId": null,
+    "settings": {
+      "mode": "tickets",
+      "suspension": true,
+      "fragility": false,
+      "free": true,
+      "choosing": true,
+      "keepGoing": true,
+      "keepGoingCost": 4,
+      "columns": {
+        "capacity": [
+          2,
+          3,
+          4,
+          4,
+          5,
+          5,
+          6,
+          6
+        ],
+        "variety": [
+          1,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5
+        ],
+        "fragile": [
+          1,
+          1,
+          2,
+          2,
+          3,
+          3,
+          4
+        ],
+        "aversion": [
+          1,
+          2,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5
+        ],
+        "agression": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "timestones": [
+          3,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7,
+          7
+        ],
+        "money": [
+          1,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5,
+          5
+        ],
+        "letters": [
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          0,
+          1
+        ]
+      },
+      "packages": {
+        "#cf4a3c": {
+          "square": 16,
+          "circle": 4
+        },
+        "#e08a3c": {
+          "square": 16,
+          "circle": 4
+        },
+        "#e8c33c": {
+          "square": 16,
+          "circle": 4
+        },
+        "#4f9d57": {
+          "square": 16,
+          "circle": 4
+        },
+        "#4a72b0": {
+          "square": 16,
+          "circle": 4
+        },
+        "#8a5bb0": {
+          "square": 16,
+          "circle": 4
+        },
+        "#8f6b52": {
+          "square": 13,
+          "circle": 7
+        }
+      },
+      "protectedCount": 5,
+      "startingTimeStones": 6,
+      "pickupCount": 10,
+      "perPickup": 8,
+      "perProtected": 8,
+      "dropoffs": {
+        "#cf4a3c": [
+          12,
+          8
+        ],
+        "#e08a3c": [
+          12,
+          8
+        ],
+        "#e8c33c": [
+          12,
+          8
+        ],
+        "#4f9d57": [
+          12,
+          8
+        ],
+        "#4a72b0": [
+          12,
+          8
+        ],
+        "#8a5bb0": [
+          12,
+          8
+        ],
+        "#8f6b52": [
+          12,
+          8
+        ]
+      },
+      "startingMoney": 2,
       "columnsToWin": 3,
       "ticketLocations": 12,
       "visibleTickets": 4,

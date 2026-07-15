@@ -36,8 +36,9 @@
 
 /* Protected locations: dark outline + lettered badge. Ones the local player
    hasn't unlocked yet (.tm-locked, kept current by renderProtectedLocks) read
-   shut: black border + darker grey inside; unlocking fades the fill back to
-   the normal pickup grey. */
+   shut: a fat black border growing OUTWARDS (paint-order tucks the inner half
+   of the stroke under the fill) around a much darker grey; unlocking fades the
+   fill back to the normal (light) pickup grey. */
 
 .tm-building polygon.tm-protected,
 .tm-building rect.tm-protected {
@@ -48,8 +49,21 @@
 
 .tm-building.tm-locked polygon.tm-protected,
 .tm-building.tm-locked rect.tm-protected {
-  fill: #878d95;
+  fill: #62686f;
   stroke: #07090c;
+  stroke-width: 8;
+  paint-order: stroke;
+}
+
+/* Off-limit locations show their letter bigger, so the lock reads at a glance. */
+.tm-loc-letter {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform calc(0.5s / var(--tm-mult, 1)) ease;
+}
+
+.tm-building.tm-locked .tm-loc-letter {
+  transform: scale(1.5);
 }
 
 /* Choosing: a pick is owed — the locked locations glow as click targets. */
@@ -1611,6 +1625,12 @@
   color: #7bd88f;
 }
 
+/* An ability already bought by a rival — each is a single card. */
+.tm-special-taken {
+  color: #cf6a5c;
+  text-decoration: line-through;
+}
+
 .tm-special-row {
   display: flex;
   align-items: center;
@@ -1647,6 +1667,15 @@
   border-color: rgba(74, 114, 176, 0.55);
 }
 
+/* Free rules: the forced turn-opening stones-or-money pick — same slot as
+   the fragile prompt (the two rule sets never run together). */
+
+.tm-start-pick {
+  right: calc(clamp(150px, 17vw, 210px) + 52px + 212px);
+  width: 180px;
+  border-color: rgba(255, 225, 122, 0.6);
+}
+
 /* Rule/map hints on saved-settings rows */
 
 .tm-saved-hint {
@@ -1658,6 +1687,12 @@
   white-space: nowrap;
   font-size: 10px;
   color: var(--muted, #aeb3ba);
+}
+
+/* Free rules: brown's tuning rows stay visible but sit out of the game. */
+
+.tm-tune-off {
+  opacity: 0.35;
 }
 
 /* The attached-map picker in the tuning panel */
