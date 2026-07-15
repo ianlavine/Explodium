@@ -1485,6 +1485,20 @@
   user-select: none;
 }
 
+/* Timed packages: the clock-face number stamped on a circle. Light stroke
+   so it reads against the parcel color at any tiny size. */
+.tm-pkg-time {
+  fill: #fff;
+  stroke: #1c222b;
+  stroke-width: 0.5;
+  paint-order: stroke;
+  font-weight: 900;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Dice banked this turn (rolled at turn end), shown beside the clock */
 
 .tm-pool-tag {

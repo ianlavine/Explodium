@@ -130,6 +130,29 @@ function keepGoingCost() {
   return settingsState?.keepGoingCost ?? 3;
 }
 
+// Timed packages (ticket mode option): every circle carries a clock-face
+// number and only drops off when the clock reads it ±1 (AM/PM agnostic; 12
+// wraps to 1). Day only activities: the special buildings close at night.
+function isTimedMode() {
+  return isTicketMode() && !!settingsState?.timedPackages;
+}
+
+function dayOnlyActivities() {
+  return isTicketMode() && !!settingsState?.dayOnlyActivities;
+}
+
+// Circular distance between two clock-face numbers (1–12): 12 and 1 are 1
+// apart. Mirrors the server so we never animate a doomed timed dropoff.
+function faceGap(a, b) {
+  const d = Math.abs(a - b) % 12;
+  return Math.min(d, 12 - d);
+}
+
+function timedDropoffOk(pkg) {
+  if (!isTimedMode() || pkg?.shape !== "circle" || pkg.time == null) return true;
+  return faceGap(hourState ?? 12, pkg.time) <= 1;
+}
+
 // Free rules: is my turn stuck waiting on the opening stones-or-money pick?
 function startPickPending() {
   return isFreeMode() && isMyTurn() && winnerState == null && !turnStartChoice;
@@ -1769,17 +1792,27 @@ function renderBuildPanel() {
 }
 
 // A parcel: a filled square or circle with a dark outline. Used on buildings,
-// in the dock, and for the fly animation. Ticket-mode orange packages carry a
-// letter — drawn on top when given.
-function drawPackage(parent, shape, color, cx, cy, size, letter) {
+// in the dock, and for the fly animation. Ticket-mode blue packages carry a
+// letter; with Timed packages on, circles carry a clock-face number. Both are
+// drawn on top when given — split vertically on the rare parcel that has both.
+function drawPackage(parent, shape, color, cx, cy, size, letter, time) {
   const el = shape === "circle"
     ? svgEl("circle", { cx, cy, r: size / 2, fill: color, class: "tm-pkg-shape" }, parent)
     : svgEl("rect", { x: cx - size / 2, y: cy - size / 2, width: size, height: size, rx: 1.5, fill: color, class: "tm-pkg-shape" }, parent);
+  const both = letter && time != null;
   if (letter) {
     const t = svgEl("text", {
-      x: cx, y: cy, class: "tm-pkg-letter", "font-size": Math.max(4, size * 0.62)
+      x: cx, y: both ? cy - size * 0.26 : cy,
+      class: "tm-pkg-letter", "font-size": Math.max(4, size * (both ? 0.5 : 0.62))
     }, parent);
     t.textContent = letter;
+  }
+  if (time != null) {
+    const t = svgEl("text", {
+      x: cx, y: both ? cy + size * 0.28 : cy,
+      class: "tm-pkg-time", "font-size": Math.max(4, size * (both ? 0.5 : 0.66))
+    }, parent);
+    t.textContent = String(time);
   }
   return el;
 }
@@ -1813,7 +1846,7 @@ function renderCargo(id) {
     if (animatingPkgs.has(pkg.id)) return;
     const [lx, ly] = dockSlotLocal(slot);
     slot += 1;
-    const shape = drawPackage(layer, pkg.shape, pkg.color, lx, ly, CARGO_SIZE, pkg.letter);
+    const shape = drawPackage(layer, pkg.shape, pkg.color, lx, ly, CARGO_SIZE, pkg.letter, pkg.time);
     shape.classList.add("tm-pkg-cargo");
     shape.setAttribute("data-pkg", pkg.id);
     shape.setAttribute("data-truck", id);
@@ -2175,7 +2208,7 @@ function drawBuildingPackages(layer) {
         const [px, py] = bldPkgSlot(cx, cy, i);
         pkgPos[pkg.id] = [px, py];
         const g = svgEl("g", { class: "tm-pkg tm-pkg-building", "data-pkg": pkg.id, "data-bid": b.bid }, layer);
-        drawPackage(g, pkg.shape, pkg.color, px, py, BLD_PKG_SIZE, pkg.letter);
+        drawPackage(g, pkg.shape, pkg.color, px, py, BLD_PKG_SIZE, pkg.letter, pkg.time);
       });
     });
   });
@@ -2212,7 +2245,7 @@ function usableBids() {
 }
 
 // Temp parcel that flies from `from` to `to`, then runs onDone.
-function flyPackage(shape, color, from, to, onDone, letter) {
+function flyPackage(shape, color, from, to, onDone, letter, time) {
   const svg = els.gameBoard.querySelector(".tm-map");
   if (!svg) {
     onDone?.();
@@ -2221,7 +2254,7 @@ function flyPackage(shape, color, from, to, onDone, letter) {
   let layer = svg.querySelector(".tm-fly");
   if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
   const g = svgEl("g", {}, layer);
-  drawPackage(g, shape, color, 0, 0, CARGO_SIZE + 1, letter);
+  drawPackage(g, shape, color, 0, 0, CARGO_SIZE + 1, letter, time);
   const dur = 360 / speedMult;
   const start = performance.now();
   const step = (now) => {
@@ -2289,7 +2322,7 @@ function attemptPickup(pkgId, bid) {
     animatingPkgs.delete(pkgId);
     renderCargo(truck.id);
     renderBuildingPackagesRefresh();
-  }, pkg.letter);
+  }, pkg.letter, pkg.time);
 }
 
 // Fly a parcel to the dropoff slot, then flip it over to its black side —
@@ -2303,7 +2336,7 @@ function animateDropoff(pkg, from, to, onDone) {
   let layer = svg.querySelector(".tm-fly");
   if (!layer) layer = svgEl("g", { class: "tm-fly" }, svg);
   const g = svgEl("g", {}, layer);
-  const shapeEl = drawPackage(g, pkg.shape, pkg.color, 0, 0, BLD_PKG_SIZE, pkg.letter);
+  const shapeEl = drawPackage(g, pkg.shape, pkg.color, 0, 0, BLD_PKG_SIZE, pkg.letter, pkg.time);
   const flyDur = 360 / speedMult;
   const flipDur = 300 / speedMult;
   const start = performance.now();
@@ -2338,6 +2371,7 @@ function attemptDropoff(pkgId) {
   if (amSuspended()) return false; // face-down tickets ground package work
   const pkg = truck.cargo?.find((p) => p.id === pkgId);
   if (!pkg) return false;
+  if (!timedDropoffOk(pkg)) return false; // timed circle, wrong clock hour
   const building = usableBuildingsClient().find((b) =>
     b.role === "dropoff" && b.dropoffColor === pkg.color &&
     (b.delivered?.length ?? 0) < (b.dropoffLimit ?? Infinity));
@@ -2379,7 +2413,7 @@ function attemptPutback(pkgId) {
     animatingPkgs.delete(pkgId);
     renderCargo(truck.id);
     renderBuildingPackagesRefresh();
-  }, pkg.letter);
+  }, pkg.letter, pkg.time);
 }
 
 // Snapshot where every package currently lives, so the next state can be diffed
@@ -2465,7 +2499,7 @@ function runPkgFlies(events) {
           animatingPkgs.delete(e.pkg.id);
           renderCargo(e.truckId);
           renderBuildingPackagesRefresh();
-        }, e.pkg.letter);
+        }, e.pkg.letter, e.pkg.time);
       } else {
         const tp = truckPos[e.truckId] || { x: 0, y: 0 };
         const [cx, cy] = b ? buildingCentroid(b) : [0, 0];
@@ -2966,6 +3000,7 @@ const TRACK_LABELS = {
 function specialBuildingHere() {
   if (!isTicketMode() || !isMyTurn() || winnerState != null || !mapState) return null;
   if (startPickPending()) return null; // Free rules: the pick comes first
+  if (dayOnlyActivities() && nightState) return null; // shut at night
   const truck = activeTruck();
   if (!truck || truckShares(truck) || truckAnim[truck.id] != null) return null;
   const spot = mapState.spots?.[truck.spot];
@@ -4004,6 +4039,9 @@ function openTuning() {
     tuneDraft.choosing = !!settingsState.choosing;
     tuneDraft.keepGoing = !!settingsState.keepGoing;
     tuneDraft.keepGoingCost = String(settingsState.keepGoingCost ?? 3);
+    tuneDraft.timedPackages = !!settingsState.timedPackages;
+    tuneDraft.timedReward = String(settingsState.timedReward ?? 2);
+    tuneDraft.dayOnlyActivities = !!settingsState.dayOnlyActivities;
     tuneDraft.startingMoney = String(settingsState.startingMoney ?? 2);
     tuneDraft.columnsToWin = String(settingsState.columnsToWin ?? 3);
     tuneDraft.ticketLocations = String(settingsState.ticketLocations ?? 12);
@@ -4181,6 +4219,7 @@ function parseTuneDraft() {
   const pawnCosts = stepCosts(tuneDraft.pawnCosts, "Pawn shop prices");
   const courtCosts = stepCosts(tuneDraft.courtCosts, "Courthouse prices");
   const keepGoingCostVal = intField(tuneDraft.keepGoingCost, "Keep going cost", 0, 40);
+  const timedRewardVal = intField(tuneDraft.timedReward, "Timed reward", 0, 40);
 
   return {
     settings: {
@@ -4192,6 +4231,9 @@ function parseTuneDraft() {
       choosing: !!tuneDraft.choosing,
       keepGoing: !!tuneDraft.keepGoing,
       keepGoingCost: keepGoingCostVal,
+      timedPackages: !!tuneDraft.timedPackages,
+      timedReward: timedRewardVal,
+      dayOnlyActivities: !!tuneDraft.dayOnlyActivities,
       startingMoney, columnsToWin, ticketLocations,
       visibleTickets, lettersToWin, intersections,
       tickets: { perFail },
@@ -4283,7 +4325,7 @@ function renderTuning() {
   const title = document.createElement("div");
   title.className = "tm-tune-title";
   title.textContent = tuneDraft.mode === "tickets"
-    ? `Game tuning — ${tuneDraft.rules === "free" ? "Free" : tuneDraft.rules === "fragility" ? "Fragility" : "Variety"}${tuneDraft.suspension ? " · Suspension" : ""}${tuneDraft.choosing ? " · Choosing" : ""}${tuneDraft.keepGoing ? " · Keep going" : ""}`
+    ? `Game tuning — ${tuneDraft.rules === "free" ? "Free" : tuneDraft.rules === "fragility" ? "Fragility" : "Variety"}${tuneDraft.suspension ? " · Suspension" : ""}${tuneDraft.choosing ? " · Choosing" : ""}${tuneDraft.keepGoing ? " · Keep going" : ""}${tuneDraft.timedPackages ? " · Timed" : ""}${tuneDraft.dayOnlyActivities ? " · Day only" : ""}`
     : "Game tuning — Point mode";
   panel.appendChild(title);
 
@@ -4418,6 +4460,13 @@ function renderTuning() {
       "After a terminal stop, pay time stones to keep moving (and change time again). Removes both drive-by abilities from the game.",
       (v) => { tuneDraft.keepGoing = v; }));
     row("Keep going cost", tuneField(tuneDraft.keepGoingCost, (v) => { tuneDraft.keepGoingCost = v; }, "tm-tune-input tm-tune-num"));
+    row("Timed packages", check(!!tuneDraft.timedPackages,
+      "Every circle carries a clock-face number (1–12) and only drops off when the clock reads it ±1 (AM/PM agnostic; 12 wraps to 1).",
+      (v) => { tuneDraft.timedPackages = v; }));
+    row("Timed reward (money)", tuneField(tuneDraft.timedReward, (v) => { tuneDraft.timedReward = v; }, "tm-tune-input tm-tune-num"));
+    row("Day only activities", check(!!tuneDraft.dayOnlyActivities,
+      "The mechanic, pawn shop and courthouse can only be used during the day — closed at night.",
+      (v) => { tuneDraft.dayOnlyActivities = v; }));
 
     section("Win & tickets");
     row("Letters to win", tuneField(tuneDraft.lettersToWin, (v) => { tuneDraft.lettersToWin = v; }, "tm-tune-input tm-tune-num"));
@@ -4481,6 +4530,8 @@ function renderTuning() {
         s.suspension ? "Susp." : null,
         s.choosing ? "Choose" : null,
         s.keepGoing ? "KeepGo" : null,
+        s.timedPackages ? "Timed" : null,
+        s.dayOnlyActivities ? "DayOnly" : null,
         s.mapId ? `🗺 ${savedMaps.find((m) => m.id === s.mapId)?.name ?? "?"}` : null
       ].filter(Boolean).join(" · ")
     })),

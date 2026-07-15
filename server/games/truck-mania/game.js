@@ -268,6 +268,15 @@ const BASE_TICKET_SETTINGS = {
   // this turn. While on, the two drive-by abilities are out of the game.
   keepGoing: false,
   keepGoingCost: 3,
+  // Timed packages: every circle package is stamped with a random clock-face
+  // number (1–12) and can only be delivered when the clock reads that number
+  // ±1 (AM/PM agnostic — only the face number matters; 12 wraps to 1).
+  // Delivering one also pays `timedReward` money on top of its usual payout.
+  timedPackages: false,
+  timedReward: 2,
+  // Day only activities: the three special buildings (mechanic / pawn shop /
+  // courthouse) can only be used during the day — closed at night.
+  dayOnlyActivities: false,
   columns: {
     capacity: [2, 3, 4, 5, 6, 7],
     variety: [1, 2, 3, 4, 5, 6],
@@ -348,6 +357,9 @@ function migrateSettings(s) {
     out.choosing ??= false;
     out.keepGoing ??= false;
     out.keepGoingCost ??= 3;
+    out.timedPackages ??= false;
+    out.timedReward ??= 2;
+    out.dayOnlyActivities ??= false;
     (out.columns ??= {}).fragile ??= [1, 2, 3, 4, 5, 6];
     out.columns.letters ??= [0, 1, 1, 1, 1, 1, 1];
     out.blankLights ??= { green: 5, red: 5 };
@@ -514,6 +526,8 @@ function sanitizeTicketSettings(raw) {
   if (!pawnCosts || !courtCosts) return null;
   const keepGoingCost = intIn(raw.keepGoingCost, 0, 40);
   if (keepGoingCost === null) return null;
+  const timedReward = intIn(raw.timedReward, 0, 40);
+  if (timedReward === null) return null;
   const green = intIn(raw.blankLights?.green, 0, 40);
   const red = intIn(raw.blankLights?.red, 0, 40);
   if (green === null || red === null) return null;
@@ -535,6 +549,9 @@ function sanitizeTicketSettings(raw) {
     choosing,
     keepGoing: raw.keepGoing === true,
     keepGoingCost,
+    timedPackages: raw.timedPackages === true,
+    timedReward,
+    dayOnlyActivities: raw.dayOnlyActivities === true,
     columns, packages, protectedCount, startingTimeStones,
     pickupCount, perPickup, perProtected, dropoffs,
     startingMoney, columnsToWin, ticketLocations,
@@ -743,6 +760,13 @@ function assignLocations(map, settings) {
         ...circleBag.map((color) => ({ shape: "circle", color }))
       ])
     : null;
+  // Timed packages: every circle is stamped with a random clock-face number.
+  const timed = ticketMode && settings.timedPackages === true;
+  const makePkg = (shape, color) => {
+    const p = { id: `pkg${pkgSeq++}`, shape, color };
+    if (timed && shape === "circle") p.time = 1 + Math.floor(Math.random() * 12);
+    return p;
+  };
   const perProtected = settings.perProtected ?? (ticketMode ? 8 : 6);
   const perPickup = settings.perPickup ?? 6;
   const wantPickups = settings.protectedCount +
@@ -772,10 +796,10 @@ function assignLocations(map, settings) {
     b.packages = Array.from({ length: b.protected ? perProtected : perPickup }, () => {
       if (mixedShapes) {
         const entry = mixedBag.pop();
-        return entry ? { id: `pkg${pkgSeq++}`, shape: entry.shape, color: entry.color } : null;
+        return entry ? makePkg(entry.shape, entry.color) : null;
       }
       const color = bag.pop();
-      return color ? { id: `pkg${pkgSeq++}`, shape, color } : null;
+      return color ? makePkg(shape, color) : null;
     }).filter(Boolean);
   });
 
@@ -849,7 +873,9 @@ export function createTruckManiaGame({ io, rooms }) {
       fragility: settings?.fragility === true,
       free: settings?.free === true,
       choosing: settings?.choosing === true,
-      keepGoing: settings?.keepGoing === true
+      keepGoing: settings?.keepGoing === true,
+      timedPackages: settings?.timedPackages === true,
+      dayOnlyActivities: settings?.dayOnlyActivities === true
     })),
     canSave: savingEnabled
   });
@@ -869,6 +895,24 @@ export function createTruckManiaGame({ io, rooms }) {
   // Keep going: pay to reopen movement after a terminal stop. While on, the
   // two drive-by abilities are out of the game entirely.
   const keepGoingOn = (room) => isTicket(room) && !!S(room).keepGoing;
+  // Timed packages: circles carry a clock-face number and only drop off when
+  // the clock reads it ±1 (AM/PM agnostic — the face number is all that
+  // matters; 12 wraps to 1). Day only activities: the special buildings close
+  // at night.
+  const isTimed = (room) => isTicket(room) && !!S(room).timedPackages;
+  const dayOnly = (room) => isTicket(room) && !!S(room).dayOnlyActivities;
+  // Circular distance between two clock-face numbers (1–12): 12 and 1 are 1
+  // apart, so an 8 covers 7/8/9 and a 1 covers 12/1/2.
+  const faceGap = (a, b) => {
+    const d = Math.abs(a - b) % 12;
+    return Math.min(d, 12 - d);
+  };
+  const timedDropoffOk = (room, pkg) => {
+    if (!isTimed(room) || pkg?.shape !== "circle" || pkg.time == null) return true;
+    return faceGap(faceHour(room.truckMania.time ?? START_TIME), pkg.time) <= 1;
+  };
+  // The special buildings are shut at night when Day only activities is on.
+  const specialsOpen = (room) => !dayOnly(room) || !isNight(room.truckMania.time ?? START_TIME);
   const abilityBarred = (room, id) =>
     keepGoingOn(room) && (id === "drive-by-pickup" || id === "drive-by-dropoff");
   // One owner per ability: each is a single card in the deck — once bought it
@@ -1184,6 +1228,8 @@ export function createTruckManiaGame({ io, rooms }) {
     const pkg = truck.cargo[idx];
     const player = room.truckMania.players?.[truck.player];
     if (suspended(room, player)) return false;
+    // Timed packages only drop off when the clock reads their number ±1.
+    if (!timedDropoffOk(room, pkg)) return false;
     const building = usableBuildings(room.truckMania.map, truck, player)
       .find((b) => b.role === "dropoff" && b.dropoffColor === pkg.color &&
         (b.delivered?.length ?? 0) < (b.dropoffLimit ?? Infinity));
@@ -1207,6 +1253,11 @@ export function createTruckManiaGame({ io, rooms }) {
         const noPayout = fragility || isFree(room);
         if (fragility && delivered.shape === "circle") {
           grantFragileBonus(room, player);
+        }
+        // Timed packages: delivering one pays its money reward on top of
+        // whatever the delivery does (independent of the rule set).
+        if (isTimed(room) && delivered.shape === "circle" && delivered.time != null) {
+          player.money = (player.money ?? 0) + (S(room).timedReward ?? 2);
         }
         if (col === "letters") {
           if (isChoosing(room)) {
@@ -1741,15 +1792,20 @@ export function createTruckManiaGame({ io, rooms }) {
       const fragility = isFragility(room);
       const free = isFree(room);
       // Fragility: a delivered circle also pays stones or money on top.
+      // Timed packages: a delivered timed circle pays its money reward on top.
       const fragileBonus = fragility && shape === "circle"
         ? 0.15 * Math.max(colValue(room, player, "timestones"), colValue(room, player, "money"))
         : 0;
+      const timedBonus = isTimed(room) && shape === "circle"
+        ? 0.15 * (S(room).timedReward ?? 2)
+        : 0;
+      const extra = fragileBonus + timedBonus;
       // Outside Choosing, letters isn't a numeric column — a delivery just
       // unlocks the printed letter. Under Choosing it falls through and is
       // scored like any other track (its payout being the location picks).
-      if (col === "letters" && !isChoosing(room)) return 1.0 + fragileBonus;
+      if (col === "letters" && !isChoosing(room)) return 1.0 + extra;
       const max = Math.max(1, maxLevel(room, col));
-      if (lvl >= max) return 0.2 + fragileBonus; // column already complete
+      if (lvl >= max) return 0.2 + extra; // column already complete
       let v = 1;
       // Purple/orange pay nothing per upgrade under fragility/free — under
       // fragility only circles do, under free the turn-opening pick does.
@@ -1761,7 +1817,7 @@ export function createTruckManiaGame({ io, rooms }) {
       else if (col === "aversion") v += lvl < 3 ? 0.7 : 0.2;
       else if (col === "agression") v += lvl < 3 ? 0.4 : 0.1;
       v += (lvl / max) * 1.5; // race to top out the column
-      return v + fragileBonus;
+      return v + extra;
     }
     let v = shapePts(room, shape);
     if (col === "timestones") v += 0.25 * colValue(room, player, "timestones");
@@ -1830,7 +1886,10 @@ export function createTruckManiaGame({ io, rooms }) {
     if (b.role !== "dropoff" || suspended(room, player)) return 0;
     const space = (b.dropoffLimit ?? Infinity) - (b.delivered?.length ?? 0);
     if (space <= 0) return 0;
-    const matching = (truck.cargo ?? []).filter((p) => p.color === b.dropoffColor).slice(0, space);
+    // Timed circles that the clock doesn't allow right now can't be delivered
+    // here yet — don't value a trip on them.
+    const matching = (truck.cargo ?? [])
+      .filter((p) => p.color === b.dropoffColor && timedDropoffOk(room, p)).slice(0, space);
     if (!matching.length) return 0;
     let v = 0;
     let pts = 0;
@@ -1854,6 +1913,7 @@ export function createTruckManiaGame({ io, rooms }) {
 
   // Ticket mode: what a special building is worth visiting for right now.
   function specialValue(room, player, b) {
+    if (!specialsOpen(room)) return 0; // Day only activities: shut at night
     if (b.special === "mechanic") {
       const costs = S(room).abilityCosts ?? {};
       const affordable = ABILITY_CARDS.some((id) =>
@@ -2156,8 +2216,8 @@ export function createTruckManiaGame({ io, rooms }) {
 
     // Ticket mode: spend money where it's parked. Mechanic — buy the best
     // affordable abilities; courthouse — pay off visible tickets (1st/2nd/3rd
-    // each at their own price).
-    if (isTicket(room)) {
+    // each at their own price). Day only activities: skip when it's night.
+    if (isTicket(room) && specialsOpen(room)) {
       const here = buildingAtTruck(room, truck);
       if (here?.role === "special" && here.special === "mechanic") {
         const costs = S(room).abilityCosts ?? {};
@@ -2188,7 +2248,10 @@ export function createTruckManiaGame({ io, rooms }) {
     for (const b of buildings) {
       if (b.role !== "dropoff") continue;
       for (let guard = 0; guard < 12; guard += 1) {
-        const pkg = (truck.cargo ?? []).find((p) => p.color === b.dropoffColor);
+        // Skip timed circles the clock doesn't allow yet, so one blocked
+        // package can't stop a deliverable one behind it.
+        const pkg = (truck.cargo ?? [])
+          .find((p) => p.color === b.dropoffColor && timedDropoffOk(room, p));
         if (!pkg || !tryDropoff(room, truck, pkg.id)) break;
       }
     }
@@ -2635,6 +2698,7 @@ export function createTruckManiaGame({ io, rooms }) {
       const specialTruck = (room, seat, truckId, kind) => {
         if (!isTicket(room) || room.truckMania.turn !== seat || room.truckMania.winner != null) return null;
         if (startPickPending(room, seat)) return null;
+        if (!specialsOpen(room)) return null; // Day only activities: shut at night
         const truck = humanTruck(room, seat, truckId);
         if (!truck || sharesSpot(room, truck)) return null;
         const b = buildingAtTruck(room, truck);
