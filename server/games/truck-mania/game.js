@@ -619,6 +619,9 @@ const freshTurnState = () => ({
   pickups: [], driveByPickupBid: null, driveByDropoffBid: null, actedByDrop: false,
   dicePool: 0, pawnUses: 0, courtUses: 0,
   startChoice: null, // Free rules: the turn-opening stones/money pick, once made
+  keptGoing: false, // Keep going: movement was reopened at least once this turn
+  aiLegs: 0, // AI only: keep-going continuations taken this turn (loop guard)
+  aiLockTruck: null, // AI only: once it acts, keep going continues THIS truck
   skipped: false // the turn was sat out for the skip payout
 });
 
@@ -657,11 +660,14 @@ const AI_ABILITY_PREF = [
   "day-theft", "cheap-time", "time-lord", "uturn", "reverse-time"
 ];
 
-// How many stones an AI will spend on one clock flip: whatever it has, up to
-// four hours' worth — dodging a red (and the ticket roll behind it) is almost
-// always worth the stones.
+// How many stones an AI will spend on one clock flip. Stones exist to be
+// spent dodging reds (and the ticket roll behind them), so the budget scales
+// with the pile: a small stash still empties to duck a red, a big stash funds
+// long sweeps rather than sitting idle. Capped at 11 (half the clock).
 function aiTimeBudget(player) {
-  return Math.min(4, player.timeStones ?? 0);
+  const s = player.timeStones ?? 0;
+  if (s <= 0) return 0;
+  return Math.min(11, Math.max(4, Math.floor(s * 0.6)));
 }
 
 const emptyColumns = () => ({
@@ -1548,6 +1554,17 @@ export function createTruckManiaGame({ io, rooms }) {
         room.truckMania.turnState.startChoice = "money";
       }
     }
+    aiRunLeg(roomId, idx);
+  }
+
+  // One move+act leg of an AI turn, timed so each beat waits out the client
+  // animations it triggers. After acting, the AI may pay to Keep going and run
+  // another leg (aiMaybeKeepGoing); otherwise the turn's dice roll and the
+  // hand-off happen. Keep going lets a stone-rich AI chain several stops in a
+  // single turn, the way a human would.
+  function aiRunLeg(roomId, idx) {
+    const room = rooms.get(roomId);
+    if (!room || room.gameId !== "truck-mania") return;
     room.truckMania.clockMs = 0;
     const moved = aiMovePhase(room, idx);
     emitState(roomId, room);
@@ -1578,11 +1595,80 @@ export function createTruckManiaGame({ io, rooms }) {
       aiTimers.set(roomId, setTimeout(() => {
         const r2 = rooms.get(roomId);
         if (!r2 || r2.gameId !== "truck-mania") return;
-        // Ticket mode: the turn's banked dice roll as the turn ends.
+        // Keep going: pay to reopen movement and run another leg when a good
+        // next stop is worth it. Otherwise end the turn (roll the banked dice).
+        if (r2.truckMania.winner == null && aiMaybeKeepGoing(r2, idx)) {
+          emitState(roomId, r2);
+          clearAiTimer(roomId);
+          aiTimers.set(roomId, setTimeout(() => aiRunLeg(roomId, idx), AI_TURN_GAP_MS / roomSpeed(r2)));
+          return;
+        }
         const rollMs = rollTicketDice(r2, idx);
         advanceTurn(roomId, rollMs);
       }, endDelay));
     }, actDelay));
+  }
+
+  // Keep going (AI): once movement has ended, decide whether paying the stone
+  // cost to reopen it is worth it — a worthwhile next stop the acting truck can
+  // reach, especially when the way there is green or a package it's carrying
+  // can be delivered right now. Pays and resets the turn's movement flags when
+  // it commits, so the next leg drives on. Bounded per turn and by a small
+  // stone reserve so the AI never strands itself broke.
+  function aiMaybeKeepGoing(room, idx) {
+    if (!keepGoingOn(room)) return false;
+    const ts = room.truckMania.turnState;
+    // (The AI never sets ts.acted — it acts through the shared core — so the
+    // gate is the skip flag and the per-turn cap, not ts.acted.)
+    if (ts.skipped) return false;
+    if ((ts.aiLegs ?? 0) >= 4) return false; // cap continuations per turn
+    const player = room.truckMania.players?.[idx];
+    const cost = S(room).keepGoingCost ?? 3;
+    // Keep a small reserve so keep going doesn't leave the AI unable to dodge
+    // reds next turn.
+    if (!player || (player.timeStones ?? 0) < cost + 2) return false;
+
+    // Keep going continues the SAME truck that just acted — the human rule.
+    const actorId = room.truckMania.aiActor;
+    const truck = (room.truckMania.trucks ?? []).find((t) => t.id === actorId && t.player === idx);
+    if (!truck || truck.spot == null) return false;
+
+    const map = room.truckMania.map;
+    const spots = map.spots ?? [];
+    const graph = getAiGraph(room);
+    const canUturn = hasAbility(player, "uturn");
+
+    // Best next destination for that truck, scored value-minus-risk on the
+    // real route — the move phase's own yardstick.
+    let best = null;
+    const occupied = new Set(room.truckMania.trucks.filter((t) => t.id !== truck.id).map((t) => t.spot));
+    for (const c of aiCandidates(room, truck, player, occupied)) {
+      if (c.kind !== "move" || c.spot === truck.spot) continue;
+      const here = spots[truck.spot];
+      const dest = spots[c.spot];
+      const route = findRouteDirected(
+        graph, map.intersections, here.x, here.y, truck.facing ?? here.angle, dest.x, dest.y, canUturn
+      );
+      const reds = route ? route.reds : 2;
+      const score = c.value - ticketRisk(room, player, reds) - c.d * 0.0005;
+      if (!best || score > best.score) best = { score, reds };
+    }
+    if (!best) return false;
+
+    // Commit when the next stop clearly beats the stone cost. A green way there
+    // is cheap, so a modest stop is enough; crossing reds demands a richer one.
+    const threshold = cost * 0.12 + (best.reds === 0 ? 0.8 : 1.7);
+    if (best.score <= threshold) return false;
+
+    player.timeStones -= cost;
+    ts.acted = false;
+    ts.actedByDrop = false;
+    ts.pickups = [];
+    ts.changedTime = false; // the clock opens up again too
+    ts.keptGoing = true;
+    ts.aiLegs = (ts.aiLegs ?? 0) + 1;
+    ts.aiLockTruck = actorId; // the next leg drives this same truck
+    return true;
   }
 
   function getAiGraph(room) {
@@ -1628,8 +1714,14 @@ export function createTruckManiaGame({ io, rooms }) {
   // Clock change that nets the AI fewer reds on its path, within its stone
   // budget. Both octagons carrying a number flip together, so a number only
   // helps when more of its reds than its greens sit on the path. Prefers the
-  // biggest net gain, then the cheapest sweep.
+  // biggest net gain, then the cheapest change. Plays by the exact human rules
+  // (truck_mania_set_hour): at most one change per turn unless Time lord, the
+  // hand sweeps clockwise unless Reverse-time takes the shorter spin, and
+  // Cheap-time halves the stone cost — so the AI can never do more than a human
+  // could from the same board.
   function maybeAiChangeTime(room, player, numbers, greens = []) {
+    const ts = room.truckMania.turnState;
+    if (ts.changedTime && !hasAbility(player, "time-lord")) return false; // once per turn
     const budget = aiTimeBudget(player);
     if (!numbers.length || budget <= 0) return false;
     const redCount = {};
@@ -1638,23 +1730,37 @@ export function createTruckManiaGame({ io, rooms }) {
     greens.forEach((n) => { greenCount[n] = (greenCount[n] || 0) + 1; });
     const t = room.truckMania.time ?? START_TIME;
     const curPos = t % 12;
+    const reverse = hasAbility(player, "reverse-time");
+    const cheap = hasAbility(player, "cheap-time");
+    // The human cost for sweeping the hand to `num`, and which way it goes.
+    const costOf = (num) => {
+      const cw = (num % 12 - curPos + 12) % 12;
+      const ccw = (12 - cw) % 12;
+      let cost = reverse ? Math.min(cw, ccw) : cw;
+      if (cheap) cost = Math.ceil(cost / 2);
+      return { cost, cw, ccw };
+    };
     let best = null;
     for (const num of Object.keys(redCount).map(Number)) {
       const gain = redCount[num] - (greenCount[num] || 0);
       if (gain <= 0) continue; // flipping would just trade reds around
-      const steps = (num % 12 - curPos + 12) % 12;
-      if (steps >= 1 && steps <= budget && steps <= player.timeStones) {
-        if (!best || gain > best.gain || (gain === best.gain && steps < best.steps)) {
-          best = { num, steps, gain };
+      const { cost, cw, ccw } = costOf(num);
+      if (cw === 0) continue; // hand already there — no flip
+      if (cost >= 1 && cost <= budget && cost <= player.timeStones) {
+        if (!best || gain > best.gain || (gain === best.gain && cost < best.cost)) {
+          best = { num, cost, gain, cw, ccw };
         }
       }
     }
     if (!best) return false;
-    player.timeStones -= best.steps;
-    room.truckMania.time = (t + best.steps) % 24;
+    player.timeStones -= best.cost;
+    room.truckMania.time = reverse && best.ccw < best.cw
+      ? (t - best.ccw + 24) % 24
+      : (t + best.cw) % 24;
     for (const oct of room.truckMania.map.intersections) {
       if (oct.number === best.num) oct.color = oct.color === "green" ? "red" : "green";
     }
+    ts.changedTime = true;
     return true;
   }
 
@@ -2035,7 +2141,11 @@ export function createTruckManiaGame({ io, rooms }) {
   // acts and any steal plan for beat two.
   function aiMovePhase(room, idx) {
     const player = room.truckMania.players?.[idx];
-    const myTrucks = (room.truckMania.trucks ?? []).filter((t) => t.player === idx);
+    // Keep going continues the same truck that acted (the human rule), so once
+    // it's locked, only that truck is in play.
+    const lock = room.truckMania.turnState.aiLockTruck;
+    const myTrucks = (room.truckMania.trucks ?? [])
+      .filter((t) => t.player === idx && (lock == null || t.id === lock));
     if (!player || !myTrucks.length) return false;
     const map = room.truckMania.map;
     const spots = map.spots ?? [];
@@ -2072,8 +2182,10 @@ export function createTruckManiaGame({ io, rooms }) {
     }
 
     // Sitting the turn out pays the stone+money column values (ticket mode) —
-    // take the payout when nothing on the board beats it.
-    if (isTicket(room)) {
+    // take the payout when nothing on the board beats it. Not on a keep-going
+    // continuation, though: the turn already acted, so there's no skip to pay
+    // (and paying again would double-dip the payout).
+    if (isTicket(room) && !room.truckMania.turnState.keptGoing) {
       const skipValue = 0.15 *
         (colValue(room, player, "timestones") + colValue(room, player, "money"));
       if (!best || best.score < skipValue) {
