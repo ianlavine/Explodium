@@ -622,6 +622,10 @@ const freshTurnState = () => ({
   keptGoing: false, // Keep going: movement was reopened at least once this turn
   aiLegs: 0, // AI only: keep-going continuations taken this turn (loop guard)
   aiLockTruck: null, // AI only: once it acts, keep going continues THIS truck
+  // One-step undo (ticket mode): the turn's latest still-revocable action —
+  // { kind: "move", ... } or { kind: "time", ... } — cleared the moment the
+  // location is used or anything else happens.
+  undo: null,
   skipped: false // the turn was sat out for the skip payout
 });
 
@@ -2633,8 +2637,22 @@ export function createTruckManiaGame({ io, rooms }) {
           if (!canRob) return;
         }
 
-        room.truckMania.turnState.truck = truck.id;
-        room.truckMania.turnState.pickups = []; // driving away forfeits put-backs
+        const ts = room.truckMania.turnState;
+        // One-step undo (ticket mode): snapshot everything this move changes —
+        // spot, facing, the turn's truck lock, banked dice, and the tickets as
+        // they stand (arriving at a chore location clears matching ones, and
+        // an undo has to bring those back).
+        ts.undo = isTicket(room) ? {
+          kind: "move",
+          truckId: truck.id,
+          prevSpot: truck.spot,
+          prevFacing: truck.facing ?? 0,
+          prevTurnTruck: ts.truck ?? null,
+          prevDicePool: ts.dicePool ?? 0,
+          prevTickets: (room.truckMania.players?.[seat]?.tickets ?? []).map((t) => ({ ...t }))
+        } : null;
+        ts.truck = truck.id;
+        ts.pickups = []; // driving away forfeits put-backs
         applyMove(room, truck, spot, reds);
         emitState(roomId, room);
       });
@@ -2662,6 +2680,7 @@ export function createTruckManiaGame({ io, rooms }) {
           if (driveBy) ts.driveByPickupBid = building.bid;
           else ts.acted = true;
           ts.pickups.push({ pkg: packageId, bid: building.bid, drive: driveBy });
+          ts.undo = null; // the location is used — the move can't come back
           emitState(roomId, room);
         }
       });
@@ -2724,6 +2743,7 @@ export function createTruckManiaGame({ io, rooms }) {
           // A delivered package can't come back.
           const li = ts.pickups.findIndex((e) => e.pkg === packageId);
           if (li !== -1) ts.pickups.splice(li, 1);
+          ts.undo = null; // the location is used — the move can't come back
           emitState(roomId, room);
         }
       });
@@ -2779,6 +2799,47 @@ export function createTruckManiaGame({ io, rooms }) {
         ts.actedByDrop = false;
         ts.pickups = []; // put-back rights don't survive the payment
         ts.changedTime = false; // the clock opens up again too
+        ts.keptGoing = true;
+        ts.undo = null; // the paid-for continuation commits everything before it
+        emitState(roomId, room);
+      });
+
+      // One-step undo (ticket mode): take back the turn's latest revocable
+      // action. A move — the truck returns to where it started (off the board
+      // again for an undone entry), banked dice un-bank, and tickets cleared
+      // on arrival come back (working a chore off doesn't count as "using" a
+      // location). Or a time change — the hand sweeps back, the flipped lights
+      // flip again, and the stones are refunded. Using the location (pickup,
+      // dropoff, steal, special) or paying to keep going clears it.
+      socket.on("truck_mania_undo", ({ roomId } = {}) => {
+        const room = playerRoom(socket, roomId);
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.truckMania.turn !== seat || room.truckMania.winner != null) return;
+        if (!isTicket(room)) return;
+        const ts = room.truckMania.turnState;
+        const undo = ts.undo;
+        const player = room.truckMania.players?.[seat];
+        if (!undo || !player) return;
+        if (undo.kind === "move") {
+          if (ts.acted || ts.stolen) return; // belt & braces — both clear the undo
+          const truck = (room.truckMania.trucks ?? [])
+            .find((t) => t.id === undo.truckId && t.player === seat);
+          if (!truck) return;
+          truck.spot = undo.prevSpot; // null puts an undone entry back off-board
+          truck.facing = undo.prevFacing;
+          ts.truck = undo.prevTurnTruck;
+          ts.dicePool = undo.prevDicePool;
+          if (Array.isArray(undo.prevTickets)) player.tickets = undo.prevTickets;
+          room.truckMania.lastRoll = null;
+        } else if (undo.kind === "time") {
+          room.truckMania.time = undo.prevTime;
+          player.timeStones += undo.cost;
+          for (const oct of room.truckMania.map.intersections) {
+            if (oct.number === undo.hour) oct.color = oct.color === "green" ? "red" : "green";
+          }
+          ts.changedTime = false;
+        }
+        ts.undo = null;
         emitState(roomId, room);
       });
 
@@ -2821,6 +2882,7 @@ export function createTruckManiaGame({ io, rooms }) {
         ts.truck = truck.id;
         ts.acted = true;
         ts.actedByDrop = true; // can't be reopened by put-backs
+        ts.undo = null; // the location is used — nothing to take back now
       };
 
       // Mechanic: buy any unowned ability for its configured price. Buy as
@@ -3000,6 +3062,9 @@ export function createTruckManiaGame({ io, rooms }) {
             oct.color = oct.color === "green" ? "red" : "green";
           }
         }
+        // One-step undo (ticket mode): the change can be taken back — hand,
+        // lights and stones — until anything else happens.
+        ts.undo = isTicket(room) ? { kind: "time", prevTime: t, hour, cost } : null;
         emitState(roomId, room);
       });
 
@@ -3070,6 +3135,7 @@ export function createTruckManiaGame({ io, rooms }) {
         ts.stolen = true;
         ts.stealVictim = victimTruckId;
         ts.truck = thief.id;
+        ts.undo = null; // robbing commits the move that set it up
         emitState(roomId, room);
       });
 

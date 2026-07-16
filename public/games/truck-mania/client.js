@@ -50,6 +50,7 @@ let turnActed = false; // this turn's truck has picked up/delivered (movement lo
 let turnStolen = false; // this turn has performed a steal
 let turnChangedTime = false; // this turn has changed the clock
 let turnStartChoice = null; // Free rules: the turn-opening stones/money pick, once made
+let turnUndo = null; // the turn's latest revocable action ({kind:"move"|"time"}) or null
 let stealVictimId = null; // which truck was robbed this turn
 let aiMoveState = null; // { truckId, path, endAngle } — an AI's chosen drive to animate
 
@@ -700,13 +701,17 @@ function setHourHighlight(hour, on) {
 
 // A time change: the matching octagons grow (they already grew on hover), the
 // hand swings, then — still big — each sign folds over slowly, one at a time,
-// and only then do they shrink back to normal size.
-function stagedTimeChange(hour) {
+// and only then do they shrink back to normal size. `idxOverride` names the
+// octagons that actually changed color — needed for an undone time change,
+// where the flipped-back lights carry the OLD hour's number, not the new one.
+function stagedTimeChange(hour, idxOverride = null) {
   flipping = true;
-  const idx = [];
-  mapState.intersections.forEach((oct, i) => {
-    if (oct.number === hour) idx.push(i);
-  });
+  const idx = idxOverride ? idxOverride.slice() : [];
+  if (!idxOverride) {
+    mapState.intersections.forEach((oct, i) => {
+      if (oct.number === hour) idx.push(i);
+    });
+  }
   idx.forEach((i) => octEls[i]?.g.classList.add("tm-oct-hi"));
   setHand();
 
@@ -1875,9 +1880,14 @@ function syncTrucks(trucks) {
   }
   trucksState.forEach((t) => {
     // Still off the board: hidden here, shown as a garage truck under its
-    // owner's score chip instead.
+    // owner's score chip instead. Clearing the caches matters for a truck
+    // SENT BACK off-board (an undone entry move) — its next entry must go
+    // through the first-placement path again.
     if (t.spot == null) {
       if (truckEls[t.id]) truckEls[t.id].style.display = "none";
+      delete truckSpots[t.id];
+      delete truckPos[t.id];
+      delete pendingRoutes[t.id];
       return;
     }
     const spot = mapState.spots?.[t.spot];
@@ -4724,6 +4734,7 @@ function renderControls() {
     openBtn.title = "Show controls";
     els.hand.appendChild(openBtn);
     els.hand.appendChild(skipTurnButton());
+    els.hand.appendChild(undoTurnButton());
     els.hand.appendChild(keepGoingButton());
     const endBtn = button(endTurnLabel(), "endturn", "primary-btn tm-end-turn");
     endBtn.disabled = !isMyTurn() || anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping || startPickPending();
@@ -4883,6 +4894,7 @@ function renderControls() {
   els.hand.appendChild(speedWrap);
 
   els.hand.appendChild(skipTurnButton());
+  els.hand.appendChild(undoTurnButton());
   els.hand.appendChild(keepGoingButton());
 
   const endBtn = button(endTurnLabel(), "endturn", "primary-btn tm-end-turn");
@@ -4938,6 +4950,29 @@ function keepGoingButton() {
   return btn;
 }
 
+// One-step undo: take back the turn's latest move (truck returns to where it
+// started; tickets cleared on arrival come back) or time change (hand sweeps
+// back, stones refunded). Gone the moment the location is used or anything
+// else happens. NOT disabled while sharing a spot — backing out of a steal
+// setup is exactly what it's for.
+function canUndoTurn() {
+  return isTicketMode() && isMyTurn() && winnerState == null && !!turnUndo;
+}
+
+function undoTurnLabel() {
+  return turnUndo?.kind === "time" ? "↩ Undo time" : "↩ Undo move";
+}
+
+function undoTurnButton() {
+  const btn = button(undoTurnLabel(), "undoturn", "ghost-btn tm-undo-turn");
+  btn.title = turnUndo?.kind === "time"
+    ? "Take the time change back — the hand sweeps back, the lights flip again, and the stones are refunded"
+    : "Take the move back — the truck returns to where it started (tickets it worked off come back)";
+  btn.style.display = canUndoTurn() ? "" : "none";
+  btn.disabled = diceAnimating || anyTruckAnimating() || flipping;
+  return btn;
+}
+
 // Light refresh of just the End-turn button's enabled state (called on every
 // state update, without rebuilding the whole control bar). Also disabled while
 // any truck is mid-drive or the clock is mid-flip, so a turn can't end before
@@ -4961,6 +4996,13 @@ function updateTurnControls() {
     kg.style.display = canKeepGoing() ? "" : "none";
     kg.disabled = anyMyTruckShares() || diceAnimating || anyTruckAnimating() || flipping;
     kg.textContent = `Keep going · −${keepGoingCost()}⬟`;
+  }
+  // Undo tracks the turn's latest revocable action (move or time change).
+  const ub = els.hand.querySelector(".tm-undo-turn");
+  if (ub) {
+    ub.style.display = canUndoTurn() ? "" : "none";
+    ub.disabled = diceAnimating || anyTruckAnimating() || flipping;
+    ub.textContent = undoTurnLabel();
   }
 }
 
@@ -5011,6 +5053,9 @@ els.hand.addEventListener("click", (event) => {
       break;
     case "keepgoing":
       socket.emit("truck_mania_keep_going", { roomId: app.roomId });
+      break;
+    case "undoturn":
+      socket.emit("truck_mania_undo", { roomId: app.roomId });
       break;
     case "routemode":
       moveMode = moveMode === "build" ? "auto" : "build";
@@ -5096,6 +5141,7 @@ export const truckMania = {
     turnStolen = !!tm.turnState?.stolen;
     turnChangedTime = !!tm.turnState?.changedTime;
     turnStartChoice = tm.turnState?.startChoice ?? null;
+    turnUndo = tm.turnState?.undo ?? null;
     turnTruck = tm.turnState?.truck ?? null;
     stealVictimId = tm.turnState?.stealVictim ?? null;
     turnPickups = tm.turnState?.pickups ?? [];
@@ -5139,6 +5185,7 @@ export const truckMania = {
         const n = tm.map.intersections[i];
         return !n || n.x !== o.x || n.y !== o.y || n.number !== o.number;
       });
+      const prevOctColors = mapState.intersections.map((o) => o.color);
       mapState = tm.map;
       if (octLayoutChanged) {
         clearPreview(); // stale red counts
@@ -5146,7 +5193,14 @@ export const truckMania = {
         setHand();
       } else if (hourState != null && hourState !== prevHour) {
         clearPreview(); // lights flipped — previewed red counts no longer hold
-        stagedTimeChange(hourState); // moves the hand, then flips one at a time
+        // Fold exactly the lights that changed color: on a normal change they
+        // carry the new hour's number, but on an undone change they carry the
+        // OLD hour's — the color diff covers both.
+        const changed = [];
+        mapState.intersections.forEach((o, i) => {
+          if (o.color !== prevOctColors[i]) changed.push(i);
+        });
+        stagedTimeChange(hourState, changed.length ? changed : null);
       } else {
         updateOctagons(tm.map);
         setHand();
@@ -5276,6 +5330,7 @@ export const truckMania = {
     turnStolen = false;
     turnChangedTime = false;
     turnStartChoice = null;
+    turnUndo = null;
     turnTruck = null;
     selectedTruckId = 0;
     stealVictimId = null;
