@@ -41,6 +41,8 @@
 //
 // Player index convention (matches server.js): index 0 = blue-o, index 1 = red-x.
 
+import fs from "fs";
+
 export const RED = 0;
 export const BLUE = 1;
 export const NEUTRAL = 2;
@@ -809,7 +811,109 @@ const EVAL_SOFT = Number(process.env.EVAL_SOFT ?? 250);
 const EVAL_WHITE = Number(process.env.EVAL_WHITE ?? 10);
 const EVAL_TEMPO = Number(process.env.EVAL_TEMPO ?? 0);
 
+// ---------------------------------------------------------------------------
+// Optional value-net leaf eval (EVAL_NET=path/to/weights.json, trained by
+// tools/flip-triples/nn/train.py). Replaces staticEval on the standard-piece
+// path when the board matches the net's input size; everything else falls
+// back to the hand weights. Feature layout must match train.py exactly:
+// cell*6 + shape + (flipped ? 3 : 0), plus one trailing side-to-move feature
+// (1.0 when red/side-1 moves). Output is tanh(margin/scale), red perspective;
+// it is mapped to an integer band well below TERMINAL_SCALE so heuristic
+// leaves can never collide with exact/terminal values in the TT.
+// ---------------------------------------------------------------------------
+
+const NET_VALUE_SCALE = 16000;
+let net = null;
+let netEnabled = false;
+
+if (process.env.EVAL_NET) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(process.env.EVAL_NET, "utf8"));
+    net = loadNet(raw);
+    netEnabled = true;
+  } catch (err) {
+    console.error("flip-solver: EVAL_NET load failed, using hand eval:", err.message);
+  }
+}
+
+function loadNet(raw) {
+  const [nIn, h1, h2, nOut] = raw.arch;
+  if (nOut !== 1 || (nIn - 1) % 6 !== 0) throw new Error(`bad arch ${raw.arch}`);
+  return {
+    nIn,
+    h1,
+    h2,
+    cells: (nIn - 1) / 6,
+    w1: Float32Array.from(raw.w1), // input-major: row f = hidden vector for feature f
+    b1: Float32Array.from(raw.b1),
+    w2: Float32Array.from(raw.w2),
+    b2: Float32Array.from(raw.b2),
+    w3: Float32Array.from(raw.w3),
+    b3: raw.b3[0],
+    acc: new Float32Array(h1),
+    hid: new Float32Array(h2)
+  };
+}
+
+// Load a net programmatically (analysis tools) or toggle it per search
+// (A/B runs pit net vs hand eval inside one process).
+export function setEvalNet(weights) {
+  if (weights === null) {
+    net = null;
+    netEnabled = false;
+    return;
+  }
+  if (typeof weights === "boolean") {
+    netEnabled = weights && net !== null;
+    return;
+  }
+  net = loadNet(weights);
+  netEnabled = true;
+}
+
+export function evalNetActive() {
+  return netEnabled;
+}
+
+function netEval(state, side) {
+  const { shapes, flipped } = state;
+  const n = net;
+  const H1 = n.h1;
+  const acc = n.acc;
+  acc.set(n.b1);
+  const w1 = n.w1;
+  const cells = n.cells;
+  for (let i = 0; i < cells; i += 1) {
+    const off = (i * 6 + shapes[i] + (flipped[i] ? 3 : 0)) * H1;
+    for (let j = 0; j < H1; j += 1) acc[j] += w1[off + j];
+  }
+  if (side === 1) {
+    const off = (n.nIn - 1) * H1;
+    for (let j = 0; j < H1; j += 1) acc[j] += w1[off + j];
+  }
+  const H2 = n.h2;
+  const hid = n.hid;
+  const w2 = n.w2;
+  for (let k = 0; k < H2; k += 1) {
+    let s = n.b2[k];
+    const off = k * H1;
+    for (let j = 0; j < H1; j += 1) {
+      const a = acc[j];
+      // clipped ReLU on the accumulator
+      if (a > 0) s += (a < 1 ? a : 1) * w2[off + j];
+    }
+    hid[k] = s > 0 ? s : 0;
+  }
+  let out = n.b3;
+  const w3 = n.w3;
+  for (let k = 0; k < H2; k += 1) out += hid[k] * w3[k];
+  return Math.round(Math.tanh(out) * NET_VALUE_SCALE);
+}
+
 function staticEval(state, side) {
+  if (netEnabled && state.simple && net.cells === state.geom.cells) {
+    return netEval(state, side);
+  }
   const tempo = side === 1 ? EVAL_TEMPO : -EVAL_TEMPO;
   if (state.simple) {
     return (

@@ -494,7 +494,6 @@ function findIntersections(streets) {
 function assignOctagons(points, width) {
   const isCorner = (p) => (p.x < 20 || p.x > width - 20) && (p.y < 20 || p.y > 720 - 20);
   const eligible = points.filter((p) => !isCorner(p)).sort(() => Math.random() - 0.5);
-  const corners = points.filter(isCorner);
   const octagons = [];
   eligible.forEach((p, i) => {
     let number = null;
@@ -503,7 +502,6 @@ function assignOctagons(points, width) {
     else if (i < 24) { number = i - 11; color = "red"; }
     octagons.push({ x: p.x, y: p.y, number, color });
   });
-  corners.forEach((p) => octagons.push({ x: p.x, y: p.y, number: null, color: Math.random() < 0.5 ? "green" : "red" }));
   return octagons;
 }
 
@@ -1473,11 +1471,22 @@ function manualChoices(px, py, headingDeg, canUturn, firstLeg = true) {
 
   const octs = mapState.intersections ?? [];
   const spots = mapState.spots ?? [];
-  const octAtNode = graph.nodePts.map(([x, y]) => {
-    for (let i = 0; i < octs.length; i += 1) {
-      if (Math.hypot(octs[i].x - x, octs[i].y - y) < 15) return i;
-    }
-    return -1;
+  // Each octagon gates at its single NEAREST node only. Matching every node
+  // within reach used to swallow whole corridors: a parking spot's node a
+  // pixel past a light read as "arrived at that light" and stopped the
+  // expansion, leaving the next light down the street unclickable.
+  const octAtNode = graph.nodePts.map(() => -1);
+  octs.forEach((o, i) => {
+    let best = -1;
+    let bd = Infinity;
+    graph.nodePts.forEach(([x, y], n) => {
+      const d = Math.hypot(o.x - x, o.y - y);
+      if (d < bd) {
+        bd = d;
+        best = n;
+      }
+    });
+    if (best !== -1 && bd < 15) octAtNode[best] = i;
   });
   const spotAtNode = graph.nodePts.map(([x, y]) => {
     for (let i = 0; i < spots.length; i += 1) {
@@ -4210,8 +4219,8 @@ function parseTuneDraft() {
   const blankGreen = intField(tuneDraft.blankGreen, "Green blank lights", 0, 40);
   const blankRed = intField(tuneDraft.blankRed, "Red blank lights", 0, 40);
   const intersections = intField(tuneDraft.intersections, "Total intersections", 24, 44);
-  // The stoplight math: the 24 numbered + the blanks make the total; the two
-  // forced-green corners come on top and count toward neither.
+  // The stoplight math: the 24 numbered + the blanks make the total; the four
+  // light-free corners come on top and count toward neither.
   if (intersections !== 24 + blankGreen + blankRed) {
     issues.push(`Blanks must fit the total: 24 + ${blankGreen} green + ${blankRed} red = ${24 + blankGreen + blankRed} (total says ${intersections})`);
   }
@@ -4486,7 +4495,7 @@ function renderTuning() {
     section("Tickets");
     row("Issued per failed die", tuneField(tuneDraft.perFail, (v) => { tuneDraft.perFail = v; }, "tm-tune-input tm-tune-num"));
 
-    section("Stoplights (24 numbered + blanks = total; 2 green corners on top)");
+    section("Stoplights (24 numbered + blanks = total; corners carry none)");
     row("Total intersections", tuneField(tuneDraft.intersections, (v) => { tuneDraft.intersections = v; }, "tm-tune-input tm-tune-num"));
     row("Green blanks", tuneField(tuneDraft.blankGreen, (v) => { tuneDraft.blankGreen = v; }, "tm-tune-input tm-tune-num"));
     row("Red blanks", tuneField(tuneDraft.blankRed, (v) => { tuneDraft.blankRed = v; }, "tm-tune-input tm-tune-num"));

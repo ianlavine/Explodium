@@ -8,6 +8,7 @@ import {
   search as searchJs,
   stateFromGame,
   decodeMove,
+  evalNetActive,
   RED,
   BLUE
 } from "./solver.js";
@@ -57,7 +58,9 @@ function wasmPrepare(state) {
 
 // Same contract as flip-solver.js search(); `value` is red-perspective.
 export function search(state, player, opts = {}) {
-  if (!wasm || !state.simple || opts.rootMoves) {
+  // The wasm core has the hand eval baked in, so a loaded value net forces
+  // the JS engine.
+  if (!wasm || !state.simple || opts.rootMoves || evalNetActive()) {
     return searchJs(state, player, opts);
   }
   if (!wasmPrepare(state)) return searchJs(state, player, opts);

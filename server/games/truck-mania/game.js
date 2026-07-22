@@ -1,8 +1,10 @@
 // Truck Mania — city map, the clock, octagon signals, and saved custom maps.
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { generateCityMap, randomizeOctagons, deriveSpots, setBlankLights } from "./map.js";
-import { buildStreetGraph, findPath, redsOnPath, findRouteDirected } from "./routing.js";
+// The map generator + routing live in ../traffic-time — the shared core of the
+// "Traffic Time" games (Truck Mania, Uber Mania).
+import { generateCityMap, randomizeOctagons, deriveSpots, setBlankLights } from "../traffic-time/map.js";
+import { buildStreetGraph, findPath, redsOnPath, findRouteDirected } from "../traffic-time/routing.js";
 
 const MAPS_FILE = fileURLToPath(new URL("./saved-maps.json", import.meta.url));
 const SETTINGS_FILE = fileURLToPath(new URL("./saved-settings.json", import.meta.url));
@@ -364,7 +366,7 @@ function migrateSettings(s) {
     out.columns.letters ??= [0, 1, 1, 1, 1, 1, 1];
     out.blankLights ??= { green: 5, red: 5 };
     // Total stoplights the map should carry (24 numbered + the blanks) — the
-    // two forced-green corners sit on top of this count.
+    // four light-free corners sit on top of this count.
     out.intersections ??= 24 + (out.blankLights.green ?? 5) + (out.blankLights.red ?? 5);
     out.visibleTickets ??= 3;
     // Letters (orange deliveries) count as one more completable column.
@@ -532,7 +534,7 @@ function sanitizeTicketSettings(raw) {
   const red = intIn(raw.blankLights?.red, 0, 40);
   if (green === null || red === null) return null;
   // The stoplight math: the 24 numbered plus the blanks make up the total (the
-  // two forced-green corners come on top and count toward neither).
+  // four light-free corners come on top and count toward neither).
   if (intersections !== 24 + green + red) return null;
   // Blue packages carry the letters, dealt evenly — so their total must
   // divide by the protected-location count. Under Choosing nothing is printed
@@ -1005,7 +1007,7 @@ export function createTruckManiaGame({ io, rooms }) {
     const specialN = ticket ? SPECIAL_BUILDINGS.length : 0;
     const opts = { dense: ticket, buildings: dropoffN + pickupN + choreN + specialN + 4 };
     if (ticket && Number.isInteger(settings.intersections)) {
-      opts.intersections = settings.intersections + 2; // + the two forced-green corners
+      opts.intersections = settings.intersections; // the light-free corners come on top
     }
     return opts;
   }
@@ -1015,7 +1017,7 @@ export function createTruckManiaGame({ io, rooms }) {
   // the settings regenerates the board.
   function mapFits(map, settings) {
     if (modeOf(settings) !== "tickets") return true;
-    const wantLights = Number.isInteger(settings.intersections) ? settings.intersections + 2 : null;
+    const wantLights = Number.isInteger(settings.intersections) ? settings.intersections : null;
     if (wantLights !== null && (map.intersections?.length ?? 0) !== wantLights) return false;
     const reachable = (map.blocks ?? []).flatMap((b) => b.buildings ?? [])
       .filter((b) => (b.connectors ?? []).length > 0).length;

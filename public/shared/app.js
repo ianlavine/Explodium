@@ -11,8 +11,9 @@ import { explodium } from "../games/explodium/client.js";
 import { toyBattle } from "../games/toy-battle/client.js";
 import { flipTriples } from "../games/flip-triples/client.js";
 import { truckMania } from "../games/truck-mania/client.js";
+import { uberMania } from "../games/uber-mania/client.js";
 
-const games = [explodium, toyBattle, flipTriples, truckMania];
+const games = [explodium, toyBattle, flipTriples, truckMania, uberMania];
 
 let soloPickerGame = null;
 
@@ -58,6 +59,8 @@ socket.on("state_update", (payload) => {
     ? flipTriples
     : payload.truckMania
     ? truckMania
+    : payload.uberMania
+    ? uberMania
     : explodium;
   games.forEach((game) => {
     if (game !== handler) game.clearState?.();

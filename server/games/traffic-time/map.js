@@ -762,21 +762,190 @@ function buildingConnectorsGenerous(building, blockPlaced, self, segments) {
 }
 
 // ---------------------------------------------------------------------------
+// Packed building placement (the `packed` option)
+// ---------------------------------------------------------------------------
+//
+// Instead of scattering buildings inscribed in circles, carve each block into
+// rectangular lots that fill nearly all of it: only a small margin off the
+// street and small gaps between neighbours. The block's free cells are
+// decomposed into maximal rectangles (a plain block is one rectangle, a merged
+// L-shaped block two or three), and each rectangle is subdivided into a
+// jittered grid of lots sized so the total lot count lands near the requested
+// building budget.
+
+const PACKED_MARGIN = 6;   // building edge to street edge
+const PACKED_GAP = 7;      // gap between neighbouring lots
+const PACKED_MIN_SIDE = 40; // smaller leftovers stay unbuilt
+
+// Largest all-free axis-aligned rectangle in a W×H boolean grid (histogram
+// stack scan). Returns cell coords or null when nothing is free.
+function largestFreeRect(free, W, H) {
+  const heights = new Int32Array(W);
+  let best = null;
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) heights[x] = free[y * W + x] ? heights[x] + 1 : 0;
+    const stack = [];
+    for (let x = 0; x <= W; x += 1) {
+      const h = x < W ? heights[x] : 0;
+      let start = x;
+      while (stack.length && stack[stack.length - 1][1] > h) {
+        const [xs, hs] = stack.pop();
+        const area = hs * (x - xs);
+        if (!best || area > best.area) best = { x0: xs, y0: y - hs + 1, w: x - xs, h: hs, area };
+        start = xs;
+      }
+      if (!stack.length || stack[stack.length - 1][1] < h) stack.push([start, h]);
+    }
+  }
+  return best;
+}
+
+// Cut positions splitting [start, start+len] into n runs, interior cuts
+// jittered so the lot grid doesn't read as graph paper.
+function jitteredCuts(rng, start, len, n) {
+  const cuts = [start];
+  const seg = len / n;
+  for (let i = 1; i < n; i += 1) {
+    cuts.push(start + seg * (i + randBetween(rng, -0.08, 0.08)));
+  }
+  cuts.push(start + len);
+  return cuts;
+}
+
+const r1 = (v) => Math.round(v * 10) / 10;
+
+// Subdivide one free rectangle (px coords) into a cols×rows grid of lots with
+// PACKED_GAP between them (the street margin is already outside the rect).
+function subdivideLots(rng, block, x, y, w, h, ideal, palette) {
+  let cols = Math.max(1, Math.round(w / ideal));
+  let rows = Math.max(1, Math.round(h / ideal));
+  while (cols > 1 && (w - (cols - 1) * PACKED_GAP) / cols < PACKED_MIN_SIDE) cols -= 1;
+  while (rows > 1 && (h - (rows - 1) * PACKED_GAP) / rows < PACKED_MIN_SIDE) rows -= 1;
+  const xs = jitteredCuts(rng, x, w, cols);
+  const ys = jitteredCuts(rng, y, h, rows);
+  for (let i = 0; i < cols; i += 1) {
+    for (let j = 0; j < rows; j += 1) {
+      const x0 = xs[i] + (i > 0 ? PACKED_GAP / 2 : 0);
+      const x1 = xs[i + 1] - (i < cols - 1 ? PACKED_GAP / 2 : 0);
+      const y0 = ys[j] + (j > 0 ? PACKED_GAP / 2 : 0);
+      const y1 = ys[j + 1] - (j < rows - 1 ? PACKED_GAP / 2 : 0);
+      block.placed.push({
+        cx: (x0 + x1) / 2,
+        cy: (y0 + y1) / 2,
+        r: Math.min(x1 - x0, y1 - y0) / 2
+      });
+      block.buildings.push({
+        kind: "rect",
+        color: pick(rng, palette),
+        rotation: 0,
+        x: r1(x0), y: r1(y0), w: r1(x1 - x0), h: r1(y1 - y0)
+      });
+    }
+  }
+}
+
+// Fill one block: free cells (clear of the street margin) → maximal
+// rectangles → lots. Leftover strips thinner than a usable lot stay open.
+function packBlock(rng, block, clearance, gw, ideal, palette) {
+  let minGx = Infinity;
+  let minGy = Infinity;
+  let maxGx = -Infinity;
+  let maxGy = -Infinity;
+  for (const idx of block.cells) {
+    const gx = idx % gw;
+    const gy = (idx / gw) | 0;
+    if (gx < minGx) minGx = gx;
+    if (gx > maxGx) maxGx = gx;
+    if (gy < minGy) minGy = gy;
+    if (gy > maxGy) maxGy = gy;
+  }
+  const W = maxGx - minGx + 1;
+  const H = maxGy - minGy + 1;
+  const free = new Uint8Array(W * H);
+  for (const idx of block.cells) {
+    if (clearance[idx] > PACKED_MARGIN) {
+      free[((idx / gw | 0) - minGy) * W + (idx % gw) - minGx] = 1;
+    }
+  }
+  const minCells = Math.ceil(PACKED_MIN_SIDE / GRID);
+  for (let guard = 0; guard < 48; guard += 1) {
+    const rect = largestFreeRect(free, W, H);
+    if (!rect || rect.w < minCells || rect.h < minCells) break;
+    subdivideLots(
+      rng, block,
+      (minGx + rect.x0) * GRID, (minGy + rect.y0) * GRID,
+      rect.w * GRID, rect.h * GRID,
+      ideal, palette
+    );
+    for (let y = rect.y0; y < rect.y0 + rect.h; y += 1) {
+      for (let x = rect.x0; x < rect.x0 + rect.w; x += 1) free[y * W + x] = 0;
+    }
+  }
+}
+
+// Lot size aimed so the map carries roughly cfg.totalBuildings lots (biased a
+// touch small — a handful of extra buildings beats coming up short when every
+// one is supposed to hold a location).
+function placePackedBuildings(rng, blocks, clearance, gw, palette, cfg) {
+  let freeArea = 0;
+  for (const block of blocks) {
+    for (const idx of block.cells) {
+      if (clearance[idx] > PACKED_MARGIN) freeArea += GRID * GRID;
+    }
+  }
+  const target = Math.max(1, cfg.totalBuildings);
+  const ideal = Math.max(56, Math.min(130, Math.sqrt(freeArea / target) * 0.95));
+  for (const block of blocks) packBlock(rng, block, clearance, gw, ideal, palette);
+}
+
+// Does the segment (x1,y1)-(x2,y2) pass through the rect building b?
+// (Liang–Barsky clip; packed lots are axis-aligned, rotation 0.)
+function segHitsRect(x1, y1, x2, y2, b) {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const p = [-dx, dx, -dy, dy];
+  const q = [x1 - b.x, b.x + b.w - x1, y1 - b.y, b.y + b.h - y1];
+  for (let i = 0; i < 4; i += 1) {
+    if (p[i] === 0) {
+      if (q[i] < 0) return false;
+      continue;
+    }
+    const r = q[i] / p[i];
+    if (p[i] < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+  }
+  return true;
+}
+
+// Packed lots sit wall to wall, so the circle-based blocking check inside
+// connectorFromEdge can let an inner lot's driveway sneak across a wide
+// neighbour. Drop any connector that crosses another lot in the block.
+function crossesLot(conn, buildings, self) {
+  return buildings.some((b) => b !== self && b.w != null &&
+    segHitsRect(conn.x1, conn.y1, conn.x2, conn.y2, b));
+}
+
+// ---------------------------------------------------------------------------
 // Octagon signals at intersections
 // ---------------------------------------------------------------------------
 
 // 24 intersections get numbered octagons — every number 1–12 appears once in
-// green and once in red. Two map corners (picked at random) are permanently
-// green with no number, standing in for the freely-flowing rounded corners of
-// the classic maps; any other corner competes for a number like a normal
-// intersection. Leftovers are green or red with no number. Assignment is
-// randomized.
+// green and once in red. The four map corners carry no light at all: the two
+// border streets just bend through them, so a corner never gates movement and
+// the stretch around one reads as a single continuous street. Leftovers are
+// green or red with no number. Assignment is randomized.
 export function assignOctagons(rng, points) {
   const isMapCorner = (p) =>
     (p.x < 20 || p.x > MAP_W - 20) && (p.y < 20 || p.y > MAP_H - 20);
 
-  const greenCorners = shuffle(rng, points.filter(isMapCorner)).slice(0, 2);
-  const eligible = shuffle(rng, points.filter((p) => !greenCorners.includes(p)));
+  const eligible = shuffle(rng, points.filter((p) => !isMapCorner(p)));
 
   const octagons = [];
   for (let i = 0; i < eligible.length; i += 1) {
@@ -792,11 +961,6 @@ export function assignOctagons(rng, points) {
     }
     octagons.push({ x: Math.round(p.x), y: Math.round(p.y), number, color });
   }
-  for (const p of greenCorners) {
-    // `corner: true` marks the light as structural — setBlankLights leaves it
-    // alone, so these two corners stay green no matter the settings.
-    octagons.push({ x: Math.round(p.x), y: Math.round(p.y), number: null, color: "green", corner: true });
-  }
   return octagons;
 }
 
@@ -808,8 +972,8 @@ export function randomizeOctagons(octagons) {
 
 // Recolor the blank (unnumbered) stoplights in place: of the blanks, `green`
 // become green and `red` become red (dealt in a random order); any blanks past
-// green+red stay a coin flip. The 24 numbered signs and the two permanently
-// green corners are untouched.
+// green+red stay a coin flip. The 24 numbered signs are untouched. (`corner`
+// lights no longer exist, but old saved maps may still carry them.)
 export function setBlankLights(octagons, green, red) {
   const blanks = octagons.filter((o) => o.number == null && !o.corner);
   for (let i = blanks.length - 1; i > 0; i -= 1) {
@@ -866,10 +1030,10 @@ export function deriveSpots(map) {
 // a curve grazed a street it never actually joined, and dead ends where a
 // curve wasn't really connected). One interior street per direction may span
 // the whole map; every other interior line gets at least one gap. All four
-// corners are square joins of the border streets; assignOctagons blanks two
-// of them green — standing in for the corners the old algorithm would have
-// rounded — and the other two are designated like any other intersection.
-// Buildings are all rectangles/squares.
+// corners are square joins of the border streets; assignOctagons leaves all
+// four light-free — traffic just bends around them, standing in for the
+// corners the old algorithm would have rounded. Buildings are all
+// rectangles/squares.
 
 // Denser lines than the classic profiles: the gap pass costs intersections,
 // and there's no diagonal/curve to earn them back.
@@ -886,8 +1050,8 @@ const SIMPLE_PROFILES = {
   }
 };
 
-// 24 numbered octagons + the two blank green corners.
-const SIMPLE_MIN_INTERSECTIONS = 26;
+// 24 numbered octagons + the four light-free corners.
+const SIMPLE_MIN_INTERSECTIONS = 28;
 
 // Prune interior walls in two passes. Pass 1 punches at least one gap into
 // every interior line except the designated full-span pair, so streets usually
@@ -995,16 +1159,19 @@ function generateSimpleOnce(rng, seed, cfg) {
   }));
 
   const palette = ["#c97b63", "#6b8f71", "#d4a056", "#7d8aa5", "#b8849f", "#8f7e6b"];
-  placeAllBuildings(rng, blocks, clearance, gw, segments, palette, cfg);
+  if (cfg.packed) placePackedBuildings(rng, blocks, clearance, gw, palette, cfg);
+  else placeAllBuildings(rng, blocks, clearance, gw, segments, palette, cfg);
 
   for (const block of blocks) {
     block.buildings.forEach((building, i) => {
-      building.connectors = buildingConnectorsGenerous(
+      let conns = buildingConnectorsGenerous(
         building,
         block.placed,
         block.placed[i],
         segments
       );
+      if (cfg.packed) conns = conns.filter((c) => !crossesLot(c, block.buildings, building));
+      building.connectors = conns;
     });
   }
 
@@ -1029,28 +1196,34 @@ function generateSimpleOnce(rng, seed, cfg) {
 // Entry points
 // ---------------------------------------------------------------------------
 
-// `intersections` (optional) asks for an exact total stoplight count — the
+// `intersections` (optional) asks for an exact stoplight count — the
 // blank-light settings assume it, so generation retries fresh grids until one
-// lands on it, keeping the closest valid attempt as a fallback. `buildings`
-// (optional) overrides the profile's building budget so every dropoff, pickup
-// and chore location the settings call for gets a building.
-export function generateCityMap(seed = Date.now(), { dense = false, intersections = null, buildings = null } = {}) {
+// lands on it, keeping the closest valid attempt as a fallback. The four
+// light-free map corners are geometric intersections on top of that count.
+// `buildings` (optional) overrides the profile's building budget so every
+// dropoff, pickup and chore location the settings call for gets a building.
+// `packed` swaps the building scatter for wall-to-wall lots that fill each
+// block, with only small gaps between lots and off the street.
+export function generateCityMap(seed = Date.now(), { dense = false, intersections = null, buildings = null, packed = false } = {}) {
   const base = dense ? SIMPLE_PROFILES.dense : SIMPLE_PROFILES.classic;
-  const cfg = { ...base };
+  const cfg = { ...base, packed: !!packed };
   if (Number.isInteger(intersections)) {
-    cfg.targetIntersections = Math.max(SIMPLE_MIN_INTERSECTIONS, intersections);
+    cfg.targetIntersections = Math.max(SIMPLE_MIN_INTERSECTIONS, intersections + 4);
   }
   if (Number.isInteger(buildings)) {
     cfg.totalBuildings = Math.max(1, Math.min(90, buildings));
   }
+  // The grid is pruned to a geometric-intersection target; octagons cover
+  // everything but the four corners.
+  const wantLights = cfg.targetIntersections - 4;
   const rng = mulberry32(Number(seed) || 1);
   let best = null;
   for (let attempt = 0; attempt < 16; attempt += 1) {
     const map = generateSimpleOnce(rng, seed, cfg);
     const n = map.intersections.length;
-    if (n === cfg.targetIntersections) return map;
-    if (n >= SIMPLE_MIN_INTERSECTIONS &&
-        (!best || Math.abs(n - cfg.targetIntersections) < Math.abs(best.intersections.length - cfg.targetIntersections))) {
+    if (n === wantLights) return map;
+    if (n >= SIMPLE_MIN_INTERSECTIONS - 4 &&
+        (!best || Math.abs(n - wantLights) < Math.abs(best.intersections.length - wantLights))) {
       best = map;
     }
   }

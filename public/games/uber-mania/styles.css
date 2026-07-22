@@ -1,0 +1,965 @@
+/* Uber Mania — the second Traffic Time game. The board, clock, routes and
+   dice reuse Truck Mania's tm- styles; everything here is what's new:
+   neighbourhood zones, location icons + token circles, the stress bar, ride
+   cards and the tuning panel. */
+
+/* Locations: painted their neighbourhood's color, outlined in a darker shade
+   of the same (set per-building via --um-stroke). */
+.um-loc rect,
+.um-loc polygon {
+  stroke: var(--um-stroke, rgba(18, 22, 28, 0.4));
+  stroke-width: 2;
+}
+
+.um-loc-name {
+  fill: rgba(18, 22, 28, 0.75);
+  font-size: 7px;
+  font-weight: 800;
+  text-anchor: middle;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Uber pickups: one big landmark emoji. */
+.um-loc-emoji {
+  font-size: 27px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The two token circles, each carrying the location's payout symbol until a
+   player claims it. The empty-state fill lives on :not(.um-slot-taken) so a
+   claimed circle's inline player color actually shows. */
+.um-slot:not(.um-slot-taken) {
+  fill: rgba(255, 255, 255, 0.92);
+}
+
+.um-slot {
+  stroke: rgba(18, 22, 28, 0.6);
+  stroke-width: 1.5;
+}
+
+.um-slot-taken {
+  stroke: rgba(18, 22, 28, 0.9);
+}
+
+.um-slot-sym {
+  font-size: 11px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  fill: rgba(18, 22, 28, 0.8);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Duplicate mode: one circle per location — kept small so the identifying
+   corner emoji is the loudest thing on the building. */
+.um-slot-big {
+  stroke-width: 2;
+}
+
+.um-slot-sym-big {
+  font-size: 12px;
+}
+
+/* Time stones wear a lighter purple. */
+.um-loc-timestone .um-slot-sym {
+  fill: #b48fe0;
+}
+
+/* Upgrade spots: a faint outline square while dead, solid black (with a
+   little glow) while the roaming upgrade sits here. */
+.um-upgrade-sq {
+  fill: rgba(18, 22, 28, 0.08);
+  stroke: rgba(18, 22, 28, 0.45);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+}
+
+.um-upgrade-active .um-upgrade-sq {
+  fill: #14181f;
+  stroke: #14181f;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 5px rgba(20, 24, 31, 0.8));
+}
+
+/* The waiting upgrade's icon, sitting on the black square. The fill only
+   shows on glyph icons (⬟) — emoji ignore it. */
+.um-upgrade-icon {
+  font-size: 10px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  fill: #f4f1ea;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* My collected upgrades, chips in the bottom-right panel. */
+.um-upgrades-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 260px;
+}
+
+.um-upgrade-chip {
+  padding: 2px 7px;
+  border-radius: 9px;
+  background: rgba(20, 24, 31, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #e8ecf3;
+  font-size: 10.5px;
+  font-weight: 800;
+  cursor: default;
+}
+
+/* Duplicate mode: every location's own emoji, top left — big, it's how ride
+   cards point at the place. */
+.um-loc-emoji-corner {
+  font-size: 17px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Timed locations: the visiting-period badge, top right of the location. */
+.um-loc-period {
+  font-size: 12px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Closed for the current period: the circle reads muted until its time. */
+.um-loc-offtime .um-slot:not(.um-slot-taken),
+.um-loc-offtime .um-slot-sym {
+  opacity: 0.4;
+}
+
+/* The location the parked car could place a token on right now. */
+.um-loc-can {
+  cursor: pointer;
+}
+
+.um-loc-can rect,
+.um-loc-can polygon:not(.um-slot) {
+  stroke: #ffe17a;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 7px rgba(255, 225, 122, 0.85));
+  animation: um-loc-pulse 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes um-loc-pulse {
+  from { filter: drop-shadow(0 0 3px rgba(255, 225, 122, 0.5)); }
+  to { filter: drop-shadow(0 0 9px rgba(255, 225, 122, 0.95)); }
+}
+
+/* Duplicate mode: the parked location holding a matching ride card — click
+   anywhere off the circle to complete the ride. Declared after .um-loc-can so
+   that when both actions are open the building carries the completion blue
+   while the circle keeps the visit gold. */
+.um-loc-complete {
+  cursor: pointer;
+}
+
+.um-loc-complete rect,
+.um-loc-complete polygon {
+  stroke: #4a72b0;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 7px rgba(74, 114, 176, 0.85));
+  animation: um-loc-pulse-blue 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes um-loc-pulse-blue {
+  from { filter: drop-shadow(0 0 3px rgba(74, 114, 176, 0.5)); }
+  to { filter: drop-shadow(0 0 9px rgba(74, 114, 176, 0.95)); }
+}
+
+.um-loc-can.um-loc-complete .um-slot:not(.um-slot-taken) {
+  stroke: #ffe17a;
+  stroke-width: 2.5;
+}
+
+/* Destinations of my open ride cards. */
+.um-ride-lit rect,
+.um-ride-lit polygon:first-of-type {
+  stroke: #4a72b0;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 6px rgba(74, 114, 176, 0.9));
+}
+
+.um-ride-hover rect,
+.um-ride-hover polygon:first-of-type {
+  stroke: #ffe17a;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 9px rgba(255, 225, 122, 1));
+}
+
+/* The Go button, floating just past the built route's arrow tip. It lives in
+   the .tm-build overlay (which is pointer-events: none), so it must opt back
+   in to be clickable. See-through except its border and text. */
+.um-go {
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.um-go-bg {
+  fill: rgba(255, 255, 255, 0.12);
+  stroke-width: 2.6;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.35));
+}
+
+.um-go:hover .um-go-bg {
+  stroke: #ffe17a;
+  stroke-width: 3;
+  fill: rgba(255, 255, 255, 0.22);
+}
+
+.um-go-text {
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  fill: rgba(18, 22, 28, 0.95);
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 2.5px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The stress bar, to the left of the clock. */
+.um-stress {
+  position: fixed;
+  top: 84px;
+  right: calc(28px + clamp(150px, 17vw, 210px) + 14px);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px 10px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+}
+
+.um-stress-title {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: #e8b4b8;
+}
+
+.um-stress-bar {
+  position: relative;
+  width: 54px;
+  height: clamp(120px, 13vw, 170px);
+  margin: 6px 0 8px;
+}
+
+.um-stress-bar::before {
+  content: "";
+  position: absolute;
+  left: 25px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(#7fce8e, #e5c15a 55%, #e5352b);
+}
+
+.um-stress-num {
+  position: absolute;
+  left: 19px;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ece8df;
+  color: #2a3038;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.um-stress-marker {
+  position: absolute;
+  transform: translateY(-50%);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(18, 22, 28, 0.85);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.um-stress-marker.um-stress-mine {
+  width: 11px;
+  height: 11px;
+  border-color: #fff;
+}
+
+/* Player panel: tokens, stones, stress + ride cards (bottom right). */
+.um-panel {
+  position: fixed;
+  right: 24px;
+  bottom: 84px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.um-panel-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  font-weight: 800;
+  color: #e8ecf3;
+}
+
+.um-stat {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.um-stat-stones {
+  color: #d9c2f0;
+}
+
+.um-token-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(18, 22, 28, 0.85);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.um-rides {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 260px;
+}
+
+.um-ride-card {
+  --hood: #a9c4e2;
+  --hood-dark: #4a5a6e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 74px;
+  padding: 6px 6px 8px;
+  border-radius: 10px;
+  background: var(--hood);
+  border: 2.5px solid var(--hood-dark);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  cursor: default;
+}
+
+.um-ride-card:hover {
+  border-color: #ffe17a;
+}
+
+/* A card drawn this turn: face down until the turn ends. */
+.um-ride-card.um-ride-facedown {
+  --hood-dark: #232a3d;
+  background: repeating-linear-gradient(45deg, #37415a, #37415a 6px, #2f3850 6px, #2f3850 12px);
+}
+
+.um-ride-facedown:hover {
+  border-color: var(--hood-dark);
+}
+
+.um-ride-facedown .um-ride-name {
+  color: rgba(232, 236, 243, 0.85);
+}
+
+.um-ride-name {
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.15;
+  text-align: center;
+  color: rgba(18, 22, 28, 0.85);
+}
+
+.um-ride-emoji {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.um-stat-red {
+  color: #f0a8a2;
+}
+
+/* Day counter in the clock's day/night pill. */
+.um-day-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(42, 48, 56, 0.16);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.tm-clock-daynight.tm-night .um-day-tag {
+  background: rgba(223, 230, 255, 0.16);
+}
+
+.um-day-tag.um-day-late {
+  background: rgba(229, 53, 43, 0.28);
+  color: #ffd9d5;
+}
+
+/* End-of-game results chart */
+.um-results {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 11, 16, 0.62);
+}
+
+.um-results-panel {
+  min-width: min(520px, calc(100vw - 48px));
+  padding: 20px 24px;
+  background: rgba(16, 21, 29, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  color: #e8ecf3;
+  animation: um-results-in 0.3s ease;
+}
+
+@keyframes um-results-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+.um-results-title {
+  font-size: 20px;
+  font-weight: 900;
+  color: #ffe17a;
+}
+
+.um-results-sub {
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.7;
+  margin: 2px 0 14px;
+}
+
+.um-results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.um-results-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.65;
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.um-results-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-weight: 700;
+}
+
+.um-results-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.um-results-winner td {
+  background: rgba(255, 225, 122, 0.09);
+}
+
+.um-results-winner .um-results-total {
+  color: #ffe17a;
+}
+
+.um-results-pts {
+  opacity: 0.65;
+  font-size: 11px;
+  margin-left: 3px;
+}
+
+.um-results-pts.um-results-neg {
+  color: #f0857b;
+  opacity: 1;
+}
+
+.um-results-pts.um-results-pos {
+  color: #7fce8e;
+  opacity: 1;
+}
+
+.um-results-total {
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.um-results-hint {
+  margin-top: 12px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.um-results-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* Tuning panel */
+.um-tune {
+  position: fixed;
+  left: 24px;
+  bottom: 84px;
+  z-index: 6;
+  width: min(430px, calc(100vw - 60px));
+  padding: 14px 16px;
+  background: rgba(16, 21, 29, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  color: #e8ecf3;
+}
+
+.um-tune-title {
+  font-size: 12px;
+  font-weight: 900;
+  margin-bottom: 10px;
+  color: #ffe17a;
+}
+
+.um-tune-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+}
+
+.um-tune-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.um-tune-input {
+  width: 52px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8ecf3;
+  font-weight: 800;
+  text-align: center;
+}
+
+select.um-tune-input {
+  width: auto;
+  text-align: left;
+}
+
+/* A tuning row that doesn't apply under the chosen mode (e.g. uber pickups
+   in duplicate mode). */
+.um-tune-off {
+  opacity: 0.4;
+}
+
+/* The dealt-locations total, under the location counts. */
+.um-tune-total {
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  padding-top: 4px;
+}
+
+select.um-tune-input option {
+  color: #1c2230;
+}
+
+.um-tune-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* Saved tunings list inside the panel */
+.um-tune-saved {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.um-tune-saved-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.um-tune-name {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.07);
+  color: #e8ecf3;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.um-tune-savename {
+  flex: 1;
+}
+
+.um-tune-ok {
+  background: #4f9d57;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.um-tune-del[data-armed] {
+  color: #f0857b;
+}
+
+/* ---------------------------------------------------------------------------
+   The uber layout (body.um-mode, set while an Uber Mania board is up): the
+   map takes the screen, the right rail stacks player chips over the clock and
+   stress bar, the turn buttons sit small next to Leave Game, and the settings
+   bar is compact and collapsible. Scoped to um-mode so Truck Mania keeps its
+   own layout.
+--------------------------------------------------------------------------- */
+
+body.um-mode .shell {
+  max-width: none;
+  padding: 10px 18px 18px;
+}
+
+/* No title, no turn text — the acting player's chip lights up instead. */
+body.um-mode #game-title,
+body.um-mode #turn-status {
+  display: none;
+}
+
+body.um-mode .game-header {
+  margin-bottom: 0;
+  min-height: 0;
+}
+
+body.um-mode .play-area {
+  padding-bottom: 8px;
+}
+
+/* The map, as big as the viewport allows (contents scale with it). */
+body.um-mode .board.truck-mania-board {
+  width: min(calc(100vw - 380px), calc((100vh - 70px) * 1.3333), 1500px);
+  margin: 0 0 8px;
+}
+
+/* Right rail, top to bottom: the settings bar, the player chips, then the
+   clock + stress bar. The left side belongs to the map alone. */
+body.um-mode .tm-controls.um-controls {
+  left: auto;
+  bottom: auto;
+  right: 28px;
+  top: 12px;
+  max-width: min(330px, 42vw);
+  justify-content: flex-end;
+}
+
+body.um-mode .tm-scoreboard {
+  position: fixed;
+  top: 126px;
+  right: 28px;
+  z-index: 5;
+  margin: 0;
+}
+
+body.um-mode .tm-clock {
+  top: 252px;
+}
+
+body.um-mode .um-stress {
+  top: 252px;
+}
+
+body.um-mode .tm-dice {
+  top: clamp(406px, calc(252px + 17vw + 24px), 488px);
+}
+
+/* The tuning panel opens under the settings bar it belongs to. */
+body.um-mode .um-tune {
+  left: auto;
+  bottom: auto;
+  right: 28px;
+  top: 126px;
+}
+
+/* Whose turn it is: their chip glows in their color. */
+body.um-mode .tm-scoreboard .tm-score-turn {
+  box-shadow: 0 0 0 2px var(--pcolor), 0 0 16px var(--pcolor);
+}
+
+/* Compact settings bar (bottom left). */
+body.um-mode .tm-controls.um-controls {
+  padding: 6px 10px;
+  gap: 6px;
+  border-radius: 10px;
+}
+
+body.um-mode .um-controls .tm-btn {
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+body.um-mode .um-controls .tm-speed-wrap,
+body.um-mode .um-controls .tm-ai-wrap {
+  font-size: 11px;
+  gap: 5px;
+}
+
+body.um-mode .um-controls .tm-speed {
+  width: 70px;
+}
+
+/* Blank-stoplight pickers: 🟢 n 🔴 n, right in the settings bar. */
+.um-lights-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.um-light {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.um-light-input {
+  width: 40px;
+  padding: 3px 2px 3px 6px;
+  font-size: 11px;
+  color: #f5f7fb;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+}
+
+/* The action bar next to Leave Game: builder Undo/Restart/Go, turn undo,
+   End turn — all small. */
+.um-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.um-actions-build {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.um-actions-build:empty {
+  display: none;
+}
+
+.um-actions .tm-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  margin: 0;
+}
+
+.um-actions .tm-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+body.um-mode .game-footer .ghost-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .um-stress {
+    right: auto;
+    left: 12px;
+    top: 84px;
+  }
+  body.um-mode .board.truck-mania-board {
+    width: calc(100vw - 60px);
+  }
+}
+
+/* Empty / locked slots on the player's four-slot upgrade board. */
+.um-upgrade-slot {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.35);
+  color: rgba(232, 236, 243, 0.55);
+  background: rgba(20, 24, 31, 0.5);
+  min-width: 22px;
+  text-align: center;
+}
+
+.um-upgrade-locked {
+  opacity: 0.55;
+  border-style: solid;
+}
+
+/* Upgrades left in the depleting supply deck. */
+.um-upgrade-deck {
+  align-self: center;
+  color: rgba(232, 236, 243, 0.6);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: default;
+}
+
+/* Undercut tokens: dots beneath a full location's circles. */
+.um-under-dot {
+  stroke: rgba(18, 22, 28, 0.75);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* Sleep (night-only turn skip): button + free-hours picker. */
+.um-sleep-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.um-sleep-hours {
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(20, 24, 31, 0.85);
+  color: #e8ecf3;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* Neighbourhood-bonus reward chooser, shown as the turn ends. */
+.um-hood-choice {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 13, 18, 0.45);
+  border-radius: inherit;
+}
+
+.um-hood-choice-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(16, 21, 29, 0.97);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+.um-hood-choice-title {
+  color: #eef1f4;
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.um-hood-choice-row {
+  display: flex;
+  gap: 8px;
+}
+
+.um-hood-cancel {
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+/* The fun die: floating banner for a no-dice turn's consolation roll. It
+   tumbles through the three faces (a wobble while the text cycles), then
+   settles with a pop and fades out — same beat as the stress-dice roll. */
+.um-fun-roll {
+  position: fixed;
+  top: 112px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 8px 22px;
+  border-radius: 999px;
+  border: 2px solid #ffe17a;
+  background: rgba(16, 21, 29, 0.96);
+  color: #eef1f4;
+  font-weight: 800;
+  font-size: 15px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.um-fun-rolling {
+  animation: um-fun-wobble 0.18s linear infinite;
+}
+
+@keyframes um-fun-wobble {
+  0% { transform: translateX(-50%) rotate(-1.5deg) scale(0.98); }
+  50% { transform: translateX(-50%) rotate(1.5deg) scale(1.02); }
+  100% { transform: translateX(-50%) rotate(-1.5deg) scale(0.98); }
+}
+
+.um-fun-settled {
+  animation: um-fun-settle 1.6s ease forwards;
+}
+
+@keyframes um-fun-settle {
+  0% { transform: translateX(-50%) scale(1.14); }
+  18% { transform: translateX(-50%) scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+}

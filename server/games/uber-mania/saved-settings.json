@@ -1,0 +1,95 @@
+[
+  {
+    "id": "s1784329169425725",
+    "name": "atempoo 3",
+    "settings": {
+      "rideMode": "ride-2",
+      "timedPeriods": 0,
+      "locations": {
+        "timestone": 9,
+        "token": 9,
+        "destress": 6,
+        "upgrade": 6,
+        "uber": 21
+      },
+      "timeStoneReward": 6,
+      "tokenReward": 3,
+      "startingTokens": 6,
+      "startingTimeStones": 6,
+      "startingStress": 3,
+      "tokensPerFail": 1,
+      "neighbourhoods": 8,
+      "days": 3,
+      "ridePoints": 2,
+      "redPenalty": 3,
+      "welfareTokens": 1,
+      "welfareStones": 2,
+      "blankLights": {
+        "green": 5,
+        "red": 1
+      }
+    }
+  },
+  {
+    "id": "s1784347433029636",
+    "name": "broken?",
+    "settings": {
+      "rideMode": "duplicate",
+      "timedPeriods": 0,
+      "locations": {
+        "timestone": 17,
+        "token": 17,
+        "destress": 11,
+        "upgrade": 6,
+        "uber": 30
+      },
+      "timeStoneReward": 6,
+      "tokenReward": 3,
+      "startingTokens": 6,
+      "startingTimeStones": 6,
+      "startingStress": 3,
+      "tokensPerFail": 1,
+      "neighbourhoods": 8,
+      "days": 3,
+      "ridePoints": 2,
+      "redPenalty": 3,
+      "welfareTokens": 1,
+      "welfareStones": 2,
+      "blankLights": {
+        "green": 5,
+        "red": 1
+      }
+    }
+  },
+  {
+    "id": "s1784474745208253",
+    "name": "prepared",
+    "settings": {
+      "rideMode": "duplicate",
+      "timedPeriods": 2,
+      "locations": {
+        "timestone": 17,
+        "token": 17,
+        "destress": 10,
+        "upgrade": 6,
+        "uber": 30
+      },
+      "timeStoneReward": 6,
+      "tokenReward": 3,
+      "startingTokens": 6,
+      "startingTimeStones": 6,
+      "startingStress": 3,
+      "tokensPerFail": 1,
+      "neighbourhoods": 5,
+      "days": 3,
+      "ridePoints": 2,
+      "redPenalty": 3,
+      "welfareTokens": 1,
+      "welfareStones": 2,
+      "blankLights": {
+        "green": 5,
+        "red": 1
+      }
+    }
+  }
+]
