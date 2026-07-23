@@ -1,3 +1,8 @@
 node_modules/
 .claude/
 .venv/
+
+# Flip Triples NN training artifacts (regenerable, kept local)
+tools/flip-triples/nn/data/
+tools/flip-triples/nn/weights.json
+tools/flip-triples/nn/weights2.json

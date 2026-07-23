@@ -972,7 +972,10 @@ export function computeWinner(state) {
 // their (still valid) values.
 // ---------------------------------------------------------------------------
 
-const TT_BITS = 21;
+// FLIP_TT_BITS env override: long-budget analysis runs (60s+/move) visit
+// hundreds of times more nodes than 2^21 slots and churn the table; offline
+// tools can afford bigger (12 bytes/entry: 24 -> ~200MB per process).
+const TT_BITS = Number(process.env.FLIP_TT_BITS ?? 21);
 const TT_SIZE = 1 << TT_BITS;
 const TT_MASK = TT_SIZE - 1;
 const ttKey = new Uint32Array(TT_SIZE);

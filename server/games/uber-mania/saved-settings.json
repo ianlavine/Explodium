@@ -4,7 +4,10 @@
     "name": "atempoo 3",
     "settings": {
       "rideMode": "ride-2",
+      "upgradeMode": "spawn",
       "timedPeriods": 0,
+      "dayLocations": 11,
+      "nightLocations": 11,
       "locations": {
         "timestone": 9,
         "token": 9,
@@ -35,7 +38,10 @@
     "name": "broken?",
     "settings": {
       "rideMode": "duplicate",
+      "upgradeMode": "spawn",
       "timedPeriods": 0,
+      "dayLocations": 11,
+      "nightLocations": 11,
       "locations": {
         "timestone": 17,
         "token": 17,
@@ -66,13 +72,84 @@
     "name": "prepared",
     "settings": {
       "rideMode": "duplicate",
+      "upgradeMode": "spawn",
       "timedPeriods": 2,
+      "dayLocations": 11,
+      "nightLocations": 11,
       "locations": {
         "timestone": 17,
         "token": 17,
         "destress": 10,
         "upgrade": 6,
         "uber": 30
+      },
+      "timeStoneReward": 6,
+      "tokenReward": 3,
+      "startingTokens": 6,
+      "startingTimeStones": 6,
+      "startingStress": 3,
+      "tokensPerFail": 1,
+      "neighbourhoods": 5,
+      "days": 3,
+      "ridePoints": 2,
+      "redPenalty": 3,
+      "welfareTokens": 1,
+      "welfareStones": 2,
+      "blankLights": {
+        "green": 5,
+        "red": 1
+      }
+    }
+  },
+  {
+    "id": "s1784739761901640",
+    "name": "back to ride2",
+    "settings": {
+      "rideMode": "ride-2",
+      "upgradeMode": "spawn",
+      "timedPeriods": 2,
+      "dayLocations": 11,
+      "nightLocations": 11,
+      "locations": {
+        "timestone": 7,
+        "token": 8,
+        "destress": 5,
+        "upgrade": 6,
+        "uber": 25
+      },
+      "timeStoneReward": 6,
+      "tokenReward": 3,
+      "startingTokens": 6,
+      "startingTimeStones": 6,
+      "startingStress": 3,
+      "tokensPerFail": 1,
+      "neighbourhoods": 5,
+      "days": 3,
+      "ridePoints": 2,
+      "redPenalty": 3,
+      "welfareTokens": 1,
+      "welfareStones": 2,
+      "blankLights": {
+        "green": 5,
+        "red": 1
+      }
+    }
+  },
+  {
+    "id": "s1784743505205518",
+    "name": "ride2 schedule",
+    "settings": {
+      "rideMode": "ride-2",
+      "upgradeMode": "scheduled",
+      "timedPeriods": 2,
+      "dayLocations": 7,
+      "nightLocations": 7,
+      "locations": {
+        "timestone": 7,
+        "token": 8,
+        "destress": 5,
+        "upgrade": 6,
+        "uber": 25
       },
       "timeStoneReward": 6,
       "tokenReward": 3,

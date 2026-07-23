@@ -57,27 +57,64 @@ COLOR_SWAP = np.array([1, 0, 2, 4, 3, 5], dtype=np.int64)
 
 
 def load_positions(path):
-    boards, sides, labels, weights, seeds = [], [], [], [], []
+    boards, sides, zs, svs, vs, solved, seeds = [], [], [], [], [], [], []
     with open(path) as f:
         for line in f:
             rec = json.loads(line)
             states = np.array([SHAPE_OF_CHAR[ch] for ch in rec["board"]], dtype=np.int64)
             boards.append(states)
             sides.append(rec["side"])
-            if rec["solved"]:
-                labels.append(rec["sv"])
-                weights.append(2.0)
-            else:
-                labels.append(rec["z"])
-                weights.append(1.0)
+            zs.append(rec["z"])
+            svs.append(rec["sv"] if rec["solved"] else 0.0)
+            vs.append(rec.get("v", np.nan))  # raw root value; absent in gen-1 data
+            solved.append(rec["solved"])
             seeds.append(rec["seed"])
     return (
         np.stack(boards),
         np.array(sides, dtype=np.int64),
-        np.array(labels, dtype=np.float32),
-        np.array(weights, dtype=np.float32),
+        np.array(zs, dtype=np.float32),
+        np.array(svs, dtype=np.float32),
+        np.array(vs, dtype=np.float32),
+        np.array(solved, dtype=bool),
         np.array(seeds, dtype=np.int64),
     )
+
+
+def isotonic_fit(x, y):
+    """Pool-adjacent-violators: monotone least-squares fit of y on x.
+    Returns (xs, fitted) sorted by x, for use with np.interp."""
+    order = np.argsort(x, kind="stable")
+    xs, ys = x[order], y[order]
+    means, counts = [], []
+    for v in ys:
+        m, c = float(v), 1.0
+        while means and means[-1] > m:
+            pm, pc = means.pop(), counts.pop()
+            m = (pm * pc + m * c) / (pc + c)
+            c += pc
+        means.append(m)
+        counts.append(c)
+    fitted = np.repeat(means, np.array(counts, dtype=np.int64))
+    return xs, fitted
+
+
+def make_labels(z, sv, v, solved, train_mask, blend):
+    """Solved -> exact margin (2x weight). Unsolved with a recorded root value
+    -> blend of the calibrated search value g(v) and the game outcome z, where
+    g is an isotonic map fitted on unsolved TRAIN rows only (E[z | v])."""
+    labels = np.where(solved, sv, z).astype(np.float32)
+    weights = np.where(solved, 2.0, 1.0).astype(np.float32)
+    fit_mask = train_mask & ~solved & ~np.isnan(v)
+    if blend > 0 and fit_mask.sum() > 100:
+        xs, fitted = isotonic_fit(v[fit_mask], z[fit_mask])
+        use = ~solved & ~np.isnan(v)
+        g = np.interp(v[use], xs, fitted).astype(np.float32)
+        labels[use] = blend * g + (1.0 - blend) * z[use]
+        print(
+            f"label blend: g(v) fitted on {int(fit_mask.sum())} unsolved train rows, "
+            f"applied to {int(use.sum())} rows (blend={blend})"
+        )
+    return labels, weights
 
 
 def augment(boards, sides, labels, weights):
@@ -131,7 +168,8 @@ def main():
     ap.add_argument("--data", default=os.path.join(os.path.dirname(__file__), "data/positions.jsonl"))
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "weights.json"))
     ap.add_argument("--epochs", type=int, default=40)
-    ap.add_argument("--hidden", type=int, default=128)
+    ap.add_argument("--blend", type=float, default=0.5, help="weight of calibrated g(v) vs z for unsolved labels")
+    ap.add_argument("--hidden", type=int, default=96)
     ap.add_argument("--hidden2", type=int, default=32)
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -142,18 +180,18 @@ def main():
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
 
-    boards, sides, labels, weights, seeds = load_positions(args.data)
-    n_raw = len(labels)
+    boards, sides, zs, svs, vs, solved_mask, seeds = load_positions(args.data)
+    n_raw = len(zs)
     uniq_seeds = np.unique(seeds)
     rng.shuffle(uniq_seeds)
     n_val_seeds = max(1, int(len(uniq_seeds) * args.val_frac))
     val_seed_set = set(uniq_seeds[:n_val_seeds].tolist())
     val_mask = np.array([s in val_seed_set for s in seeds])
-    solved_mask = weights > 1.5
     print(
         f"loaded {n_raw} positions from {len(uniq_seeds)} games "
         f"({solved_mask.sum()} exactly solved); val: {val_mask.sum()} positions from {n_val_seeds} games"
     )
+    labels, weights = make_labels(zs, svs, vs, solved_mask, ~val_mask, args.blend)
 
     tr_b, tr_s, tr_l, tr_w = augment(
         boards[~val_mask], sides[~val_mask], labels[~val_mask], weights[~val_mask]

@@ -1,0 +1,107 @@
+.board.lino-board {
+  position: relative;
+  display: block;
+  width: min(900px, calc(100vw - 64px));
+  height: min(560px, calc(100vh - 230px));
+  min-height: 420px;
+  margin: 14px 0 132px;
+  overflow: visible;
+}
+
+.lino-field {
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: crosshair;
+}
+
+.lino-field .hidden {
+  display: none;
+}
+
+.lino-core {
+  fill: rgba(255, 255, 255, 0.55);
+  transition: fill 0.12s ease, r 0.12s ease;
+}
+
+.lino-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.lino-dot.selected .lino-core {
+  fill: #ffffff;
+  r: 2.2;
+}
+
+.lino-dot.in-range .lino-core {
+  fill: #7ee2a8;
+  r: 2;
+}
+
+.lino-dot.in-range.unaffordable .lino-core {
+  fill: rgba(255, 255, 255, 0.3);
+}
+
+.lino-cost {
+  font-size: 4.4px;
+  font-weight: 700;
+  text-anchor: middle;
+  fill: #7ee2a8;
+  paint-order: stroke;
+  stroke: rgba(8, 12, 24, 0.9);
+  stroke-width: 1.2px;
+  pointer-events: none;
+}
+
+.lino-dot.unaffordable .lino-cost {
+  fill: #ff8d8d;
+}
+
+.lino-line {
+  stroke-width: 1.1;
+  stroke-linecap: round;
+}
+
+.lino-preview {
+  stroke-width: 0.8;
+  stroke-dasharray: 2.4 1.6;
+  stroke-linecap: round;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.lino-line.lino-p0,
+.lino-preview.lino-p0 {
+  stroke: #38bdf8;
+}
+
+.lino-line.lino-p1,
+.lino-preview.lino-p1 {
+  stroke: #fb7185;
+}
+
+.hand.lino-hud {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.lino-money {
+  padding: 8px 16px;
+  border-radius: 12px;
+  font-weight: 700;
+  font-size: 1.05rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lino-money.lino-p0 {
+  color: #38bdf8;
+}
+
+.lino-money.lino-p1 {
+  color: #fb7185;
+}

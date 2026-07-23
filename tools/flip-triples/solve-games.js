@@ -57,10 +57,12 @@ function setupString(state) {
   return s;
 }
 
-function playOne(seed, ms) {
+// firstSide: which player index moves first (0 = blue, the rulebook default;
+// 1 = red, for pie-rule / color-choice analysis on the same deals).
+function playOne(seed, ms, firstSide = 0) {
   const state = makeRandomDeal({}, mulberry32(seed));
   const setup = setupString(state);
-  let side = 0;
+  let side = firstSide;
   let plies = 0;
   let solvedFromPly = null;
   let solvedValue = null;
@@ -72,21 +74,25 @@ function playOne(seed, ms) {
     const r = search(state, side, { timeMs: ms });
     if (r.solved && solvedFromPly === null) {
       solvedFromPly = plies;
-      solvedValue = -r.value; // red-perspective -> first-player (blue) perspective
+      // red-perspective -> first-player perspective
+      solvedValue = firstSide === 1 ? r.value : -r.value;
     }
     applyMove(state, r.move);
     side = 1 - side;
     plies += 1;
   }
   const res = computeWinner(state);
-  const diff = Number((res.bluePoints - res.redPoints).toFixed(1)); // first minus second
+  const firstPts = firstSide === 1 ? res.redPoints : res.bluePoints;
+  const secondPts = firstSide === 1 ? res.bluePoints : res.redPoints;
+  const firstColor = firstSide === 1 ? "red" : "blue";
   return {
     seed,
     setup,
-    winner: res.winner === "blue" ? "first" : res.winner === "red" ? "second" : "tie",
-    diff,
-    firstPoints: Number(res.bluePoints.toFixed(1)),
-    secondPoints: Number(res.redPoints.toFixed(1)),
+    first: firstSide,
+    winner: res.winner === "tie" ? "tie" : res.winner === firstColor ? "first" : "second",
+    diff: Number((firstPts - secondPts).toFixed(1)),
+    firstPoints: Number(firstPts.toFixed(1)),
+    secondPoints: Number(secondPts.toFixed(1)),
     plies,
     solvedFromPly,
     solvedValue,
@@ -99,19 +105,29 @@ function playOne(seed, ms) {
 const args = parseArgs(process.argv.slice(2));
 
 if (args.child) {
-  // Child mode: play the given seed range, append results, report via IPC.
-  const [lo, hi] = String(args.seeds).split("-").map(Number);
+  // Child mode: play the given seed range (or explicit comma-joined list),
+  // append results, report via IPC.
+  const seedList = args.seedList
+    ? String(args.seedList).split(",").map(Number)
+    : (() => {
+        const [lo, hi] = String(args.seeds).split("-").map(Number);
+        return Array.from({ length: hi - lo }, (_, i) => lo + i);
+      })();
   const ms = Number(args.ms);
+  const firstSide = Number(args.first ?? 0);
   const out = String(args.out);
-  for (let seed = lo; seed < hi; seed += 1) {
-    const rec = playOne(seed, ms);
+  for (const seed of seedList) {
+    const rec = playOne(seed, ms, firstSide);
     fs.appendFileSync(out, JSON.stringify(rec) + "\n");
     if (process.send) process.send({ done: seed });
   }
   process.exit(0);
 }
 
-const games = Number(args.games ?? 100);
+// --seedFile <path>: JSON array of explicit seeds to play (e.g. to mirror an
+// existing run's exact deals); overrides --games/--seed range mode.
+const explicitSeeds = args.seedFile ? JSON.parse(fs.readFileSync(String(args.seedFile), "utf8")) : null;
+const games = explicitSeeds ? explicitSeeds.length : Number(args.games ?? 100);
 const ms = Number(args.ms ?? 5000);
 const workers = Number(args.workers ?? Math.max(1, os.cpus().length - 2));
 const seedBase = Number(args.seed ?? 100000);
@@ -119,7 +135,9 @@ const out = String(args.out ?? path.join(__dirname, "analysis/solved-games.jsonl
 fs.mkdirSync(path.dirname(out), { recursive: true });
 
 console.log(
-  `solve-games: ${games} games at ${ms}ms/move on ${workers} workers, seeds ${seedBase}..${seedBase + games - 1} -> ${out}`
+  `solve-games: ${games} games at ${ms}ms/move on ${workers} workers, seeds ${
+    explicitSeeds ? `from ${args.seedFile}` : `${seedBase}..${seedBase + games - 1}`
+  } -> ${out}`
 );
 const t0 = Date.now();
 const per = Math.ceil(games / workers);
@@ -128,8 +146,19 @@ let completed = 0;
 for (let w = 0; w < workers; w += 1) {
   const lo = seedBase + w * per;
   const hi = Math.min(seedBase + games, lo + per);
-  if (lo >= hi) continue;
-  const child = fork(__filename, ["--child", "--seeds", `${lo}-${hi}`, "--ms", String(ms), "--out", out]);
+  if (!explicitSeeds && lo >= hi) continue;
+  const chunk = explicitSeeds ? explicitSeeds.slice(w * per, (w + 1) * per) : null;
+  if (explicitSeeds && chunk.length === 0) continue;
+  const child = fork(__filename, [
+    "--child",
+    ...(explicitSeeds ? ["--seedList", chunk.join(",")] : ["--seeds", `${lo}-${hi}`]),
+    "--ms",
+    String(ms),
+    "--first",
+    String(args.first ?? 0),
+    "--out",
+    out
+  ]);
   running += 1;
   child.on("message", () => {
     completed += 1;
@@ -150,7 +179,10 @@ function summarize() {
     .trim()
     .split("\n")
     .map((l) => JSON.parse(l));
-  const mine = lines.filter((r) => r.seed >= seedBase && r.seed < seedBase + games && r.ms === ms);
+  const seedSet = explicitSeeds ? new Set(explicitSeeds) : null;
+  const mine = lines.filter(
+    (r) => (seedSet ? seedSet.has(r.seed) : r.seed >= seedBase && r.seed < seedBase + games) && r.ms === ms
+  );
   const n = mine.length;
   const first = mine.filter((r) => r.winner === "first").length;
   const second = mine.filter((r) => r.winner === "second").length;

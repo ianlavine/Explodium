@@ -57,16 +57,22 @@ const isNight = (t) => t >= 19 || t <= 6;
 // 3 — Morning, Afternoon, Night: every circle location belongs to one period
 //     (morning 6am–noon, afternoon 1pm–8pm, night 9pm–5am) and only opens
 //     while the clock sits inside it.
-// 2 — Day, Night: a third of circle locations open in the day (7am–6pm), a
-//     third at night (7pm–6am), and a third are unrestricted (no period).
+// 2 — Day, Night: the settings' dayLocations count opens only in the day
+//     (7am–6pm) and nightLocations only at night (7pm–6am); every leftover
+//     circle location is unrestricted (no period).
 // (Keep these in sync with the client.)
 const PERIODS = ["morning", "afternoon", "night"];
 const periodOf = (t) => (t >= 6 && t <= 12 ? "morning" : t >= 13 && t <= 20 ? "afternoon" : "night");
-const DAY_NIGHT = ["day", "night", null]; // null = no time requirement
 const dayNightOf = (t) => (t >= 7 && t <= 18 ? "day" : "night");
 // Is this location open right now under the settings' timed scheme?
 const locOpen = (settings, b, t) =>
   !b.period || ((settings.timedPeriods ?? 0) === 2 ? dayNightOf(t) : periodOf(t)) === b.period;
+
+// Scheduled upgrade mode slices the day into six 4-hour windows — 1–4am,
+// 5–8am, 9am–12pm, 1–4pm, 5–8pm, 9pm–12am — and each upgrade location only
+// opens during its own. (Keep windowOf in sync with the client.)
+const UPGRADE_WINDOW_COUNT = 6;
+const windowOf = (t) => Math.floor(((t + 23) % 24) / 4);
 
 const PLAYER_COLORS = ["#3ac0c0", "#e0559c", "#e0a13a", "#7b6fe0"];
 
@@ -193,13 +199,24 @@ const DESTRESS_TO = 4; // where sleep lands (superCalm: 5)
 // both.
 const RIDE_MODES = ["ride-2", "ride-pickup", "duplicate"];
 
+// Upgrade modes: "spawn" (default) keeps the one roaming upgrade — a random
+// new one appears at another upgrade location when it's taken. "scheduled"
+// deals an upgrade to EVERY upgrade location up front; each location gets a
+// fixed 4-hour window and only opens during it, and nothing respawns.
+const UPGRADE_MODES = ["spawn", "scheduled"];
+
 const BASE_SETTINGS = {
   rideMode: "ride-2",
+  upgradeMode: "spawn",
   // How many locations of each type get seated (≈45 total).
   locations: { timestone: 11, token: 11, destress: 11, upgrade: 6, uber: 12 },
   // Timed locations: 0 (none — no periods, no rules) or 3 (the three visiting
   // periods; circle locations only open during theirs).
   timedPeriods: 0,
+  // The Day, Night scheme (timedPeriods 2): how many circle locations open
+  // only in the day and only at night — the leftovers carry no period.
+  dayLocations: 11,
+  nightLocations: 11,
   timeStoneReward: 4, // stones a time-stone location pays
   tokenReward: 3,     // tokens a token location pays
   startingTokens: 10,
@@ -250,7 +267,10 @@ function sanitizeSettings(raw) {
   if (total < 1) return null; // a board with no locations isn't a game
   return {
     rideMode: RIDE_MODES.includes(raw.rideMode) ? raw.rideMode : BASE_SETTINGS.rideMode,
+    upgradeMode: UPGRADE_MODES.includes(raw.upgradeMode) ? raw.upgradeMode : BASE_SETTINGS.upgradeMode,
     timedPeriods: [2, 3].includes(Number(raw.timedPeriods)) ? Number(raw.timedPeriods) : 0,
+    dayLocations: intClamp(raw.dayLocations, 0, 60, BASE_SETTINGS.dayLocations),
+    nightLocations: intClamp(raw.nightLocations, 0, 60, BASE_SETTINGS.nightLocations),
     locations,
     timeStoneReward: intClamp(raw.timeStoneReward, 0, 20, BASE_SETTINGS.timeStoneReward),
     tokenReward: intClamp(raw.tokenReward, 0, 20, BASE_SETTINGS.tokenReward),
@@ -358,6 +378,12 @@ function assignLocations(map, settings) {
     delete b.name;
     delete b.emoji;
     delete b.period;
+    delete b.upgrade;
+    delete b.window;
+    // Upgrade locations get trimmed to a single entrance below, and a
+    // re-deal can move them — so every deal starts from the full set.
+    if (b.baseConnectors) b.connectors = b.baseConnectors.map((c) => ({ ...c }));
+    else b.baseConnectors = (b.connectors ?? []).map((c) => ({ ...c }));
   });
 
   // Duplicate mode: no uber pickups — every location is a one-circle reward
@@ -374,6 +400,20 @@ function assignLocations(map, settings) {
   const places = shuffle(UBER_PLACES);
   const emojis = shuffle(LOC_EMOJIS);
   const timed = [2, 3].includes(settings.timedPeriods ?? 0) ? settings.timedPeriods : 0;
+  // The Day, Night scheme deals exactly the settings' day and night counts
+  // over the circle locations (shuffled so they spread across types and
+  // hoods); every leftover carries no period and opens whenever.
+  let dayNightBag = null;
+  if (timed === 2) {
+    const circleTotal = deal.filter((t) => t !== "uber" && t !== "upgrade").length;
+    const day = Math.min(circleTotal, Math.max(0, settings.dayLocations ?? 0));
+    const night = Math.min(circleTotal - day, Math.max(0, settings.nightLocations ?? 0));
+    dayNightBag = shuffle([
+      ...Array(day).fill("day"),
+      ...Array(night).fill("night"),
+      ...Array(circleTotal - day - night).fill(null)
+    ]);
+  }
   let ni = 0;
   let pi = 0;
   let pri = 0; // circle locations dealt — round-robins the periods
@@ -382,6 +422,10 @@ function assignLocations(map, settings) {
     const b = reachable[i];
     b.role = "loc";
     b.locType = type;
+    if (type === "upgrade" && (b.connectors ?? []).length > 1) {
+      // Upgrade locations have one and only one entrance.
+      b.connectors = [b.connectors[Math.floor(Math.random() * b.connectors.length)]];
+    }
     if (type === "uber") {
       // A landmark: a big emoji on the board, no token circles — visiting
       // completes matching ride cards, and using it deals a fresh one.
@@ -405,9 +449,8 @@ function assignLocations(map, settings) {
           b.period = PERIODS[pri % PERIODS.length];
           pri += 1;
         } else if (timed === 2) {
-          const p = DAY_NIGHT[pri % DAY_NIGHT.length];
+          const p = dayNightBag.length ? dayNightBag.pop() : null;
           if (p) b.period = p;
-          pri += 1;
         }
       }
     }
@@ -480,6 +523,9 @@ export function createUberManiaGame({ io, rooms }) {
     const aiCount = Math.max(0, Math.min(maxAi, room.uberMania.aiCount ?? maxAi));
     room.uberMania.aiCount = aiCount;
     room.uberMania.hoods = assignLocations(room.uberMania.map, settings);
+    // The deal trims upgrade locations to a single entrance (and a re-deal
+    // can move them), so the parking spots are re-derived to match.
+    room.uberMania.map.spots = deriveSpots(room.uberMania.map);
     setBlankLights(
       room.uberMania.map.intersections,
       settings.blankLights?.green ?? 6,
@@ -527,10 +573,25 @@ export function createUberManiaGame({ io, rooms }) {
       ...UPGRADE_TYPES, ...UPGRADE_TYPES,
       ...(room.uberMania.hoods ?? []).map((h) => `hood:${h.id}`)
     ]);
-    // One roaming upgrade: it starts at a random upgrade location and hops to
-    // another (as the next draw from the deck) whenever someone picks it up.
-    room.uberMania.upgradeAt = pickUpgradeLocation(room, null);
-    room.uberMania.upgradeType = room.uberMania.upgradeAt != null ? drawUpgrade(room) : null;
+    if (settings.upgradeMode === "scheduled") {
+      // Scheduled mode: every upgrade location shows a dealt upgrade from
+      // the start, each behind its own 4-hour window (round-robined over a
+      // shuffled order). Taken upgrades never respawn.
+      room.uberMania.upgradeAt = null;
+      room.uberMania.upgradeType = null;
+      const locs = shuffle((room.uberMania.map.blocks ?? []).flatMap((bl) => bl.buildings ?? [])
+        .filter((b) => b.role === "loc" && b.locType === "upgrade"));
+      locs.forEach((b, i) => {
+        b.window = i % UPGRADE_WINDOW_COUNT;
+        b.upgrade = drawUpgrade(room); // null once the deck runs dry
+      });
+    } else {
+      // One roaming upgrade: it starts at a random upgrade location and hops
+      // to another (as the next draw from the deck) whenever someone picks it
+      // up.
+      room.uberMania.upgradeAt = pickUpgradeLocation(room, null);
+      room.uberMania.upgradeType = room.uberMania.upgradeAt != null ? drawUpgrade(room) : null;
+    }
     room.uberMania.aiGraph = null; // rebuilt lazily against the current map
     room.uberMania.aiMove = null;  // transient: an AI's drive, for the clients to animate
   }
@@ -638,7 +699,12 @@ export function createUberManiaGame({ io, rooms }) {
         settings: S(room),
         upgradeAt: room.uberMania.upgradeAt ?? null,
         upgradeType: room.uberMania.upgradeType ?? null,
-        upgradeDeckCount: (room.uberMania.upgradeDeck ?? []).length,
+        // Scheduled mode has no supply deck in play — the count is how many
+        // dealt upgrades are still waiting on the board.
+        upgradeDeckCount: S(room).upgradeMode === "scheduled"
+          ? (room.uberMania.map.blocks ?? []).flatMap((bl) => bl.buildings ?? [])
+            .filter((b) => b.upgrade).length
+          : (room.uberMania.upgradeDeck ?? []).length,
         upgradeChampions: room.uberMania.upgradeChampions ?? [],
         maxAi: maxAiFor(room), // free seats — bounds the AI-count picker
         aiMove: room.uberMania.aiMove ?? null,
@@ -714,15 +780,19 @@ export function createUberManiaGame({ io, rooms }) {
   }
 
   // Deal a ride card: a random OTHER uber location on the board — never one
-  // in the neighbourhood the player is standing in (`from` is the building
-  // they're at, or null off-board), unless every other uber location shares it.
+  // the player already holds a card for (a hand carries no duplicates; if
+  // every destination is held, nothing is dealt), and never one in the
+  // neighbourhood the player is standing in (`from` is the building they're
+  // at, or null off-board), unless every other uber location shares it.
   // Cards dealt mid-turn arrive face down: inert until the turn ends and they
   // flip up (the setup deal is face up — the game opens on known cards).
   function dealRide(room, player, from = null, faceDown = true) {
     // Ride destinations: uber pickups — or, in duplicate mode, any location.
     const duplicate = S(room).rideMode === "duplicate";
+    const held = new Set((player.rides ?? []).map((r) => r.loc));
     const dests = (room.uberMania.map.blocks ?? []).flatMap((bl) => bl.buildings ?? [])
-      .filter((b) => b.role === "loc" && (duplicate || b.locType === "uber") && b.bid !== from?.bid);
+      .filter((b) => b.role === "loc" && (duplicate || b.locType === "uber") &&
+        b.bid !== from?.bid && !held.has(b.bid));
     if (!dests.length) return;
     const otherHood = from?.hood != null ? dests.filter((b) => b.hood !== from.hood) : dests;
     const locs = (otherHood.length ? otherHood : dests).map((b) => b.bid);
@@ -765,13 +835,25 @@ export function createUberManiaGame({ io, rooms }) {
       if (S(room).rideMode !== "ride-pickup") return null;
       dealRide(room, player, b);
     } else if (b.locType === "upgrade") {
-      // Free to use, no token — but only the one location currently holding
-      // the roaming upgrade; the rest sit dead. Picking it up respawns the
-      // deck's next draw at another upgrade location. The player board caps
-      // the hand: two slots, plus the neighbourhood-visit unlocks.
-      if (room.uberMania.upgradeAt !== b.bid) return null;
-      const type = room.uberMania.upgradeType;
-      if (!type) return null;
+      // Free to use, no token. The player board caps the hand: two slots,
+      // plus the neighbourhood-visit unlocks.
+      const scheduled = S(room).upgradeMode === "scheduled";
+      let type;
+      if (scheduled) {
+        // Scheduled mode: the location's own dealt upgrade, only during its
+        // 4-hour window (time agnostics ignore the window), never respawned.
+        type = b.upgrade;
+        if (!type) return null;
+        if (b.window != null && !hasUp(player, "timeAgnostic") &&
+            windowOf(room.uberMania.time ?? START_TIME) !== b.window) return null;
+      } else {
+        // Spawn mode: only the one location currently holding the roaming
+        // upgrade; the rest sit dead. Picking it up respawns the deck's next
+        // draw at another upgrade location.
+        if (room.uberMania.upgradeAt !== b.bid) return null;
+        type = room.uberMania.upgradeType;
+        if (!type) return null;
+      }
       if ((player.upgrades ?? []).length >= upgradeCap(room, seat)) return null;
       (player.upgrades ??= []).push(type);
       // Extra ride kicks in immediately: the hand grows by one card.
@@ -783,10 +865,14 @@ export function createUberManiaGame({ io, rooms }) {
         const champs = (room.uberMania.upgradeChampions ??= []);
         if (!champs.includes(seat)) champs.push(seat);
       }
-      room.uberMania.upgradeType = drawUpgrade(room);
-      room.uberMania.upgradeAt = room.uberMania.upgradeType
-        ? pickUpgradeLocation(room, b.bid)
-        : null;
+      if (scheduled) {
+        b.upgrade = null;
+      } else {
+        room.uberMania.upgradeType = drawUpgrade(room);
+        room.uberMania.upgradeAt = room.uberMania.upgradeType
+          ? pickUpgradeLocation(room, b.bid)
+          : null;
+      }
     } else {
       if ((player.tokens ?? 0) < 1) return null;
       if (!Array.isArray(b.slots)) return null;
@@ -1264,11 +1350,16 @@ export function createUberManiaGame({ io, rooms }) {
     if (b.locType === "upgrade") {
       // Free action for a real perk — but a type the AI already holds is
       // nearly worthless, dead spots are worth nothing, and a full player
-      // board can't take one at all.
-      if (room.uberMania.upgradeAt !== b.bid || !room.uberMania.upgradeType) return 0;
+      // board can't take one at all. Scheduled mode: the location's own
+      // upgrade, only while its 4-hour window is open.
+      const type = settings.upgradeMode === "scheduled"
+        ? (b.window == null || hasUp(player, "timeAgnostic") ||
+           windowOf(room.uberMania.time ?? START_TIME) === b.window ? b.upgrade : null)
+        : (room.uberMania.upgradeAt === b.bid ? room.uberMania.upgradeType : null);
+      if (!type) return 0;
       const held = (player.upgrades ?? []).length;
       if (held >= upgradeCap(room, seat)) return 0;
-      if (hasUp(player, room.uberMania.upgradeType)) return 0.15;
+      if (hasUp(player, type)) return 0.15;
       // The fourth pickup banks the champions' race points (7 / 5 / 3 / 1).
       const racePts = held === 3
         ? Math.max(1, 7 - 2 * (room.uberMania.upgradeChampions ?? []).length)

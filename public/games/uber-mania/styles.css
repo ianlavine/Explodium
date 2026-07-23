@@ -64,6 +64,12 @@
   font-size: 12px;
 }
 
+/* Ride-2 / ride-pickup: the location IS its two big circles — no name, no
+   imagery. A heavier stroke keeps them reading at the larger size. */
+.um-slot-xl {
+  stroke-width: 2;
+}
+
 /* Time stones wear a lighter purple. */
 .um-loc-timestone .um-slot-sym {
   fill: #b48fe0;
@@ -86,7 +92,8 @@
 }
 
 /* The waiting upgrade's icon, sitting on the black square. The fill only
-   shows on glyph icons (⬟) — emoji ignore it. */
+   shows on glyph icons (⬟) — emoji ignore it. (The size is set inline,
+   scaled to the square.) */
 .um-upgrade-icon {
   font-size: 10px;
   text-anchor: middle;
@@ -94,6 +101,28 @@
   fill: #f4f1ea;
   pointer-events: none;
   user-select: none;
+}
+
+/* Scheduled upgrade mode: the location's 4-hour window, along the square's
+   top edge — dark on the faint dead square, light on the active black one. */
+.um-upgrade-window {
+  font-size: 7px;
+  font-weight: 800;
+  text-anchor: middle;
+  fill: rgba(18, 22, 28, 0.75);
+  pointer-events: none;
+  user-select: none;
+}
+
+.um-upgrade-active .um-upgrade-window {
+  fill: rgba(247, 244, 238, 0.92);
+}
+
+/* A scheduled upgrade waiting outside its window: muted until its time. */
+.um-loc-offtime .um-upgrade-sq,
+.um-loc-offtime .um-upgrade-icon,
+.um-loc-offtime .um-upgrade-window {
+  opacity: 0.45;
 }
 
 /* My collected upgrades, chips in the bottom-right panel. */
@@ -565,7 +594,8 @@
 
 .um-tune-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …) so a wide select can't blow a column past the panel edge */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px 14px;
 }
 
@@ -591,6 +621,7 @@
 
 select.um-tune-input {
   width: auto;
+  min-width: 0;
   text-align: left;
 }
 
@@ -732,9 +763,9 @@ body.um-mode .tm-dice {
 
 /* The tuning panel opens under the settings bar it belongs to. */
 body.um-mode .um-tune {
-  left: auto;
+  left: 28px;
+  right: auto;
   bottom: auto;
-  right: 28px;
   top: 126px;
 }
 
@@ -923,43 +954,49 @@ body.um-mode .game-footer .ghost-btn {
   font-size: 11px;
 }
 
-/* The fun die: floating banner for a no-dice turn's consolation roll. It
-   tumbles through the three faces (a wobble while the text cycles), then
-   settles with a pop and fades out — same beat as the stress-dice roll. */
-.um-fun-roll {
+/* The fun die: a no-dice turn's consolation roll. Same look, spot and beat
+   as the stress-dice panel (grown while tumbling, right side of the screen),
+   but its one die shakes through the three reward faces instead of pips. It
+   keeps its own class so renderDice() never tears it down mid-roll. */
+.um-fun-dice {
   position: fixed;
-  top: 112px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 40;
-  padding: 8px 22px;
-  border-radius: 999px;
-  border: 2px solid #ffe17a;
+  right: 28px;
+  top: clamp(406px, calc(252px + 17vw + 24px), 488px);
+  width: clamp(150px, 17vw, 210px);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
   background: rgba(16, 21, 29, 0.96);
-  color: #eef1f4;
-  font-weight: 800;
-  font-size: 15px;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+  transform-origin: top right;
+  transform: scale(1.65);
+  transition: transform 0.25s ease;
+  animation: tm-dice-grow 0.25s ease;
   pointer-events: none;
 }
 
-.um-fun-rolling {
-  animation: um-fun-wobble 0.18s linear infinite;
+/* Settled: the panel shrinks back like the stress panel does. */
+.um-fun-dice.um-fun-done {
+  transform: scale(1);
 }
 
-@keyframes um-fun-wobble {
-  0% { transform: translateX(-50%) rotate(-1.5deg) scale(0.98); }
-  50% { transform: translateX(-50%) rotate(1.5deg) scale(1.02); }
-  100% { transform: translateX(-50%) rotate(-1.5deg) scale(0.98); }
+/* The reward face rides in a die box; the grown-panel shake reuses the
+   stress dice's tumble. */
+.um-fun-die {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: #23272e; /* the ⬟ face on the light die */
 }
 
-.um-fun-settled {
-  animation: um-fun-settle 1.6s ease forwards;
-}
-
-@keyframes um-fun-settle {
-  0% { transform: translateX(-50%) scale(1.14); }
-  18% { transform: translateX(-50%) scale(1); }
-  80% { opacity: 1; }
-  100% { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+.um-fun-dice .tm-die-rolling {
+  animation: tm-die-shake-big 0.13s linear infinite;
 }

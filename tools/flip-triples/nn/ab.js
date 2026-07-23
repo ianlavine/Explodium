@@ -49,7 +49,9 @@ function parseArgs(argv) {
 }
 
 // netSide: player index (0 = first/blue, 1 = second/red) played by the net.
-function playGame(seed, netSide, ms) {
+// depth > 0 switches to equal-fixed-depth mode (speed-neutral eval-quality
+// diagnostic; per the parity lesson, both agents always search the SAME depth).
+function playGame(seed, netSide, ms, depth) {
   const state = makeRandomDeal({}, mulberry32(seed));
   let side = 0;
   while (!isPhaseOver(state)) {
@@ -58,7 +60,9 @@ function playGame(seed, netSide, ms) {
       continue;
     }
     setEvalNet(side === netSide);
-    const r = search(state, side, { timeMs: ms });
+    const r = depth > 0
+      ? search(state, side, { timeMs: 600000, maxDepth: depth })
+      : search(state, side, { timeMs: ms });
     applyMove(state, r.move);
     side = 1 - side;
   }
@@ -78,10 +82,11 @@ const args = parseArgs(process.argv.slice(2));
 if (args.child) {
   const [lo, hi] = String(args.seeds).split("-").map(Number);
   const ms = Number(args.ms);
+  const depth = Number(args.depth ?? 0);
   setEvalNet(JSON.parse(fs.readFileSync(String(args.weights), "utf8")));
   for (let seed = lo; seed < hi; seed += 1) {
     for (const netSide of [0, 1]) {
-      const rec = playGame(seed, netSide, ms);
+      const rec = playGame(seed, netSide, ms, depth);
       if (process.send) process.send(rec);
     }
   }
@@ -90,12 +95,13 @@ if (args.child) {
 
 const deals = Number(args.deals ?? 100);
 const ms = Number(args.ms ?? 250);
+const depth = Number(args.depth ?? 0);
 const workers = Number(args.workers ?? Math.max(1, os.cpus().length - 2));
 const seedBase = Number(args.seed ?? 700000);
 const weightsPath = String(args.weights ?? path.join(__dirname, "weights.json"));
 
 console.log(
-  `ab: ${deals} mirrored deals (${deals * 2} games) at ${ms}ms/move, net=${weightsPath}, seeds ${seedBase}.., ${workers} workers`
+  `ab: ${deals} mirrored deals (${deals * 2} games) at ${depth > 0 ? `fixed depth ${depth}` : `${ms}ms/move`}, net=${weightsPath}, seeds ${seedBase}.., ${workers} workers`
 );
 const t0 = Date.now();
 const per = Math.ceil(deals / workers);
@@ -111,6 +117,8 @@ for (let w = 0; w < workers; w += 1) {
     `${lo}-${hi}`,
     "--ms",
     String(ms),
+    "--depth",
+    String(depth),
     "--weights",
     weightsPath
   ]);

@@ -83,6 +83,21 @@ const dayNightOf = (t) => (t >= 7 && t <= 18 ? "day" : "night");
 const locOpen = (b, t) =>
   !b.period || ((Number(settingsState?.timedPeriods) === 2 ? dayNightOf(t) : periodOf(t)) === b.period);
 
+// Scheduled upgrade mode: six 4-hour windows over the day; each upgrade
+// location only opens during its own (b.window). (Keep in sync with the
+// server's windowOf.)
+const UPGRADE_WINDOW_LABELS = ["1–4am", "5–8am", "9am–12pm", "1–4pm", "5–8pm", "9pm–12am"];
+const upgradeWindowOf = (t) => Math.floor(((t + 23) % 24) / 4);
+const isScheduledUpgrades = () => settingsState?.upgradeMode === "scheduled";
+// The upgrade waiting at this location right now, or null — scheduled mode
+// reads the building's own dealt upgrade, spawn mode the roaming one.
+const upgradeTypeAt = (b) =>
+  isScheduledUpgrades() ? (b.upgrade ?? null) : (upgradeAtState === b.bid ? upgradeTypeState : null);
+// Scheduled mode: is this upgrade location outside its 4-hour window?
+const upgradeWindowClosed = (b) =>
+  isScheduledUpgrades() && b.window != null && !hasUpgrade("timeAgnostic") &&
+  upgradeWindowOf(timeState) !== b.window;
+
 // Is this hex color dark enough that text on it should go light?
 function isDarkColor(hex) {
   const n = parseInt(String(hex).slice(1), 16);
@@ -430,41 +445,58 @@ function appendBuilding(parent, building) {
     const icon = svgEl("text", { x: cx, y: cy + 1, class: "um-loc-emoji" }, g);
     icon.textContent = building.emoji ?? "🚕";
   } else if (building.role === "loc" && building.locType === "upgrade") {
-    // Upgrade spot: name up top and the upgrade square below — solid black
-    // while the roaming upgrade sits here, a faint outline while dead.
+    // Upgrade spot: no name, no imagery — just the upgrade square, big
+    // enough to fill most of the lot. Solid black while an upgrade sits
+    // here, a faint outline while dead. Scheduled mode wears its 4-hour
+    // window along the square's top edge. (Duplicate mode leaves room for
+    // the identifying corner emoji.)
     const [cx, cy] = buildingCentroid(building);
-    const name = svgEl("text", { x: cx, y: cy - 12, class: "um-loc-name" }, g);
-    name.textContent = building.name ?? "";
-    if (isDarkColor(fillColor)) name.style.fill = "rgba(247, 244, 238, 0.95)";
+    const bb = buildingBBox(building);
+    const side = Math.max(
+      14,
+      Math.min(bb.maxX - bb.minX, bb.maxY - bb.minY) - (isDuplicateMode() ? 26 : 12)
+    );
     svgEl("rect", {
-      x: cx - 8, y: cy - 2, width: 16, height: 16, rx: 2,
+      x: cx - side / 2, y: cy - side / 2, width: side, height: side, rx: 3,
       class: "um-upgrade-sq"
     }, g);
-    // The roaming upgrade's icon, filled in by refreshLocations when it's here.
-    svgEl("text", { x: cx, y: cy + 6, class: "um-upgrade-icon" }, g);
+    // The waiting upgrade's icon, filled in by refreshLocations — sized to
+    // the square.
+    const icon = svgEl("text", { x: cx, y: cy + side * 0.06, class: "um-upgrade-icon" }, g);
+    icon.style.fontSize = `${Math.max(10, Math.round(side * 0.4))}px`;
+    if (building.window != null) {
+      const label = svgEl("text", { x: cx, y: cy - side / 2 + 7.5, class: "um-upgrade-window" }, g);
+      label.textContent = UPGRADE_WINDOW_LABELS[building.window] ?? "";
+    }
     appendLocEmoji(g, building);
   } else if (building.role === "loc") {
     const [cx, cy] = buildingCentroid(building);
-    // Name up top, the two token circles below — each empty circle carries
-    // the payout symbol, replaced by the claimer's color once taken.
-    const name = svgEl("text", { x: cx, y: cy - 12, class: "um-loc-name" }, g);
-    name.textContent = building.name ?? "";
-    if (isDarkColor(fillColor)) name.style.fill = "rgba(247, 244, 238, 0.95)";
+    const dup = isDuplicateMode();
+    if (dup) {
+      // Duplicate mode keeps the name up top — ride cards point at the
+      // location by name and emoji.
+      const name = svgEl("text", { x: cx, y: cy - 12, class: "um-loc-name" }, g);
+      name.textContent = building.name ?? "";
+      if (isDarkColor(fillColor)) name.style.fill = "rgba(247, 244, 238, 0.95)";
+    }
+    // Ride-2 / ride-pickup: no name, no imagery — just the two big token
+    // circles carrying the payout symbol, replaced by the claimer's color
+    // once taken. (Duplicate mode: its compact single circle under the name.)
     const slots = svgEl("g", { class: "um-loc-slots" }, g);
-    // Duplicate mode deals one circle per location — draw it big and centered,
-    // with the payout symbol large inside.
     const slotArr = building.slots ?? [null, null];
     const single = slotArr.length === 1;
+    const geom = slotGeometry(building);
     slotArr.forEach((owner, i) => {
-      const x = single ? cx : cx + (i === 0 ? -11 : 11);
+      const [x, y] = geom.centers[i] ?? [cx, cy];
       const c = svgEl("circle", {
-        cx: x, cy: cy + 6, r: 10,
-        class: single ? "um-slot um-slot-big" : "um-slot"
+        cx: x, cy: y, r: geom.r,
+        class: dup ? (single ? "um-slot um-slot-big" : "um-slot") : "um-slot um-slot-xl"
       }, slots);
       const sym = svgEl("text", {
-        x, y: cy + 6.5,
-        class: single ? "um-slot-sym um-slot-sym-big" : "um-slot-sym"
+        x, y: y + 0.5,
+        class: dup && single ? "um-slot-sym um-slot-sym-big" : "um-slot-sym"
       }, slots);
+      if (!dup) sym.style.fontSize = `${geom.sym}px`;
       sym.textContent = SLOT_SYMBOLS[building.locType] ?? "";
       if (owner != null) {
         c.style.fill = playersState[owner]?.color ?? "#888";
@@ -483,6 +515,34 @@ function appendBuilding(parent, building) {
     svgEl("g", { class: "um-loc-under" }, g);
     appendLocEmoji(g, building);
   }
+}
+
+// Token-circle layout, shared by the initial draw and refreshLocations.
+// Duplicate mode keeps its compact circle(s) under the location name; the
+// other ride modes fill the lot with big centered circles and nothing else.
+function slotGeometry(b) {
+  const [cx, cy] = buildingCentroid(b);
+  const count = (b.slots ?? [null, null]).length;
+  if (isDuplicateMode()) {
+    return {
+      r: 10,
+      sym: count === 1 ? 12 : 11,
+      underY: cy + (count === 1 ? 21 : 20),
+      centers: count === 1 ? [[cx, cy + 6]] : [[cx - 11, cy + 6], [cx + 11, cy + 6]]
+    };
+  }
+  const bb = buildingBBox(b);
+  const r = Math.max(6, Math.min(
+    15,
+    (bb.maxX - bb.minX - 8) / (2.2 * count),
+    (bb.maxY - bb.minY - 8) / 2.6
+  ));
+  return {
+    r,
+    sym: Math.max(9, Math.round(r * 1.05)),
+    underY: cy + r + 5.5,
+    centers: Array.from({ length: count }, (_, i) => [cx + (i - (count - 1) / 2) * (2 * r + 3), cy])
+  };
 }
 
 // A connector's building end, once the rect is drawn scaled: the edge retreats
@@ -552,12 +612,12 @@ function refreshLocations() {
       underG.innerHTML = "";
       const under = b.under ?? [];
       if (under.length) {
-        const [ucx, ucy] = buildingCentroid(b);
-        const single = (b.slots ?? []).length === 1;
+        const [ucx] = buildingCentroid(b);
+        const { underY } = slotGeometry(b);
         under.forEach((seat, k) => {
           svgEl("circle", {
             cx: ucx + (k - (under.length - 1) / 2) * 9,
-            cy: ucy + (single ? 21 : 20),
+            cy: underY,
             r: 3.2,
             class: "um-under-dot",
             fill: playersState[seat]?.color ?? "#888"
@@ -567,11 +627,11 @@ function refreshLocations() {
     }
     g.classList.toggle("um-loc-can", canSet.has(b.bid));
     g.classList.toggle("um-loc-complete", completableBid() === b.bid);
-    g.classList.toggle("um-loc-offtime", !locOpen(b, timeState));
+    let offtime = !locOpen(b, timeState);
     if (b.locType === "upgrade") {
-      const active = upgradeAtState === b.bid;
-      g.classList.toggle("um-upgrade-active", active);
-      const meta = active ? upgradeMeta(upgradeTypeState) : null;
+      const type = upgradeTypeAt(b);
+      g.classList.toggle("um-upgrade-active", type != null);
+      const meta = type != null ? upgradeMeta(type) : null;
       const icon = g.querySelector(".um-upgrade-icon");
       if (icon) icon.textContent = meta?.icon ?? "";
       // A hood upgrade paints the square its neighbourhood's color.
@@ -580,7 +640,11 @@ function refreshLocations() {
         if (meta?.color) sq.style.fill = meta.color;
         else sq.style.removeProperty("fill");
       }
+      // Scheduled mode: a still-waiting upgrade reads muted outside its
+      // 4-hour window.
+      if (type != null && upgradeWindowClosed(b)) offtime = true;
     }
+    g.classList.toggle("um-loc-offtime", offtime);
   }));
   renderRideHighlights();
 }
@@ -595,9 +659,10 @@ function canUseLoc(b) {
     return (settingsState?.rideMode ?? "ride-2") === "ride-pickup";
   }
   if (b.locType === "upgrade") {
-    // Free to grab — but only where the roaming upgrade actually sits, and
-    // only with a free slot on my player board.
-    return upgradeAtState === b.bid && upgradeTypeState != null &&
+    // Free to grab — but only where an upgrade actually sits (scheduled
+    // mode: the location's own, inside its 4-hour window; spawn mode: the
+    // roaming one), and only with a free slot on my player board.
+    return upgradeTypeAt(b) != null && !upgradeWindowClosed(b) &&
       myUpgrades().length < myUpgradeCap();
   }
   if (!Array.isArray(b.slots)) return false;
@@ -2220,7 +2285,9 @@ function renderPlayerPanel() {
     const deck = document.createElement("span");
     deck.className = "um-upgrade-deck";
     deck.textContent = `🂠×${upgradeDeckCountState}`;
-    deck.title = "Upgrades left in the supply — every type has two copies (neighbourhood locals one) and none come back";
+    deck.title = isScheduledUpgrades()
+      ? "Upgrades still waiting on the board — each opens only during its location's 4-hour window, and none come back"
+      : "Upgrades left in the supply — every type has two copies (neighbourhood locals one) and none come back";
     row.appendChild(deck);
     wrap.appendChild(row);
   }
@@ -2535,34 +2602,47 @@ const FUN_FACE_TEXT = {
   stones: "+2 time stones ⬟"
 };
 const FUN_FACES = ["token", "destress", "stones"];
+const FUN_FACE_ICONS = { token: "💰", destress: "🍵", stones: "⬟" };
+
+// The fun die rolls like the stress dice, in the same spot: a grown panel on
+// the right where one die shakes through the three faces until it lands.
 function showFunRoll(roll) {
-  document.querySelector(".um-fun-roll")?.remove();
-  const div = document.createElement("div");
-  div.className = "um-fun-roll um-fun-rolling";
-  div.style.borderColor = playersState[roll.player]?.color ?? "#ffe17a";
+  document.querySelector(".um-fun-dice")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "um-fun-dice";
+  wrap.style.borderColor = playersState[roll.player]?.color ?? "rgba(255, 255, 255, 0.14)";
   const who = seatName(roll.player);
-  const show = (face) => {
-    div.textContent = `🎲 Fun die — ${who}: ${FUN_FACE_TEXT[face] ?? face}`;
-  };
+  const head = document.createElement("div");
+  head.className = "tm-dice-head";
+  head.textContent = `${who} rolling the fun die…`;
+  const row = document.createElement("div");
+  row.className = "tm-dice-row";
+  const die = document.createElement("div");
+  die.className = "tm-die um-fun-die tm-die-rolling";
   let i = Math.floor(Math.random() * FUN_FACES.length);
-  show(FUN_FACES[i]);
-  document.body.appendChild(div);
+  die.textContent = FUN_FACE_ICONS[FUN_FACES[i]];
+  row.appendChild(die);
+  wrap.append(head, row);
+  els.gameBoard.appendChild(wrap);
   let elapsed = 0;
   const iv = setInterval(() => {
-    if (!div.isConnected) {
+    if (!wrap.isConnected) {
       clearInterval(iv);
       return;
     }
     elapsed += 90;
     if (elapsed < 1300 / speedMult) {
       i = (i + 1) % FUN_FACES.length;
-      show(FUN_FACES[i]);
+      die.textContent = FUN_FACE_ICONS[FUN_FACES[i]];
     } else {
       clearInterval(iv);
-      div.classList.remove("um-fun-rolling");
-      div.classList.add("um-fun-settled");
-      show(roll.face);
-      setTimeout(() => div.remove(), 1500 / speedMult);
+      die.textContent = FUN_FACE_ICONS[roll.face] ?? "🎲";
+      die.classList.remove("tm-die-rolling");
+      die.classList.add("tm-die-safe");
+      head.textContent = `${who}: ${FUN_FACE_TEXT[roll.face] ?? roll.face}`;
+      head.classList.add("tm-dice-good");
+      wrap.classList.add("um-fun-done");
+      setTimeout(() => wrap.remove(), 1800 / speedMult);
     }
   }, 90);
 }
@@ -3086,6 +3166,27 @@ function renderTuning() {
   modeLab.append(modeSpan, modeSel);
   grid.appendChild(modeLab);
 
+  // Upgrade mode: spawn (the one roaming upgrade, respawning when taken) or
+  // scheduled (every upgrade location dealt one up front, each behind its
+  // own 4-hour window, no respawns).
+  const upLab = document.createElement("label");
+  upLab.className = "um-tune-row";
+  const upSpan = document.createElement("span");
+  upSpan.textContent = "⬛ Upgrade mode";
+  const upSel = document.createElement("select");
+  upSel.className = "um-tune-input";
+  [["spawn", "Spawn"], ["scheduled", "Scheduled"]].forEach(([value, label]) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    upSel.appendChild(opt);
+  });
+  upSel.value = tuneDraft.upgradeMode === "scheduled" ? "scheduled" : "spawn";
+  upSel.title = "Spawn: one roaming upgrade, a random new one appears when it's taken. Scheduled: every upgrade location shows one from the start, each only usable during its own 4-hour window";
+  upSel.addEventListener("change", () => { tuneDraft.upgradeMode = upSel.value; });
+  upLab.append(upSpan, upSel);
+  grid.appendChild(upLab);
+
   // Timed locations: off, or the three visiting periods.
   const timedLab = document.createElement("label");
   timedLab.className = "um-tune-row";
@@ -3100,7 +3201,12 @@ function renderTuning() {
     timedSel.appendChild(opt);
   });
   timedSel.value = [2, 3].includes(Number(tuneDraft.timedPeriods)) ? String(tuneDraft.timedPeriods) : "0";
-  timedSel.addEventListener("change", () => { tuneDraft.timedPeriods = Number(timedSel.value); });
+  // A scheme switch re-renders the panel: the day/night counts below only
+  // come alive under Day, Night.
+  timedSel.addEventListener("change", () => {
+    tuneDraft.timedPeriods = Number(timedSel.value);
+    renderTuning();
+  });
   timedLab.append(timedSpan, timedSel);
   grid.appendChild(timedLab);
 
@@ -3118,6 +3224,15 @@ function renderTuning() {
     lab.append(span, input);
     grid.appendChild(lab);
   };
+  // Day / Night location counts — only alive under the Day, Night scheme.
+  // Leftover circle locations become neither: open at any hour.
+  const dayNight = Number(tuneDraft.timedPeriods) === 2;
+  addField("☀️ Day locations", tuneDraft.dayLocations ?? 11, (v) => {
+    tuneDraft.dayLocations = Number(v);
+  }, !dayNight);
+  addField("🌙 Night locations", tuneDraft.nightLocations ?? 11, (v) => {
+    tuneDraft.nightLocations = Number(v);
+  }, !dayNight);
   // In duplicate mode every location is a ride location, so the uber pickup
   // row goes grey — the count isn't dealt.
   const dupDraft = tuneDraft.rideMode === "duplicate";
@@ -3352,6 +3467,8 @@ function setTurnStatus() {
     els.turnStatus.textContent =
       b && !locOpen(b, timeState) && Array.isArray(b.slots) && b.slots.includes(null)
         ? `Your turn — ${b.name ?? "this location"} only opens ${PERIOD_PHRASES[b.period] ?? `in the ${b.period}`} ${PERIOD_SYMBOLS[b.period] ?? ""}`
+        : b && b.locType === "upgrade" && upgradeTypeAt(b) != null && upgradeWindowClosed(b)
+        ? `Your turn — this upgrade spot only opens ${UPGRADE_WINDOW_LABELS[b.window] ?? "later"}`
         : "Your turn";
   }
 }
@@ -3546,7 +3663,7 @@ export const uberMania = {
     document.body.style.removeProperty("--tm-mult");
     document.querySelector(".game-header .tm-scoreboard")?.remove();
     document.querySelector(".tm-turn-toast")?.remove();
-    document.querySelector(".um-fun-roll")?.remove();
+    document.querySelector(".um-fun-dice")?.remove();
     [carEls, carPos, carSpots, pendingRoutes].forEach((o) =>
       Object.keys(o).forEach((k) => delete o[k])
     );

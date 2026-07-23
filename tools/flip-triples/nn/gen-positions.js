@@ -110,6 +110,13 @@ function playOne(seed, ms, maxPrefix) {
       side,
       solved: r.solved,
       sv: r.solved ? valueToMargin(r.value) : null,
+      // Raw red-perspective root value (heuristic-scale when unsolved) — the
+      // trainer calibrates these onto the margin scale and blends with z.
+      v: r.value,
+      // Policy targets: searched best move and the root ranking's top moves,
+      // encoded as a*cells+b ints (a = locking piece's cell, b = second).
+      best: r.move,
+      top: r.ranked.slice(0, 5).map((e) => e.move),
       depth: r.depth,
       ms
     });

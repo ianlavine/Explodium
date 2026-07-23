@@ -14,7 +14,10 @@
       "1000ms",
       "4000ms",
       "12000ms",
-      "30000ms"
+      "30000ms",
+      "60000ms",
+      "120000ms",
+      "300000ms"
     ],
     "deals": 10,
     "pairs": [
@@ -136,6 +139,57 @@
         "ntbDiffSum": 2.9,
         "seed": 67,
         "date": "2026-07-03T16:40:17.251Z"
+      },
+      {
+        "weak": "30000ms",
+        "strong": "60000ms",
+        "games": 36,
+        "strongWins": 16,
+        "weakWins": 17,
+        "ties": 3,
+        "diffGames": 36,
+        "diffSum": 3.4,
+        "splitGames": 36,
+        "tbWins": 9,
+        "tripleWins": 24,
+        "tbDiffSum": 0.7,
+        "ntbDiffSum": 2.7,
+        "seed": "901+902+903+904+905+906",
+        "date": "2026-07-23T03:19:43.009Z"
+      },
+      {
+        "weak": "60000ms",
+        "strong": "120000ms",
+        "games": 36,
+        "strongWins": 16,
+        "weakWins": 16,
+        "ties": 4,
+        "diffGames": 36,
+        "diffSum": 1.5,
+        "splitGames": 36,
+        "tbWins": 22,
+        "tripleWins": 10,
+        "tbDiffSum": 0.6,
+        "ntbDiffSum": 0.9,
+        "seed": "911+912+913+914+915+916",
+        "date": "2026-07-23T06:10:29.547Z"
+      },
+      {
+        "weak": "30000ms",
+        "strong": "300000ms",
+        "games": 36,
+        "strongWins": 17,
+        "weakWins": 14,
+        "ties": 5,
+        "diffGames": 36,
+        "diffSum": 3.8,
+        "splitGames": 36,
+        "tbWins": 13,
+        "tripleWins": 18,
+        "tbDiffSum": -0.2,
+        "ntbDiffSum": 4,
+        "seed": "921+922+923+924+925+926",
+        "date": "2026-07-23T19:11:21.144Z"
       }
     ]
   },
@@ -245,7 +299,7 @@
       "date": "2026-07-03T06:17:42.955Z"
     }
   ],
-  "updated": "2026-07-05T06:18:06.343Z",
+  "updated": "2026-07-23T19:18:54.008Z",
   "moveProfile": [
     {
       "ms": 10,
@@ -525,5 +579,22 @@
     ],
     "avgSolvedTailPlies": 9.2,
     "date": "2026-07-05T06:18:06.337Z"
+  },
+  "pieRule": {
+    "n": 1000,
+    "ms": 5000,
+    "chooserWins": 558,
+    "chooserTies": 124,
+    "chooserLoses": 318,
+    "chooserMeanMargin": 0.161,
+    "chooserSdMargin": 0.691,
+    "bothColorsWinAsSecond": 65,
+    "choiceDecides": 493,
+    "seatAdvMean": 0.356,
+    "seatAdvSd": 0.557,
+    "colorBiasSd": 0.662,
+    "colorBiasMeanAbs": 0.517,
+    "corrSeatings": -0.171,
+    "date": "2026-07-23T02:07:56.453Z"
   }
 }

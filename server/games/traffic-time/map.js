@@ -933,6 +933,65 @@ function crossesLot(conn, buildings, self) {
 }
 
 // ---------------------------------------------------------------------------
+// Access-point spreading
+// ---------------------------------------------------------------------------
+//
+// Neighbouring buildings' connectors can land their street-ends almost on top
+// of each other, leaving two parking dots visually overlapping and hard to
+// tell apart when clicking. This pass slides crowded street-ends along their
+// street (the building end stays put — a driveway may run slanted) until
+// every end keeps a minimum gap from the ones already placed. Ends that can't
+// find room within the segment stay where they are.
+
+const SPOT_MIN_GAP = 14;  // parking rings draw at r9 — keep centers apart
+const SPOT_END_PAD = 15;  // stay clear of the segment ends (intersections)
+
+function spreadConnectorEnds(blocks, segments, packed) {
+  const placed = [];
+  for (const block of blocks) {
+    for (const b of block.buildings) {
+      for (const c of b.connectors ?? []) {
+        // The street segment this end sits on, and its direction.
+        let seg = null;
+        let bestD = Infinity;
+        for (const s of segments) {
+          const d = distSqToSegment(c.x2, c.y2, s[0], s[1], s[2], s[3]);
+          if (d < bestD) {
+            bestD = d;
+            seg = s;
+          }
+        }
+        if (seg) {
+          const [x1, y1, x2, y2] = seg;
+          const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+          const ux = (x2 - x1) / len;
+          const uy = (y2 - y1) / len;
+          const t0 = (c.x2 - x1) * ux + (c.y2 - y1) * uy;
+          const clear = (x, y) =>
+            placed.every((p) => Math.hypot(p.x - x, p.y - y) >= SPOT_MIN_GAP);
+          if (!clear(c.x2, c.y2)) {
+            for (const off of [8, -8, 14, -14, 20, -20, 26, -26]) {
+              const t = t0 + off;
+              if (t < SPOT_END_PAD || t > len - SPOT_END_PAD) continue;
+              const x = x1 + ux * t;
+              const y = y1 + uy * t;
+              if (!clear(x, y)) continue;
+              // Don't slide a driveway across a neighbouring lot.
+              if (packed &&
+                  crossesLot({ x1: c.x1, y1: c.y1, x2: x, y2: y }, block.buildings, b)) continue;
+              c.x2 = r1(x);
+              c.y2 = r1(y);
+              break;
+            }
+          }
+        }
+        placed.push({ x: c.x2, y: c.y2 });
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Octagon signals at intersections
 // ---------------------------------------------------------------------------
 
@@ -1174,6 +1233,7 @@ function generateSimpleOnce(rng, seed, cfg) {
       building.connectors = conns;
     });
   }
+  spreadConnectorEnds(blocks, segments, cfg.packed);
 
   const outBlocks = blocks
     .filter((b) => b.buildings.length)

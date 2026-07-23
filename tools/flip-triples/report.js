@@ -465,6 +465,42 @@ function setupLuckSection(data) {
   );
 }
 
+// Pie-rule experiment: the same deals solved under BOTH seatings (blue first
+// and red first). The "chooser" picks a color after seeing the deal; the
+// other player moves first. Chooser value per deal = the better color's
+// second-mover margin.
+function pieRuleSection(data) {
+  const s = data.pieRule;
+  if (!s) return "<p class='note'>No paired-seating batch yet.</p>";
+  const winBar = stackedBar({
+    left: s.chooserWins,
+    tie: s.chooserTies,
+    right: s.chooserLoses,
+    total: s.n,
+    leftName: "chooser wins (moving second)",
+    tieName: "dead ties",
+    rightName: "first mover wins anyway"
+  });
+  const winShare = pct(s.chooserWins, s.n);
+  return (
+    legend([
+      ["seg-left", "chooser (picks color, moves second)"],
+      ["seg-tie", "tie"],
+      ["seg-right", "first mover"]
+    ]) +
+    `<div class="chart"><div class="row"><div class="row-label">all ${s.n} deals</div>${winBar}<div class="row-value">${fmtPct(winShare)} chooser</div></div></div>` +
+    `<p class="reading">Given the choice, the informed chooser <strong>wins ${winShare.toFixed(1)}%</strong> and ties ` +
+    `${pct(s.chooserTies, s.n).toFixed(1)}% — picking the right color more than repays moving second. The rule ` +
+    `<strong>flips</strong> the advantage (mean margin +${s.chooserMeanMargin.toFixed(2)} pts to the chooser, vs ` +
+    `+${(data.setupLuck?.meanDiff ?? 0.37).toFixed(2)} to the first player without it) while roughly halving its size. ` +
+    `The choice genuinely decides <strong>${pct(s.choiceDecides, s.n).toFixed(0)}%</strong> of deals (exactly one color wins as ` +
+    `second); in ${pct(s.bothColorsWinAsSecond, s.n).toFixed(1)}% the setup is so lopsided that either color beats the first ` +
+    `mover. The catch: deals carry a large hidden color bias (typical size ${s.colorBiasMeanAbs.toFixed(2)} pts — bigger than ` +
+    `the ${s.seatAdvMean.toFixed(2)}-pt seat advantage) but it is nearly invisible on the board — deep search reads it, ` +
+    `eyeballing the setup does not. As a balancing rule it works in proportion to how well the chooser can evaluate.</p>`
+  );
+}
+
 function tiles(data) {
   const runs = data.selfplay;
   const totalGames =
@@ -648,6 +684,14 @@ export function generateReport(data) {
       (5s/move, no blunders, provably perfect endgames): the winner split, the margin
       distribution, and how little the starting arrangement predicts.</p>
     ${setupLuckSection(data)}
+  </section>
+
+  <section>
+    <h2>The pie rule — can choosing your color repay moving second?</h2>
+    <p class="h2-sub">The same 1,000 deals solved under both seatings (blue first and red first,
+      5s/move). One player picks a color after seeing the deal; the other moves first. The chooser
+      takes whichever color fares better from the second seat.</p>
+    ${pieRuleSection(data)}
   </section>
 
   <section>
