@@ -4,8 +4,10 @@ import { socket, els, app, setBotThinking, prefersReducedMotion } from "../../sh
 
 const flipPhaseIndicator = document.getElementById("flip-phase-indicator");
 const flipSetup = document.getElementById("flip-setup");
+const flipColorPick = document.getElementById("flip-color-pick");
 const flipPhase2Banner = document.getElementById("flip-phase2-banner");
 const flipUndoBtn = document.getElementById("flip-undo-btn");
+const flipDoubleBtn = document.getElementById("flip-double-btn");
 
 let flipTriplesState = null;
 let selectedFlipPiece = null;
@@ -14,6 +16,7 @@ let flipSwapBusy = false;
 let flipPhase2Pressed = false;
 let lastTransitionId = 0;
 let flipSetupDraft = null;
+let lastFlipTurn = null;
 
 const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2, label: "5×5" };
 const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null, label: "4×6" };
@@ -30,7 +33,8 @@ function defaultFlipSetupDraft() {
   return {
     purple: false,
     yellow: false,
-    blockers: false
+    rings: false,
+    doubleMove: false
   };
 }
 
@@ -40,19 +44,22 @@ function defaultFlipSetupDraft() {
 function flipDraftToOptions(draft) {
   const purple = draft.purple ? 1 : 0;
   const yellow = draft.yellow ? 1 : 0;
-  const blocker = draft.blockers ? 4 : 0; // 2 per player
+  const rings = draft.rings ? 1 : 0; // one red + one blue ring
   return {
     boardSize: "4x6",
-    playerPieces: purple ? 8 : 9,
+    // Rings replace a scoring-piece pair (one red + one blue), so the neutral
+    // count is unchanged; purple likewise takes a scoring slot.
+    playerPieces: 9 - purple - rings,
     purple,
     yellow,
     hopper: 0,
-    blocker,
+    rings,
     mode: "basic",
     extendedRule: "none",
     uniqueSwap: true,
     staticNeutrals: false,
-    protectedMiddle: false
+    protectedMiddle: false,
+    doubleMove: draft.doubleMove === true
   };
 }
 
@@ -73,30 +80,53 @@ function getFlipShape(piece) {
       return `<span class="flip-symbol yellow" aria-hidden="true"><span class="yellow-minus">−</span></span>`;
     case "hopper":
       return `<span class="flip-symbol hopper" aria-hidden="true">H</span>`;
+    case "red-ring":
+    case "blue-ring":
+      // The ring's color lives on the piece's border (see .shape-*-ring in the
+      // stylesheet); the face stays blank/white like a neutral.
+      return "";
     default:
       return "";
   }
 }
 
 function isSelectableFlipPiece(piece) {
-  if (!piece || flipTriplesState?.gameOver || flipTriplesState?.setup || flipTriplesState?.pendingPhase2) {
+  if (
+    !piece ||
+    flipTriplesState?.gameOver ||
+    flipTriplesState?.setup ||
+    flipTriplesState?.pickingColor ||
+    flipTriplesState?.pendingPhase2
+  ) {
     return false;
   }
   return flipTriplesState?.phase === 2 ? piece.flipped : !piece.flipped;
 }
 
-function canControlBlocker(piece) {
-  if (piece.shape !== "blocker") return true;
+function myFlipColor() {
+  return flipTriplesState?.seatColors?.[app.myPlayerIndex] ?? null;
+}
+
+function ringColorOf(piece) {
+  if (!piece) return null;
+  return piece.shape === "red-ring" ? "red" : piece.shape === "blue-ring" ? "blue" : null;
+}
+
+// A ring can only be flipped (led as the first piece) by the player of its
+// color; either player may still slide it (select it second).
+function canFlipRing(piece) {
+  const ringColor = ringColorOf(piece);
+  if (!ringColor) return true;
   if (app.isSoloGame) return true;
-  return piece.owner === app.myPlayerIndex;
+  return myFlipColor() === ringColor;
 }
 
 // The first piece in a swap is the one that flips, so it can never be protected,
-// and a blocker can only be moved by its owner.
+// and a ring can only be flipped by the player of its color.
 function canSelectFirstPiece(piece) {
   if (!isSelectableFlipPiece(piece)) return false;
   if (piece.protected) return false;
-  if (!canControlBlocker(piece)) return false;
+  if (!canFlipRing(piece)) return false;
   return true;
 }
 
@@ -119,7 +149,8 @@ function canSwapFlip(firstPos, secondPos) {
   const first = getFlipPiece(firstPos.row, firstPos.col);
   const second = getFlipPiece(secondPos.row, secondPos.col);
   if (!isSelectableFlipPiece(second)) return false;
-  if (!canControlBlocker(second)) return false;
+  // A ring may be the sliding (second) piece for either player, so no ownership
+  // check is needed here.
   if (
     !flipSwapPairAllowed(
       first,
@@ -146,10 +177,22 @@ function getFlipPhaseName() {
   return flipTriplesState?.phase === 2 ? "Phase 2" : "Phase 1";
 }
 
+function myFlipColorSuffix() {
+  if (app.isSoloGame) return "";
+  const color = myFlipColor();
+  if (color === "red") return " · You are Red ×";
+  if (color === "blue") return " · You are Blue ○";
+  return "";
+}
+
 function updateFlipTriplesTurn(turn) {
+  lastFlipTurn = turn;
   const isMyTurn = turn === app.myId || app.isSoloGame;
-  els.turnStatus.textContent = `${getFlipPhaseLabel()} - ${isMyTurn ? "Your turn" : "Opponent's turn"}`;
+  els.turnStatus.textContent = `${getFlipPhaseLabel()} - ${
+    isMyTurn ? "Your turn" : "Opponent's turn"
+  }${myFlipColorSuffix()}`;
   setBotThinking(app.isBotGame && !isMyTurn);
+  renderFlipDoubleBtn();
 }
 
 function renderFlipTriplesBoard() {
@@ -170,7 +213,6 @@ function renderFlipTriplesBoard() {
       if (piece.flipped) classes.push("flipped");
       if (piece.opportunity) classes.push("opportunity");
       if (piece.protected) classes.push("protected");
-      if (piece.shape === "blocker") classes.push(`blocker owner-${piece.owner}`);
       if (piece.swapped) classes.push("swapped");
       button.className = classes.join(" ");
       if (selectedFlipPiece?.row === rowIndex && selectedFlipPiece?.col === colIndex) {
@@ -178,7 +220,9 @@ function renderFlipTriplesBoard() {
       }
       button.dataset.row = String(rowIndex);
       button.dataset.col = String(colIndex);
-      button.disabled = !isSelectableFlipPiece(piece) || !canControlBlocker(piece);
+      // A ring is always at least a valid second (sliding) piece, so only fully
+      // unselectable pieces are disabled; first-piece ownership is enforced on click.
+      button.disabled = !isSelectableFlipPiece(piece);
       button.innerHTML = getFlipShape(piece);
       els.gameBoard.appendChild(button);
     });
@@ -347,7 +391,8 @@ function renderFlipSetup() {
       ? {
           purple: (flipTriplesState.settings.purple ?? 0) > 0,
           yellow: (flipTriplesState.settings.yellow ?? 0) > 0,
-          blockers: (flipTriplesState.settings.blocker ?? 0) > 0
+          rings: (flipTriplesState.settings.rings ?? 0) > 0,
+          doubleMove: flipTriplesState.settings.doubleMove === true
         }
       : defaultFlipSetupDraft();
   }
@@ -366,14 +411,69 @@ function renderFlipSetup() {
           <span class="flip-option-title">Yellow</span>
           <small>9 scoring pieces each; one neutral becomes a yellow wildcard that costs a point in any triple</small>
         </button>
-        <button type="button" class="flip-option-toggle${draft.blockers ? " active" : ""}" data-toggle="blockers">
-          <span class="flip-option-title">Blockers</span>
-          <small>Each player gets 2 blockers only they can move</small>
+        <button type="button" class="flip-option-toggle${draft.rings ? " active" : ""}" data-toggle="rings">
+          <span class="flip-option-title">Ring pieces</span>
+          <small>Adds a red and a blue ring: neutral-cored pieces that make triples out of neutrals for their color, flippable only by that color</small>
+        </button>
+        <button type="button" class="flip-option-toggle${draft.doubleMove ? " active" : ""}" data-toggle="doubleMove">
+          <span class="flip-option-title">Double move</span>
+          <small>Each player gets one Double: take two moves in a row, once per game</small>
         </button>
       </div>
       <button type="button" class="primary-btn flip-start-btn">Start game</button>
     </div>
   `;
+}
+
+function renderFlipColorPick() {
+  if (!flipTriplesState?.pickingColor) {
+    flipColorPick.classList.add("hidden");
+    flipColorPick.innerHTML = "";
+    return;
+  }
+  flipColorPick.classList.remove("hidden");
+  const amPicker = flipTriplesState.colorPicker === app.myPlayerIndex;
+  if (amPicker) {
+    flipColorPick.innerHTML = `
+      <div class="flip-color-card">
+        <strong>Choose your color</strong>
+        <span>Your opponent makes the first move.</span>
+        <div class="flip-color-options">
+          <button type="button" class="flip-color-btn red" data-color="red"><span class="flip-color-mark">×</span> Red</button>
+          <button type="button" class="flip-color-btn blue" data-color="blue"><span class="flip-color-mark ring"></span> Blue</button>
+        </div>
+      </div>
+    `;
+  } else {
+    flipColorPick.innerHTML = `
+      <div class="flip-color-card">
+        <strong>Opponent is choosing a color…</strong>
+        <span>You make the first move.</span>
+      </div>
+    `;
+  }
+}
+
+function renderFlipDoubleBtn() {
+  const state = flipTriplesState;
+  const show =
+    state &&
+    !state.setup &&
+    !state.pickingColor &&
+    !state.pendingPhase2 &&
+    !state.gameOver &&
+    state.settings?.doubleMove === true &&
+    !app.isSoloGame &&
+    app.myPlayerIndex != null;
+  flipDoubleBtn.classList.toggle("hidden", !show);
+  if (!show) return;
+  const seat = app.myPlayerIndex;
+  const used = state.doubleUsed?.[seat] === true;
+  const pendingMine = state.doublePending === seat;
+  const myTurn = lastFlipTurn === app.myId;
+  flipDoubleBtn.disabled = used || state.doublePending != null || !myTurn;
+  flipDoubleBtn.textContent = pendingMine ? "Double active" : used ? "Double used" : "Double move";
+  flipDoubleBtn.classList.toggle("active", pendingMine);
 }
 
 function renderFlipPhase2Banner() {
@@ -423,14 +523,30 @@ function resetUi() {
   flipPhaseIndicator.classList.remove("white-phase", "black-phase");
   flipSetup.classList.add("hidden");
   flipSetup.innerHTML = "";
+  flipColorPick.classList.add("hidden");
+  flipColorPick.innerHTML = "";
   flipPhase2Banner.classList.add("hidden");
   flipPhase2Banner.innerHTML = "";
   flipUndoBtn.classList.add("hidden");
+  flipDoubleBtn.classList.add("hidden");
 }
 
 flipUndoBtn.addEventListener("click", () => {
   if (!app.roomId || !isActive()) return;
   socket.emit("flip_triples_undo", { roomId: app.roomId });
+});
+
+flipDoubleBtn.addEventListener("click", () => {
+  if (!app.roomId || !isActive()) return;
+  socket.emit("flip_triples_double", { roomId: app.roomId });
+});
+
+flipColorPick.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const btn = target.closest(".flip-color-btn[data-color]");
+  if (!btn || !app.roomId || !isActive()) return;
+  socket.emit("flip_triples_pick_color", { roomId: app.roomId, color: btn.dataset.color });
 });
 
 els.hand.addEventListener("click", (event) => {
@@ -452,6 +568,7 @@ els.gameBoard.addEventListener("click", (event) => {
   if (
     !app.roomId ||
     flipTriplesState?.setup ||
+    flipTriplesState?.pickingColor ||
     flipTriplesState?.pendingPhase2 ||
     flipTriplesState?.gameOver
   ) {
@@ -495,7 +612,7 @@ flipSetup.addEventListener("click", (event) => {
   const optionToggle = target.closest(".flip-option-toggle[data-toggle]");
   if (optionToggle) {
     const key = optionToggle.dataset.toggle;
-    if (key === "purple" || key === "yellow" || key === "blockers") {
+    if (key === "purple" || key === "yellow" || key === "rings" || key === "doubleMove") {
       flipSetupDraft[key] = !flipSetupDraft[key];
       renderFlipSetup();
     }
@@ -530,6 +647,7 @@ export const flipTriples = {
     lastAnimatedMoveId = 0;
     selectedFlipPiece = null;
     flipSwapBusy = false;
+    lastFlipTurn = null;
   },
 
   handleState(payload) {
@@ -544,8 +662,10 @@ export const flipTriples = {
       lastTransitionId = 0;
       els.gameBoard.innerHTML = "";
       flipPhaseIndicator.classList.add("hidden");
+      flipColorPick.classList.add("hidden");
       flipPhase2Banner.classList.add("hidden");
       flipUndoBtn.classList.add("hidden");
+      flipDoubleBtn.classList.add("hidden");
       els.hand.innerHTML = "";
       els.hand.classList.remove("player-0", "player-1", "toy-rack", "flip-score");
       renderFlipSetup();
@@ -555,6 +675,26 @@ export const flipTriples = {
 
     flipSetup.classList.add("hidden");
     flipSetup.innerHTML = "";
+
+    // Color-pick pre-game: show the board (disabled) plus the color chooser.
+    if (flip.pickingColor) {
+      lastFlipTurn = null;
+      selectedFlipPiece = null;
+      lastAnimatedMoveId = typeof flip.moveId === "number" ? flip.moveId : 0;
+      lastTransitionId = flip.transitionId || 0;
+      renderFlipTriplesBoard();
+      renderFlipTriplesScore();
+      renderFlipColorPick();
+      flipPhase2Banner.classList.add("hidden");
+      flipUndoBtn.classList.add("hidden");
+      renderFlipDoubleBtn();
+      els.turnStatus.textContent =
+        flip.colorPicker === app.myPlayerIndex ? "Choose your color" : "Opponent is choosing a color";
+      setBotThinking(false);
+      return true;
+    }
+    flipColorPick.classList.add("hidden");
+    flipColorPick.innerHTML = "";
 
     selectedFlipPiece =
       selectedFlipPiece && canSelectFirstPiece(getFlipPiece(selectedFlipPiece.row, selectedFlipPiece.col))
@@ -581,6 +721,7 @@ export const flipTriples = {
     renderFlipTriplesBoard();
     renderFlipTriplesScore();
     renderFlipPhase2Banner();
+    renderFlipDoubleBtn();
 
     if (shouldAnimateMove) animateFlipSwap(move);
     if (shouldAnimateTransition) animateFlipTransition();
@@ -599,7 +740,12 @@ export const flipTriples = {
 
   // Returns true when the turn update has been handled (or suppressed).
   handleTurn(turn) {
-    if (flipTriplesState?.gameOver || flipTriplesState?.setup || flipTriplesState?.pendingPhase2) {
+    if (
+      flipTriplesState?.gameOver ||
+      flipTriplesState?.setup ||
+      flipTriplesState?.pickingColor ||
+      flipTriplesState?.pendingPhase2
+    ) {
       return true;
     }
     if (isActive() && flipTriplesState) {
@@ -633,5 +779,6 @@ export const flipTriples = {
     flipPhase2Pressed = false;
     lastTransitionId = 0;
     flipSetupDraft = null;
+    lastFlipTurn = null;
   }
 };

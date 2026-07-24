@@ -54,6 +54,7 @@
           </span>
         </div>
         <div id="flip-setup" class="flip-setup hidden" aria-live="polite"></div>
+        <div id="flip-color-pick" class="flip-color-pick hidden" aria-live="polite"></div>
         <div class="play-area">
           <div class="board" id="game-board" role="grid" aria-label="Game board"></div>
           <div id="flip-phase-indicator" class="flip-phase-indicator hidden" aria-live="polite"></div>
@@ -61,6 +62,7 @@
         <div id="flip-phase2-banner" class="flip-phase2-banner hidden" aria-live="polite"></div>
         <div class="hand" id="hand"></div>
         <div class="game-footer">
+          <button id="flip-double-btn" class="ghost-btn flip-double hidden">Double move</button>
           <button id="flip-undo-btn" class="ghost-btn flip-undo hidden">Undo move</button>
           <button id="exit-button" class="ghost-btn">Leave Game</button>
         </div>
@@ -98,6 +100,16 @@
           </button>
         </div>
         <button type="button" class="ghost-btn solo-picker-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div id="lino-setup" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Lino setup">
+      <div class="modal-card lino-setup-card">
+        <h3>Lino — Setup</h3>
+        <p class="modal-sub">House rules for this match</p>
+        <div class="lino-options"></div>
+        <div class="lino-setup-play"></div>
+        <button type="button" class="ghost-btn lino-setup-cancel">Cancel</button>
       </div>
     </div>
 

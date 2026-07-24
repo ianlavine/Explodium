@@ -105,9 +105,9 @@ function renderGames() {
   });
 }
 
-function startSoloGame(selected) {
+function startSoloGame(selected, options = {}) {
   app.currentGame = selected;
-  app.activeGameOptions = {};
+  app.activeGameOptions = options;
   app.isSoloGame = true;
   app.isBotGame = false;
   els.lobbyGameName.textContent = selected.name;
@@ -122,16 +122,16 @@ function startSoloGame(selected) {
 
 const BOT_LEVEL_NAMES = { 0: "Baby bot", 1: "Level 1 bot", 2: "Level 2 bot", 3: "Level 3 bot", 4: "God bot" };
 
-function startBotGame(selected, botLevel) {
+function startBotGame(selected, botLevel, options = {}) {
   app.currentGame = selected;
-  app.activeGameOptions = {};
+  app.activeGameOptions = options;
   app.isSoloGame = false;
   app.isBotGame = true;
   els.lobbyGameName.textContent = selected.name;
   els.gameTitle.textContent = selected.name;
   resetGameUi();
   setScreen("lobby");
-  const label = BOT_LEVEL_NAMES[botLevel] ?? `Level ${botLevel} bot`;
+  const label = selected.botName ?? BOT_LEVEL_NAMES[botLevel] ?? `Level ${botLevel} bot`;
   els.lobbyStatus.textContent = `Starting game vs ${label}...`;
   els.playerStatus.textContent = `Vs ${label}`;
   els.playersNeeded.textContent = "0";
@@ -176,7 +176,17 @@ els.gameList.addEventListener("click", (event) => {
   if (soloButton) {
     const selected = games.find((game) => game.id === soloButton.dataset.gameId);
     if (!selected) return;
-    if (selected.hasBots) {
+    // Games with a setup screen own the whole flow: they collect their options
+    // and pick the opponent, then hand back to us to actually start.
+    if (selected.openSetup) {
+      selected.openSetup({
+        mode: "solo",
+        onReady: (options, botLevel) =>
+          botLevel === null || botLevel === undefined
+            ? startSoloGame(selected, options)
+            : startBotGame(selected, botLevel, options)
+      });
+    } else if (selected.hasBots) {
       openSoloPicker(selected);
     } else {
       startSoloGame(selected);
@@ -188,8 +198,16 @@ els.gameList.addEventListener("click", (event) => {
   if (!card || !card.dataset.gameId) return;
   const selected = games.find((game) => game.id === card.dataset.gameId);
   if (!selected) return;
+  if (selected.openSetup) {
+    selected.openSetup({ mode: "queue", onReady: (options) => startQueue(selected, options) });
+    return;
+  }
+  startQueue(selected);
+});
+
+function startQueue(selected, options = {}) {
   app.currentGame = selected;
-  app.activeGameOptions = {};
+  app.activeGameOptions = options;
   app.isSoloGame = false;
   app.isBotGame = false;
   els.lobbyGameName.textContent = selected.name;
@@ -200,7 +218,7 @@ els.gameList.addEventListener("click", (event) => {
   els.playerStatus.textContent = "Queued";
   els.playersNeeded.textContent = "1";
   socket.emit("join_queue", { gameId: selected.id, options: app.activeGameOptions });
-});
+}
 
 els.cancelButton.addEventListener("click", () => {
   if (app.currentGame) {

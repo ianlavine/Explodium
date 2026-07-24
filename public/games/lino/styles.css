@@ -1,10 +1,14 @@
+/* The field takes over most of the viewport; it escapes the shell's 1200px
+   cap by centering itself against the viewport width. */
 .board.lino-board {
   position: relative;
   display: block;
-  width: min(900px, calc(100vw - 64px));
-  height: min(560px, calc(100vh - 230px));
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100vw - 48px);
+  height: calc(100vh - 170px);
   min-height: 420px;
-  margin: 14px 0 132px;
+  margin: 6px 0 -70px; /* swallow the play-area's bottom padding */
   overflow: visible;
 }
 
@@ -23,7 +27,7 @@
 
 .lino-core {
   fill: rgba(255, 255, 255, 0.55);
-  transition: fill 0.12s ease, r 0.12s ease;
+  transition: fill 0.12s ease;
 }
 
 .lino-hit {
@@ -33,16 +37,46 @@
 
 .lino-dot.selected .lino-core {
   fill: #ffffff;
-  r: 2.2;
 }
 
-.lino-dot.in-range .lino-core {
+.lino-dot.lit .lino-core {
   fill: #7ee2a8;
-  r: 2;
 }
 
-.lino-dot.in-range.unaffordable .lino-core {
-  fill: rgba(255, 255, 255, 0.3);
+.lino-dot.lit.blocked .lino-core {
+  fill: #ff8d8d;
+}
+
+/* Shrines: the two win-condition dots on opposite edges. */
+.lino-dot.shrine .lino-core {
+  fill: #ffd166;
+}
+
+.lino-halo {
+  fill: none;
+  stroke: #ffd166;
+  stroke-width: 0.5;
+  opacity: 0.55;
+  animation: linoPulse 2.2s ease-in-out infinite;
+}
+
+@keyframes linoPulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    stroke-width: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+    stroke-width: 0.8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lino-halo {
+    animation: none;
+    opacity: 0.5;
+  }
 }
 
 .lino-cost {
@@ -56,13 +90,33 @@
   pointer-events: none;
 }
 
-.lino-dot.unaffordable .lino-cost {
+.lino-dot.blocked .lino-cost {
   fill: #ff8d8d;
 }
 
 .lino-line {
   stroke-width: 1.1;
   stroke-linecap: round;
+  transition: stroke 0.12s ease, opacity 0.12s ease;
+}
+
+/* Brass: the gold jacket drawn under a line that has made a kill. */
+.lino-brass-casing {
+  stroke: #d9a441;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 1.2px rgba(217, 164, 65, 0.85));
+}
+
+.lino-line.brass {
+  stroke-width: 0.9;
+}
+
+/* An enemy line the hovered build would cut. */
+.lino-line.doomed {
+  stroke: #ff5d5d !important;
+  stroke-dasharray: 2 1.5;
+  opacity: 0.9;
 }
 
 .lino-preview {
@@ -83,25 +137,218 @@
   stroke: #fb7185;
 }
 
+/* Money/income readout pinned to the top-right corner. */
 .hand.lino-hud {
   display: flex;
-  gap: 12px;
-  align-items: center;
+  top: 12px;
+  right: 16px;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  max-width: 420px;
+  z-index: 20;
 }
 
 .lino-money {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   padding: 8px 16px;
   border-radius: 12px;
-  font-weight: 700;
-  font-size: 1.05rem;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
+  line-height: 1.2;
 }
 
-.lino-money.lino-p0 {
+.lino-money strong {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.lino-money small {
+  font-size: 0.72rem;
+  opacity: 0.65;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.lino-money.lino-p0 strong {
   color: #38bdf8;
 }
 
-.lino-money.lino-p1 {
+.lino-money.lino-p1 strong {
   color: #fb7185;
+}
+
+/* A dot that would be destroyed along with the line being cut. */
+.lino-dot.doomed .lino-core {
+  fill: #ff5d5d;
+  opacity: 0.75;
+}
+
+/* ---- Pre-game setup screen ---- */
+.lino-setup-card {
+  max-width: 560px;
+  width: min(560px, calc(100vw - 40px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+/* ---- economy sliders ---- */
+.lino-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lino-slider-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lino-slider-top strong {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.lino-slider-value {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #7ee2a8;
+}
+
+.lino-slider input[type="range"] {
+  width: 100%;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+.lino-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 18px;
+  text-align: left;
+}
+
+.lino-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.lino-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.lino-option.on {
+  border-color: rgba(126, 226, 168, 0.5);
+  background: rgba(126, 226, 168, 0.1);
+}
+
+.lino-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lino-option-text strong {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.lino-option-text small {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  line-height: 1.35;
+}
+
+.lino-toggle {
+  flex: none;
+  min-width: 44px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.08);
+  opacity: 0.7;
+}
+
+.lino-option.on .lino-toggle {
+  background: rgba(126, 226, 168, 0.25);
+  color: #7ee2a8;
+  opacity: 1;
+}
+
+.lino-opponents {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.lino-play-btn {
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.lino-play-btn:hover {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.5);
+}
+
+.lino-play-btn.primary {
+  width: 100%;
+  padding: 12px;
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+@media (max-width: 520px) {
+  .lino-opponents {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.lino-banner.hidden {
+  display: none;
+}
+
+.lino-banner {
+  padding: 8px 18px;
+  border-radius: 12px;
+  font-weight: 700;
+  background: rgba(255, 93, 93, 0.15);
+  border: 1px solid rgba(255, 93, 93, 0.4);
+  color: #ff8d8d;
+}
+
+.lino-banner.win {
+  background: rgba(126, 226, 168, 0.15);
+  border-color: rgba(126, 226, 168, 0.45);
+  color: #7ee2a8;
 }

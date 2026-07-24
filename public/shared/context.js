@@ -23,7 +23,8 @@ export const els = {
   hand: document.getElementById("hand"),
   gameList: document.getElementById("game-list"),
   soloPicker: document.getElementById("solo-picker"),
-  soloPickerTitle: document.getElementById("solo-picker-title")
+  soloPickerTitle: document.getElementById("solo-picker-title"),
+  linoSetup: document.getElementById("lino-setup")
 };
 
 // Mutable session state shared between the lobby shell and game modules.

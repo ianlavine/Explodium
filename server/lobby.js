@@ -17,6 +17,9 @@ import { createLinoGame } from "./games/lino/game.js";
 export function createLobby(io) {
   const queueByGame = new Map(); // queueKey -> [socketId]
   const rooms = new Map(); // roomId -> { gameId, players, turn, ...gameState }
+  // Per-match options (e.g. Lino's rule toggles) held while a player waits in
+  // a queue; the room is created with the first-seated player's choices.
+  const queuedOptions = new Map(); // socketId -> options
 
   const ctx = { io, rooms };
   const games = [
@@ -40,20 +43,21 @@ export function createLobby(io) {
     return queueByGame.get(gameId);
   }
 
-  function createRoom(gameId, playerA, playerB) {
+  function createRoom(gameId, playerA, playerB, options) {
     const game = getGame(gameId);
     const roomId = `room-${game.id}-${playerA}-${playerB}`;
     rooms.set(roomId, {
       gameId: game.id,
       players: [playerA, playerB],
       turn: playerA,
-      ...game.createRoomState()
+      ...game.createRoomState(options)
     });
     game.onRoomCreated?.(roomId, rooms.get(roomId));
     return roomId;
   }
 
   function cleanupSocket(socketId) {
+    queuedOptions.delete(socketId);
     for (const queue of queueByGame.values()) {
       const queueIndex = queue.indexOf(socketId);
       if (queueIndex !== -1) {
@@ -77,8 +81,8 @@ export function createLobby(io) {
   io.on("connection", (socket) => {
     games.forEach((game) => game.registerHandlers(socket));
 
-    socket.on("start_solo", ({ gameId = "default" } = {}) => {
-      const roomId = createRoom(gameId, socket.id, socket.id);
+    socket.on("start_solo", ({ gameId = "default", options } = {}) => {
+      const roomId = createRoom(gameId, socket.id, socket.id, options);
       io.sockets.sockets.get(socket.id)?.join(roomId);
       const room = rooms.get(roomId);
       io.to(socket.id).emit("match_found", {
@@ -93,11 +97,11 @@ export function createLobby(io) {
 
     // Single-player vs. the AI. Games without a bot fall back to a normal solo
     // (the human controls both sides).
-    socket.on("start_bot", ({ gameId = "default", botLevel } = {}) => {
+    socket.on("start_bot", ({ gameId = "default", botLevel, options } = {}) => {
       const game = getGame(gameId);
       const botSupported = !!game.bot;
       const opponentId = botSupported ? game.bot.id : socket.id;
-      const roomId = createRoom(gameId, socket.id, opponentId);
+      const roomId = createRoom(gameId, socket.id, opponentId, options);
       io.sockets.sockets.get(socket.id)?.join(roomId);
       const room = rooms.get(roomId);
       room.isBot = botSupported;
@@ -113,15 +117,18 @@ export function createLobby(io) {
       if (room.isBot) game.bot.onRoomCreated(roomId, room);
     });
 
-    socket.on("join_queue", ({ gameId = "default" } = {}) => {
+    socket.on("join_queue", ({ gameId = "default", options } = {}) => {
       const queue = getQueue(gameId);
       if (queue.includes(socket.id)) return;
       queue.push(socket.id);
+      queuedOptions.set(socket.id, options);
 
       if (queue.length >= 2) {
         const playerA = queue.shift();
         const playerB = queue.shift();
-        const roomId = createRoom(gameId, playerA, playerB);
+        const roomId = createRoom(gameId, playerA, playerB, queuedOptions.get(playerA));
+        queuedOptions.delete(playerA);
+        queuedOptions.delete(playerB);
 
         io.sockets.sockets.get(playerA)?.join(roomId);
         io.sockets.sockets.get(playerB)?.join(roomId);
@@ -149,6 +156,7 @@ export function createLobby(io) {
       const queue = getQueue(gameId);
       const index = queue.indexOf(socket.id);
       if (index !== -1) queue.splice(index, 1);
+      queuedOptions.delete(socket.id);
     });
 
     socket.on("leave_room", ({ roomId } = {}) => {

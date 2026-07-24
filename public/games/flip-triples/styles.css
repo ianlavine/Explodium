@@ -11,6 +11,106 @@
   display: none;
 }
 
+.flip-double {
+  background: #7a4dff;
+  color: #f7f5ff;
+  border: none;
+  font-weight: 700;
+}
+
+.flip-double.active {
+  background: #b28bff;
+  color: #16102b;
+  box-shadow: 0 0 0 3px rgba(150, 108, 255, 0.4);
+}
+
+.flip-double:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.flip-double.hidden {
+  display: none;
+}
+
+/* Color-pick pre-game card. */
+.flip-color-pick {
+  margin: 8px 0 20px;
+}
+
+.flip-color-pick.hidden {
+  display: none;
+}
+
+.flip-color-card {
+  display: grid;
+  gap: 12px;
+  max-width: 460px;
+  padding: 20px 24px;
+  background: rgba(16, 21, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5);
+}
+
+.flip-color-card strong {
+  font-size: 19px;
+}
+
+.flip-color-card span {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.flip-color-options {
+  display: flex;
+  gap: 12px;
+}
+
+.flip-color-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  font: inherit;
+  font-weight: 700;
+  font-size: 16px;
+  cursor: pointer;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+}
+
+.flip-color-btn:hover {
+  transform: translateY(-2px);
+}
+
+.flip-color-btn.red {
+  background: rgba(223, 36, 36, 0.16);
+  border-color: rgba(223, 36, 36, 0.55);
+  color: #ff9a9a;
+}
+
+.flip-color-btn.blue {
+  background: rgba(34, 104, 232, 0.16);
+  border-color: rgba(34, 104, 232, 0.55);
+  color: #9ec5ff;
+}
+
+.flip-color-btn .flip-color-mark {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.flip-color-btn .flip-color-mark.ring {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #2268e8;
+}
+
 .board.flip-triples-board {
   display: grid;
   grid-template-columns: repeat(var(--flip-cols, 5), minmax(58px, 86px));
@@ -166,6 +266,20 @@
 
 .flip-piece.flipped .flip-symbol.hopper {
   color: #f2f4f8;
+}
+
+/* Ring pieces: neutral (white) face with a colored border rim. The color lives
+   on the piece's own border, and is kept even when the piece is flipped/locked. */
+.flip-piece.shape-red-ring,
+.flip-piece.flipped.shape-red-ring {
+  border-color: #df2424;
+  border-width: 6px;
+}
+
+.flip-piece.shape-blue-ring,
+.flip-piece.flipped.shape-blue-ring {
+  border-color: #2268e8;
+  border-width: 6px;
 }
 
 .flip-piece {

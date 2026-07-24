@@ -8,9 +8,11 @@ const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 9;
 const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2 };
 const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null };
 const FLIP_SCORING_SHAPES = ["red-x", "blue-o", "purple"];
+// Ring pieces count with neutrals toward a triple for their color's player.
+const FLIP_RING_FOR_SHAPE = { "red-x": "red-ring", "blue-o": "blue-ring" };
 
-// The Flip Triples bot always plays as X (red) and always goes second, so it
-// occupies player index 1 while the human opponent (O / blue) takes index 0.
+// The Flip Triples bot always occupies seat index 1; its color (red or blue)
+// is decided by the color pick at the start of each game.
 const FLIP_BOT_ID = "__flip_bot__";
 const FLIP_BOT_INDEX = 1;
 const FLIP_BOT_DELAY_MS = 300;
@@ -52,17 +54,17 @@ function normalizeFlipSettings(options = {}) {
   let purple = clampInt(options.purple, 0, preset.cells, 0);
   let yellow = clampInt(options.yellow, 0, preset.cells, 0);
   let hopper = clampInt(options.hopper, 0, preset.cells, 0);
-  let blocker = clampInt(options.blocker, 0, preset.cells, 0);
-  blocker -= blocker % 2; // blockers come in equal pairs per player
+  // Ring pieces come as one red + one blue pair; `rings` counts the pairs.
+  let rings = clampInt(options.rings, 0, Math.floor(preset.cells / 2), 0);
 
   // Trim until everything fits on the board, leaving room for at least 0 neutrals.
-  const total = () => playerPieces * 2 + purple + yellow + hopper + blocker;
+  const total = () => playerPieces * 2 + purple + yellow + hopper + rings * 2;
   while (total() > preset.cells) {
     if (playerPieces > 0) playerPieces -= 1;
     else if (purple > 0) purple -= 1;
     else if (yellow > 0) yellow -= 1;
     else if (hopper > 0) hopper -= 1;
-    else if (blocker >= 2) blocker -= 2;
+    else if (rings > 0) rings -= 1;
     else break;
   }
 
@@ -74,6 +76,7 @@ function normalizeFlipSettings(options = {}) {
   const uniqueSwap = options.uniqueSwap !== false;
   const staticNeutrals = options.staticNeutrals === true;
   const protectedMiddle = boardSize === "4x6" ? false : options.protectedMiddle === true;
+  const doubleMove = options.doubleMove === true;
 
   return {
     boardSize,
@@ -83,13 +86,14 @@ function normalizeFlipSettings(options = {}) {
     purple,
     yellow,
     hopper,
-    blocker,
+    rings,
     neutralPieces,
     mode,
     extendedRule: mode === "extended" ? extendedRule : "none",
     uniqueSwap,
     staticNeutrals,
-    protectedMiddle
+    protectedMiddle,
+    doubleMove
   };
 }
 
@@ -97,15 +101,16 @@ function defaultFlipSettings() {
   return normalizeFlipSettings({});
 }
 
-function makeFlipPiece(index, shape, owner = null) {
+function makeFlipPiece(index, shape) {
   return {
     id: `flip-${index}`,
     shape,
     flipped: false,
     opportunity: false,
     swapped: false,
-    protected: shape === "purple" || shape === "yellow" || shape === "hopper",
-    owner: shape === "blocker" ? owner : null
+    // Rings are not protected: they can lead a swap (flip), but only for their
+    // own color — that ownership is enforced in flipMoveActors, not here.
+    protected: shape === "purple" || shape === "yellow" || shape === "hopper"
   };
 }
 
@@ -125,8 +130,9 @@ function createFlipTriplesBoard(settings) {
   for (let i = 0; i < settings.hopper; i += 1) {
     pieces.push(makeFlipPiece(index++, "hopper"));
   }
-  for (let i = 0; i < settings.blocker; i += 1) {
-    pieces.push(makeFlipPiece(index++, "blocker", i < settings.blocker / 2 ? 0 : 1));
+  for (let i = 0; i < settings.rings; i += 1) {
+    pieces.push(makeFlipPiece(index++, "red-ring"));
+    pieces.push(makeFlipPiece(index++, "blue-ring"));
   }
   for (let i = 0; i < settings.neutralPieces; i += 1) {
     pieces.push(makeFlipPiece(index++, "neutral"));
@@ -146,6 +152,16 @@ function createFlipTriplesState() {
     settings: defaultFlipSettings(),
     board: [],
     phase: 1,
+    // Color-pick pre-game: player one (colorPicker seat) chooses a color, then
+    // player two (firstMover seat) makes the opening move. seatColors maps seat
+    // index -> "red"/"blue".
+    pickingColor: false,
+    colorPicker: null,
+    firstMover: null,
+    seatColors: null,
+    // Double move: each seat may spend one "double" to take two moves in a row.
+    doubleUsed: [false, false],
+    doublePending: null,
     pendingPhase2: false,
     phaseScores: {
       phase1: { red: 0, blue: 0 },
@@ -165,21 +181,42 @@ function isSelectableFlipPiece(piece, phase) {
   return phase === 1 ? !piece.flipped : piece.flipped;
 }
 
-// Purple and yellow are wildcards: they complete triples for either player.
-// Purple triples score normally; yellow triples cost the scorer a point.
-function flipPieceMatchesShape(piece, shape) {
-  if (!piece) return false;
-  if (piece.shape === "purple" || piece.shape === "yellow") {
-    return shape === "red-x" || shape === "blue-o";
-  }
-  return piece.shape === shape;
+function flipRingForShape(shape) {
+  return shape === "red-x" ? "red-ring" : shape === "blue-o" ? "blue-ring" : null;
 }
 
-// Players able to perform a swap of (first -> flips, second -> slides), before geometry.
-function flipMoveActors(first, second) {
+function flipRingColor(shape) {
+  return shape === "red-ring" ? "red" : shape === "blue-ring" ? "blue" : null;
+}
+
+// Whether a whole 3-cell line scores a triple for `shape` (a real color). A line
+// scores in one of two disjoint ways:
+//   - Standard: every cell is that color or a purple/yellow wildcard.
+//   - Ring: every cell is a plain neutral or that color's ring, and the line
+//     contains at least one such ring. Rings only bind neutrals to neutrals —
+//     they never connect a shaped/wildcard piece to neutrals.
+function flipLineMatchesShape(cells, board, shape) {
+  const ring = flipRingForShape(shape);
+  const pieces = cells.map(([row, col]) => board[row][col]);
+  if (pieces.some((p) => !p)) return false;
+  const standard = pieces.every(
+    (p) => p.shape === shape || p.shape === "purple" || p.shape === "yellow"
+  );
+  if (standard) return true;
+  const ringOnly = pieces.every((p) => p.shape === "neutral" || p.shape === ring);
+  const hasRing = pieces.some((p) => p.shape === ring);
+  return ringOnly && hasRing;
+}
+
+// Seats able to perform a swap of (first -> flips, second -> slides). A ring can
+// only be flipped (led first) by the seat holding its color; it can be the
+// sliding (second) piece for either seat.
+function flipMoveActors(first, second, seatColors) {
   let actors = [0, 1];
-  if (first.shape === "blocker") actors = actors.filter((p) => p === first.owner);
-  if (second.shape === "blocker") actors = actors.filter((p) => p === second.owner);
+  const firstRing = flipRingColor(first.shape);
+  if (firstRing) {
+    actors = actors.filter((seat) => seatColors && seatColors[seat] === firstRing);
+  }
   return actors;
 }
 
@@ -209,7 +246,7 @@ function flipSwapPairAllowed(first, second, settings = {}, toRow = null, toCol =
   return true;
 }
 
-function flipMoveExists(board, phase, allowedPlayers, settings = {}) {
+function flipMoveExists(board, phase, allowedPlayers, settings = {}, seatColors = null) {
   const { rows, cols } = flipBoardDimsFromBoard(board);
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
@@ -223,7 +260,7 @@ function flipMoveExists(board, phase, allowedPlayers, settings = {}) {
           if (!isSelectableFlipPiece(second, phase)) continue;
           if (!flipSwapPairAllowed(first, second, settings, r2, c2)) continue;
           if (!flipSwapReachable(first, second, row, col, r2, c2)) continue;
-          const actors = flipMoveActors(first, second);
+          const actors = flipMoveActors(first, second, seatColors);
           if (actors.some((p) => allowedPlayers.includes(p))) return true;
         }
       }
@@ -233,11 +270,11 @@ function flipMoveExists(board, phase, allowedPlayers, settings = {}) {
 }
 
 function anyFlipMove(state) {
-  return flipMoveExists(state.board, state.phase, [0, 1], state.settings ?? {});
+  return flipMoveExists(state.board, state.phase, [0, 1], state.settings ?? {}, state.seatColors);
 }
 
 function playerHasFlipMove(state, playerIndex) {
-  return flipMoveExists(state.board, state.phase, [playerIndex], state.settings ?? {});
+  return flipMoveExists(state.board, state.phase, [playerIndex], state.settings ?? {}, state.seatColors);
 }
 
 function getFlipTriples(board, shape) {
@@ -257,7 +294,7 @@ function getFlipTriples(board, shape) {
           ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols
         );
         if (!inBounds) return;
-        if (cells.every(([r, c]) => flipPieceMatchesShape(board[r][c], shape))) triples.push(cells);
+        if (flipLineMatchesShape(cells, board, shape)) triples.push(cells);
       });
     }
   }
@@ -348,11 +385,51 @@ function computeFlipWinner(state) {
   if (center) {
     if (center.shape === "red-x") controller = "red";
     else if (center.shape === "blue-o") controller = "blue";
-    else if (center.shape === "blocker") controller = center.owner === 0 ? "red" : "blue";
   }
   if (controller === "red") return "blue";
   if (controller === "blue") return "red";
   return "tie";
+}
+
+// Does the given color have a legal move that increases its own triple count?
+// Used to decide whether the bot should spend its double move this turn. Scans
+// the same move space as flipMoveExists, temporarily applying each candidate.
+function flipColorHasScoringMove(state, color) {
+  const board = state.board;
+  const { rows, cols } = flipBoardDimsFromBoard(board);
+  const phase = state.phase;
+  const settings = state.settings ?? {};
+  const seatColors = state.seatColors;
+  const seat = seatColors ? seatColors.indexOf(color) : -1;
+  if (seat < 0) return false;
+  const shape = color === "red" ? "red-x" : "blue-o";
+  const before = countFlipTriples(board, shape);
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const first = board[row][col];
+      if (!isSelectableFlipPiece(first, phase) || first.protected) continue;
+      for (let r2 = 0; r2 < rows; r2 += 1) {
+        for (let c2 = 0; c2 < cols; c2 += 1) {
+          if (r2 === row && c2 === col) continue;
+          const second = board[r2][c2];
+          if (!isSelectableFlipPiece(second, phase)) continue;
+          if (!flipSwapPairAllowed(first, second, settings, r2, c2)) continue;
+          if (!flipSwapReachable(first, second, row, col, r2, c2)) continue;
+          const actors = flipMoveActors(first, second, seatColors);
+          if (!actors.includes(seat)) continue;
+          const savedTo = board[r2][c2];
+          const savedFrom = board[row][col];
+          board[r2][c2] = { ...first, flipped: phase === 1 };
+          board[row][col] = second;
+          const after = countFlipTriples(board, shape);
+          board[r2][c2] = savedTo;
+          board[row][col] = savedFrom;
+          if (after > before) return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 export function createFlipTriplesGame({ io, rooms }) {
@@ -424,11 +501,20 @@ export function createFlipTriplesGame({ io, rooms }) {
       return;
     }
     const players = room.players;
+    const actorIndex = players.indexOf(actingSocketId);
+    // Double move: the actor gets a second consecutive move. Consume the pending
+    // double and keep the turn if the actor can still move.
+    if (state.doublePending === actorIndex && actorIndex >= 0) {
+      state.doublePending = null;
+      if (playerHasFlipMove(state, actorIndex)) {
+        room.turn = players[actorIndex];
+        return;
+      }
+    }
     if (players[0] === players[1]) {
       room.turn = players[0];
       return;
     }
-    const actorIndex = players.indexOf(actingSocketId);
     const otherIndex = 1 - actorIndex;
     room.turn = playerHasFlipMove(state, otherIndex) ? players[otherIndex] : players[actorIndex];
   }
@@ -472,9 +558,50 @@ export function createFlipTriplesGame({ io, rooms }) {
     state.moveId = 0;
     state.transitionId = 0;
     state.winner = null;
+    state.doubleUsed = [false, false];
+    state.doublePending = null;
     room.phase2Ready = new Set();
     room.flipUndo = null;
-    setInitialFlipTurn(room);
+
+    const solo = room.players[0] === room.players[1];
+    if (solo) {
+      // Solo play has no separate color pick: seat 0 is blue, seat 1 is red, and
+      // the single human drives both sides.
+      state.pickingColor = false;
+      state.colorPicker = null;
+      state.firstMover = null;
+      state.seatColors = ["blue", "red"];
+      setInitialFlipTurn(room);
+      if (!anyFlipMove(state)) advanceFlipPhaseOrEnd(room);
+      return;
+    }
+
+    // Online / vs AI: randomly choose which seat picks the color (player one)
+    // and which seat makes the opening move (player two). Play is gated until a
+    // color is chosen.
+    state.pickingColor = true;
+    state.colorPicker = Math.random() < 0.5 ? 0 : 1;
+    state.firstMover = 1 - state.colorPicker;
+    state.seatColors = null;
+    room.turn = null;
+  }
+
+  // Player one has chosen a color; assign colors, hand the opening move to
+  // player two, and begin play.
+  function finalizeColorPick(room, pickerColor) {
+    const state = room.flipTriples;
+    const color = pickerColor === "red" ? "red" : "blue";
+    const other = color === "red" ? "blue" : "red";
+    const seatColors = [null, null];
+    seatColors[state.colorPicker] = color;
+    seatColors[state.firstMover] = other;
+    state.seatColors = seatColors;
+    state.pickingColor = false;
+
+    const fm = state.firstMover;
+    if (playerHasFlipMove(state, fm)) room.turn = room.players[fm];
+    else if (playerHasFlipMove(state, 1 - fm)) room.turn = room.players[1 - fm];
+    else room.turn = room.players[fm];
     if (!anyFlipMove(state)) advanceFlipPhaseOrEnd(room);
   }
 
@@ -544,6 +671,20 @@ export function createFlipTriplesGame({ io, rooms }) {
     const state = room.flipTriples;
     if (!state || state.setup || state.gameOver) return;
 
+    // Color pick: if the bot is player one, it chooses a color at random and
+    // hands the opening move to player two.
+    if (state.pickingColor) {
+      if (state.colorPicker === FLIP_BOT_INDEX) {
+        finalizeColorPick(room, Math.random() < 0.5 ? "red" : "blue");
+        emitState(roomId, room);
+        if (!state.gameOver && !state.pendingPhase2) {
+          io.to(roomId).emit("turn_update", { turn: room.turn });
+        }
+        if (room.turn === FLIP_BOT_ID) scheduleFlipBot(roomId);
+      }
+      return;
+    }
+
     if (state.pendingPhase2) {
       if (!room.phase2Ready) room.phase2Ready = new Set();
       if (!room.phase2Ready.has(FLIP_BOT_ID)) {
@@ -564,6 +705,23 @@ export function createFlipTriplesGame({ io, rooms }) {
     }
 
     if (room.turn !== FLIP_BOT_ID) return;
+    // The bot's color is decided by the color pick; the solver's player index is
+    // in color space (1 = red, 0 = blue), which also fixes ring ownership.
+    const botColor = state.seatColors?.[FLIP_BOT_INDEX] === "red" ? "red" : "blue";
+    const botColorIndex = botColor === "red" ? 1 : 0;
+
+    // Spend the bot's double move when it currently has a scoring move.
+    if (
+      state.settings.doubleMove &&
+      !state.doubleUsed[FLIP_BOT_INDEX] &&
+      state.doublePending == null &&
+      flipColorHasScoringMove(state, botColor)
+    ) {
+      state.doubleUsed[FLIP_BOT_INDEX] = true;
+      state.doublePending = FLIP_BOT_INDEX;
+      emitState(roomId, room);
+    }
+
     const level = FLIP_BOT_LEVELS[room.botLevel] ?? FLIP_BOT_LEVELS[FLIP_BOT_DEFAULT_LEVEL];
     invalidateBotSearch(room);
     botWorker.postMessage({
@@ -575,7 +733,7 @@ export function createFlipTriplesGame({ io, rooms }) {
         settings: state.settings,
         phaseScores: state.phaseScores
       },
-      playerIndex: FLIP_BOT_INDEX,
+      playerIndex: botColorIndex,
       timeMs: level.timeMs,
       pickWeights: level.pickWeights
     });
@@ -619,10 +777,50 @@ export function createFlipTriplesGame({ io, rooms }) {
         invalidateBotSearch(room);
         startFlipTriplesGame(room, options || {});
         emitState(roomId, room);
-        if (!room.flipTriples.gameOver && !room.flipTriples.pendingPhase2) {
+        if (
+          !room.flipTriples.gameOver &&
+          !room.flipTriples.pendingPhase2 &&
+          !room.flipTriples.pickingColor
+        ) {
           io.to(roomId).emit("turn_update", { turn: room.turn });
         }
         if (room.isBot) scheduleFlipBot(roomId);
+      });
+
+      socket.on("flip_triples_pick_color", ({ roomId, color } = {}) => {
+        const room = rooms.get(roomId);
+        if (!room || room.gameId !== "flip-triples") return;
+        const state = room.flipTriples;
+        if (!state.pickingColor) return;
+        if (!room.players.includes(socket.id)) return;
+        // Only player one (the color picker seat) may choose.
+        if (room.players.indexOf(socket.id) !== state.colorPicker) return;
+        if (color !== "red" && color !== "blue") return;
+        invalidateBotSearch(room);
+        finalizeColorPick(room, color);
+        emitState(roomId, room);
+        if (!state.gameOver && !state.pendingPhase2) {
+          io.to(roomId).emit("turn_update", { turn: room.turn });
+        }
+        if (room.isBot && room.turn === FLIP_BOT_ID) scheduleFlipBot(roomId);
+      });
+
+      socket.on("flip_triples_double", ({ roomId } = {}) => {
+        const room = rooms.get(roomId);
+        if (!room || room.gameId !== "flip-triples") return;
+        const state = room.flipTriples;
+        if (state.setup || state.pickingColor || state.pendingPhase2 || state.gameOver) return;
+        if (!state.settings.doubleMove) return;
+        if (room.players[0] === room.players[1]) return; // no double in solo play
+        if (room.turn !== socket.id) return;
+        const seat = room.players.indexOf(socket.id);
+        if (seat < 0 || state.doubleUsed[seat] || state.doublePending != null) return;
+        state.doubleUsed[seat] = true;
+        state.doublePending = seat;
+        // Activating a double is a commitment: drop any pending undo.
+        room.flipUndo = null;
+        invalidateBotSearch(room);
+        emitState(roomId, room);
       });
 
       socket.on("flip_triples_undo", ({ roomId } = {}) => {
@@ -664,7 +862,7 @@ export function createFlipTriplesGame({ io, rooms }) {
         const room = rooms.get(roomId);
         if (!room || room.gameId !== "flip-triples") return;
         const state = room.flipTriples;
-        if (state.setup || state.pendingPhase2 || state.gameOver) return;
+        if (state.setup || state.pickingColor || state.pendingPhase2 || state.gameOver) return;
         if (room.turn !== socket.id) return;
         const { rows, cols } = flipBoardDimsFromBoard(state.board);
         const isCoordinate = (point) =>
@@ -691,10 +889,11 @@ export function createFlipTriplesGame({ io, rooms }) {
         // Adjacent swaps are always allowed; a hopper (second) can swap with any piece.
         if (dist !== 1 && second.shape !== "hopper") return;
 
-        // Blocker ownership: a swap touching a blocker is only available to its owner.
+        // Ring ownership: a ring can only be flipped (led first) by the seat that
+        // holds its color. In solo play the one human drives both seats.
         const isSolo = room.players[0] === room.players[1];
         const allowed = isSolo ? [0, 1] : [room.players.indexOf(socket.id)];
-        const actors = flipMoveActors(first, second);
+        const actors = flipMoveActors(first, second, state.seatColors);
         if (!actors.some((p) => allowed.includes(p))) return;
 
         // Snapshot the pre-move state so this move can be undone until the other

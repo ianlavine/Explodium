@@ -21,7 +21,7 @@
 // (red/blue/neutral x white/flipped) live across three parallel masks:
 // mRed, mBlue (neutral = neither), and mFlip. Move generation and triple
 // counting become a handful of shifts/ANDs over all cells at once. Exotic
-// pieces (purple/yellow/hopper/blocker) fall back to the generic scan path.
+// pieces (purple/yellow/hopper/rings) fall back to the generic scan path.
 //
 // Rules modeled (matching server.js):
 //   - A move picks a "first" piece (which locks/flips and slides) and an
@@ -49,8 +49,12 @@ export const NEUTRAL = 2;
 export const PURPLE = 3;
 export const HOPPER = 4;
 export const YELLOW = 5; // wildcard like purple, but its triples score -1
-export const BLOCKER0 = 6; // blocker owned by player index 0 (blue)
-export const BLOCKER1 = 7; // blocker owned by player index 1 (red)
+// Ring pieces: neutral core with a colored rim. They count with neutrals toward
+// a triple for their own color, can be slid by either player, but can only be
+// flipped (led as the first piece) by the player of that color. Player index
+// convention: 1 = red, 0 = blue.
+export const RED_RING = 6;
+export const BLUE_RING = 7;
 
 const SHAPE_CODES = {
   "red-x": RED,
@@ -58,7 +62,9 @@ const SHAPE_CODES = {
   neutral: NEUTRAL,
   purple: PURPLE,
   hopper: HOPPER,
-  yellow: YELLOW
+  yellow: YELLOW,
+  "red-ring": RED_RING,
+  "blue-ring": BLUE_RING
 };
 
 const INF = 1e9;
@@ -407,11 +413,7 @@ export function stateFromGame(gameState) {
         shapes[i] = NEUTRAL;
         continue;
       }
-      if (piece.shape === "blocker") {
-        shapes[i] = piece.owner === 0 ? BLOCKER0 : BLOCKER1;
-      } else {
-        shapes[i] = SHAPE_CODES[piece.shape] ?? NEUTRAL;
-      }
+      shapes[i] = SHAPE_CODES[piece.shape] ?? NEUTRAL;
       flipped[i] = piece.flipped ? 1 : 0;
     }
   }
@@ -441,18 +443,19 @@ function isActive(state, i) {
 }
 
 function sameShapeFamily(a, b) {
-  return a === b || (a >= BLOCKER0 && b >= BLOCKER0);
+  return a === b;
 }
 
 function isProtectedShape(shape) {
   return shape === PURPLE || shape === YELLOW || shape === HOPPER;
 }
 
-// True when `player` may act on a pair involving these shapes (blockers are
-// owner-restricted; everything else is shared).
-function actorAllowed(shape, player) {
-  if (shape === BLOCKER0) return player === 0;
-  if (shape === BLOCKER1) return player === 1;
+// A ring may only be flipped (led as the first piece) by the player of its
+// color. Everything else can be flipped by either player. (Rings can still be
+// the second/sliding piece for anyone — that is not restricted here.)
+function canFlipShape(shape, player) {
+  if (shape === RED_RING) return player === 1;
+  if (shape === BLUE_RING) return player === 0;
   return true;
 }
 
@@ -539,11 +542,11 @@ function genGenericInto(state, player, buf, off) {
     if (!isActive(state, a) || !isActive(state, b)) continue;
     const sa = shapes[a];
     if (isProtectedShape(sa)) continue;
+    if (!canFlipShape(sa, player)) continue; // rings flip only for their color
     const sb = shapes[b];
     if (state.uniqueSwap && sameShapeFamily(sa, sb)) continue;
     if (state.staticNeutrals && sb === NEUTRAL) continue;
     if (state.blockedCenter === b) continue;
-    if (!actorAllowed(sa, player) || !actorAllowed(sb, player)) continue;
     buf[off + n] = a * cells + b;
     n += 1;
   }
@@ -556,7 +559,7 @@ function genGenericInto(state, player, buf, off) {
         if (a === b || !isActive(state, a)) continue;
         const sa = shapes[a];
         if (isProtectedShape(sa)) continue;
-        if (!actorAllowed(sa, player)) continue;
+        if (!canFlipShape(sa, player)) continue;
         const dist = Math.max(Math.abs(rowOf[a] - rowOf[b]), Math.abs(colOf[a] - colOf[b]));
         if (dist === 1) continue; // already covered by the adjacent pairs
         buf[off + n] = a * cells + b;
@@ -715,8 +718,32 @@ function updateMasksAt(state, a, b) {
 // per side). Fast path counts triples via the 44 padded line masks.
 // ---------------------------------------------------------------------------
 
-function shapeMatches(shape, target) {
+function ringCodeFor(target) {
+  return target === RED ? RED_RING : BLUE_RING;
+}
+
+// Standard cell match: that color or a purple/yellow wildcard.
+function isColorOrWild(shape, target) {
   return shape === target || shape === PURPLE || shape === YELLOW;
+}
+
+// A line scores for `target` in one of two disjoint ways: an all-shaped standard
+// triple, or an all-(neutral/that-color-ring) triple with at least one ring.
+// Rings bind neutrals to neutrals only — never a shaped/wildcard piece.
+function lineMatchesTarget(shapes, x, y, z, target) {
+  const ring = ringCodeFor(target);
+  const sx = shapes[x];
+  const sy = shapes[y];
+  const sz = shapes[z];
+  if (isColorOrWild(sx, target) && isColorOrWild(sy, target) && isColorOrWild(sz, target)) {
+    return true;
+  }
+  const ringOnly =
+    (sx === NEUTRAL || sx === ring) &&
+    (sy === NEUTRAL || sy === ring) &&
+    (sz === NEUTRAL || sz === ring);
+  const hasRing = sx === ring || sy === ring || sz === ring;
+  return ringOnly && hasRing;
 }
 
 // A triple through a yellow wildcard counts -1 instead of +1.
@@ -730,7 +757,7 @@ function countTriples(state, target) {
   let count = 0;
   for (let i = 0; i < lines.length; i += 1) {
     const [x, y, z] = lines[i];
-    if (shapeMatches(shapes[x], target) && shapeMatches(shapes[y], target) && shapeMatches(shapes[z], target)) {
+    if (lineMatchesTarget(shapes, x, y, z, target)) {
       count += tripleValue(shapes[x], shapes[y], shapes[z]);
     }
   }
@@ -745,7 +772,7 @@ function countLockedTriples(state, target) {
   for (let i = 0; i < lines.length; i += 1) {
     const [x, y, z] = lines[i];
     if (isActive(state, x) || isActive(state, y) || isActive(state, z)) continue;
-    if (shapeMatches(shapes[x], target) && shapeMatches(shapes[y], target) && shapeMatches(shapes[z], target)) {
+    if (lineMatchesTarget(shapes, x, y, z, target)) {
       count += tripleValue(shapes[x], shapes[y], shapes[z]);
     }
   }
@@ -767,11 +794,11 @@ function whiteDiffGeneric(state) {
 }
 
 function centerTiebreak(state) {
-  // 5x5 rule: whoever holds the center loses the tie. Blocker ownership
-  // mirrors computeFlipWinner in server.js: owner 0 counts as red control.
+  // 5x5 rule: whoever holds the center loses the tie. Rings count as neutral
+  // for control here (only real colored pieces hold the center).
   const s = state.shapes[state.geom.centerIdx];
-  if (s === RED || s === BLOCKER0) return -1;
-  if (s === BLUE || s === BLOCKER1) return 1;
+  if (s === RED) return -1;
+  if (s === BLUE) return 1;
   return 0;
 }
 
@@ -1444,7 +1471,7 @@ export function chooseSolverMove(gameState, playerIndex, opts = {}) {
 // ---------------------------------------------------------------------------
 
 export function makeRandomDeal(
-  { rows = 6, cols = 4, playerPieces = 9, purple = 0, yellow = 0, hopper = 0, blocker = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false, noTiebreak = false } = {},
+  { rows = 6, cols = 4, playerPieces = 9, purple = 0, yellow = 0, hopper = 0, rings = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false, noTiebreak = false } = {},
   rand = Math.random
 ) {
   const cells = rows * cols;
@@ -1453,7 +1480,7 @@ export function makeRandomDeal(
   for (let i = 0; i < purple; i += 1) bag.push(PURPLE);
   for (let i = 0; i < yellow; i += 1) bag.push(YELLOW);
   for (let i = 0; i < hopper; i += 1) bag.push(HOPPER);
-  for (let i = 0; i < blocker; i += 1) bag.push(i < blocker / 2 ? BLOCKER0 : BLOCKER1);
+  for (let i = 0; i < rings; i += 1) bag.push(RED_RING, BLUE_RING);
   while (bag.length < cells) bag.push(NEUTRAL);
   if (bag.length > cells) throw new Error("deal does not fit on the board");
   for (let i = bag.length - 1; i > 0; i -= 1) {
