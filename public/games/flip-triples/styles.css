@@ -750,3 +750,140 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ===================================================================== */
+/* Metrics playground (local board editor + metric highlighter)          */
+/* ===================================================================== */
+.playground-btn {
+  background: transparent;
+  border-radius: 10px;
+  padding: 8px 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--muted);
+  width: 100%;
+  transition: transform 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.playground-btn:hover {
+  transform: translateY(-2px);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.pg-card {
+  max-width: 680px;
+  width: min(96vw, 680px);
+  max-height: 92vh;
+  overflow-y: auto;
+}
+/* Board on the left, controls on the right; wraps on narrow screens. */
+.pg-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 14px 0 6px;
+}
+/* Reuse the real .flip-piece tiles; just drop the game's outer margins. */
+.pg-board.flip-triples-board { margin: 0; }
+.pg-board .flip-piece {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pg-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 210px;
+  flex: 1 1 210px;
+  max-width: 260px;
+}
+.pg-readout {
+  text-align: center;
+  font-weight: 800;
+  font-size: 15px;
+  color: var(--accent-2);
+  min-height: 20px;
+  padding: 6px 0;
+}
+.pg-metrics { display: flex; flex-direction: column; gap: 8px; }
+.pg-metric { font-size: 14px; padding: 10px 12px; text-align: left; }
+.pg-metric.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: rgba(255, 138, 0, 0.14);
+}
+.pg-actions { display: flex; gap: 8px; }
+.pg-actions .ghost-btn { flex: 1; }
+.pg-close { width: 100%; margin-top: 4px; }
+
+/* tile badge (completion forks) */
+.pg-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 999px;
+  padding: 1px 6px;
+  z-index: 3;
+}
+
+/* highlights — circular rings on the round tiles */
+.pg-board .flip-piece.pg-hl-perm { box-shadow: inset 0 0 0 4px #f5b301, 0 0 14px rgba(245, 179, 1, 0.6); }
+.pg-board .flip-piece.pg-hl-x { box-shadow: inset 0 0 0 4px #df2424, 0 0 14px rgba(223, 36, 36, 0.6); }
+.pg-board .flip-piece.pg-hl-o { box-shadow: inset 0 0 0 4px #2268e8, 0 0 14px rgba(34, 104, 232, 0.6); }
+.pg-board .flip-piece.pg-hl-comp-x { box-shadow: inset 0 0 0 4px #df2424, 0 0 0 3px #df2424, 0 0 14px rgba(223, 36, 36, 0.7); }
+.pg-board .flip-piece.pg-hl-comp-o { box-shadow: inset 0 0 0 4px #2268e8, 0 0 0 3px #2268e8, 0 0 14px rgba(34, 104, 232, 0.7); }
+.pg-board .flip-piece.pg-hl-support::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: rgba(120, 120, 120, 0.9);
+}
+
+.pg-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.pg-legend span { display: inline-flex; align-items: center; gap: 8px; }
+.pg-legend .lg {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(17, 21, 28, 0.86);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-style: normal;
+  font-weight: 800;
+  font-size: 13px;
+  flex: none;
+}
+.pg-legend .lg.white { background: #f7f8fb; color: #11151c; }
+.pg-legend .lg.black { background: #05070a; border-color: rgba(255, 255, 255, 0.2); }
+.pg-legend .lg.xchip { background: #f7f8fb; color: #df2424; }
+.pg-legend .lg.ochip { background: #f7f8fb; position: relative; }
+.pg-legend .lg.ochip::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #2268e8;
+}

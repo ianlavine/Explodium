@@ -1,0 +1,6 @@
+{"seed":300000,"bSide":0,"outcome":"b","margin":0.3,"plies":15,"solvedFromPly":9,"mode":"time","param":50,"aName":"basic","bName":"basic3hot"}
+{"seed":300002,"bSide":1,"outcome":"a","margin":-0.7,"plies":18,"solvedFromPly":9,"mode":"time","param":50,"aName":"basic","bName":"basic3hot"}
+{"seed":300001,"bSide":0,"outcome":"a","margin":-0.3,"plies":17,"solvedFromPly":10,"mode":"time","param":50,"aName":"basic","bName":"basic3hot"}
+{"seed":300000,"bSide":1,"outcome":"a","margin":-0.4,"plies":15,"solvedFromPly":11,"mode":"time","param":50,"aName":"basic","bName":"basic3hot"}
+{"seed":300002,"bSide":0,"outcome":"a","margin":-1,"plies":18,"solvedFromPly":11,"mode":"time","param":50,"aName":"basic","bName":"basic3hot"}
+{"seed":300001,"bSide":1,"outcome":"b","margin":0.2,"plies":19,"solvedFromPly":12,"mode":"time","param":50,"aName":"basic","bName":"basic3hot"}

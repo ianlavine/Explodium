@@ -38,6 +38,16 @@ const SETTING_FIELDS = [
     key: "destroyDots",
     label: "Destroyed lines take their dots",
     hint: "A cut also removes both end dots and the lines touching them — one level only."
+  },
+  {
+    key: "showStrength",
+    label: "Show pipe strength",
+    hint: "Print each line's strength — the price to cut it — as a number along the pipe."
+  },
+  {
+    key: "consumption",
+    label: "Kills consume their victims",
+    hint: "A line that cuts others absorbs their strength, becoming that much harder to cut. Killers keep hardening."
   }
 ];
 
@@ -325,6 +335,23 @@ function renderLines() {
     setCoords(el);
     linesLayer.appendChild(el);
     lineEls.set(line.id, el);
+
+    // Strength readout: the price to cut this line, drawn parallel to it and
+    // nudged just off the pipe. Brass can't be cut at any price, so mark it ∞.
+    if (linoState.settings?.showStrength) {
+      const mx = (from.x + to.x) / 2;
+      const my = (from.y + to.y) / 2;
+      let angle = (Math.atan2(to.y - from.y, to.x - from.x) * 180) / Math.PI;
+      if (angle > 90) angle -= 180;
+      else if (angle < -90) angle += 180; // keep the text upright
+      const strength = document.createElementNS(SVG_NS, "text");
+      strength.setAttribute("class", `lino-strength ${PLAYER_CLASSES[line.player]}`);
+      strength.setAttribute("x", mx);
+      strength.setAttribute("y", my - 1.5);
+      strength.setAttribute("transform", `rotate(${angle} ${mx} ${my})`);
+      strength.textContent = line.brass ? "∞" : line.cost;
+      linesLayer.appendChild(strength);
+    }
   });
 }
 

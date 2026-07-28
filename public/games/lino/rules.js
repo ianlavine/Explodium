@@ -29,6 +29,12 @@ export const DEFAULT_SETTINGS = {
   // Cutting a line also destroys its two end dots, and every line touching
   // them. Deliberately one level deep — no further cascade.
   destroyDots: false,
+  // Draw each line's strength (the price to cut it) as a number along it.
+  showStrength: false,
+  // A cutting line absorbs the strength of everything it kills: its stored
+  // cut-cost becomes what its builder paid (own length + victims' strengths),
+  // so a killer grows steadily harder to cut — kills compound without limit.
+  consumption: false,
   // --- economy dials (sliders in the setup screen) ---
   // Line price knob: 50 keeps the baseline COST_PER_UNIT, 100 doubles it,
   // 0 makes every line the $1 minimum.

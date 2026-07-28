@@ -101,6 +101,16 @@ function renderGames() {
 
     row.appendChild(card);
     row.appendChild(solo);
+
+    // Optional local tools (e.g. Flip Triples' metrics playground) sit below Solo.
+    if (game.openPlayground) {
+      const pg = document.createElement("button");
+      pg.className = "playground-btn";
+      pg.type = "button";
+      pg.dataset.gameId = game.id;
+      pg.textContent = "Playground";
+      row.appendChild(pg);
+    }
     els.gameList.appendChild(row);
   });
 }
@@ -171,6 +181,13 @@ els.soloPicker.addEventListener("click", (event) => {
 els.gameList.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
+
+  const playgroundButton = target.closest(".playground-btn");
+  if (playgroundButton) {
+    const selected = games.find((game) => game.id === playgroundButton.dataset.gameId);
+    selected?.openPlayground?.();
+    return;
+  }
 
   const soloButton = target.closest(".solo-btn");
   if (soloButton) {

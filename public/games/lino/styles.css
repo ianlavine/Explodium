@@ -100,6 +100,25 @@
   transition: stroke 0.12s ease, opacity 0.12s ease;
 }
 
+/* The strength number printed alongside a pipe when "show strength" is on. */
+.lino-strength {
+  font-size: 3.4px;
+  font-weight: 700;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: rgba(8, 12, 24, 0.9);
+  stroke-width: 1px;
+  pointer-events: none;
+}
+
+.lino-strength.lino-p0 {
+  fill: #9bd9f7;
+}
+
+.lino-strength.lino-p1 {
+  fill: #fcaebb;
+}
+
 /* Brass: the gold jacket drawn under a line that has made a kill. */
 .lino-brass-casing {
   stroke: #d9a441;

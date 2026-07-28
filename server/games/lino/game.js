@@ -127,9 +127,13 @@ export function createLinoGame({ io, rooms }) {
       from: fromId,
       to: toId,
       player: seat,
-      // What it costs an opponent to cut this line later: its own length,
-      // never the surcharge paid for the cuts this build made.
-      cost: lineCost(from, to, room.lino.settings),
+      // What it costs an opponent to cut this line later. Normally its own
+      // length. Under consumption it inherits the full price this build paid
+      // (length + every strength it just consumed), so killers harden over
+      // time — result.cost already equals lineCost when nothing was cut.
+      cost: room.lino.settings.consumption
+        ? result.cost
+        : lineCost(from, to, room.lino.settings),
       len: result.length,
       // The kill tempers this line into brass: indestructible from here on.
       brass: !!result.becomesBrass

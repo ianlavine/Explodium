@@ -132,6 +132,22 @@ function getGeom(rows, cols) {
     }
   }
 
+  // Per-cell 8-neighbour lists (Chebyshev distance 1), precomputed once for the
+  // permanence / completion-space passes so those hot loops never allocate.
+  const neighbors = new Array(cells);
+  for (let i = 0; i < cells; i += 1) {
+    const list = [];
+    for (let dr = -1; dr <= 1; dr += 1) {
+      for (let dc = -1; dc <= 1; dc += 1) {
+        if (dr === 0 && dc === 0) continue;
+        const nr = rowOf[i] + dr;
+        const nc = colOf[i] + dc;
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) list.push(nr * cols + nc);
+      }
+    }
+    neighbors[i] = Int32Array.from(list);
+  }
+
   // Ordered adjacent (first, second) pairs, Chebyshev distance 1 (generic path).
   const adjPairs = [];
   for (let a = 0; a < cells; a += 1) {
@@ -200,6 +216,7 @@ function getGeom(rows, cols) {
     colOf,
     lines,
     linesThrough,
+    neighbors,
     adjPairs,
     fitsBitboard,
     padBit,
@@ -438,7 +455,7 @@ export function stateFromGame(gameState) {
   });
 }
 
-function isActive(state, i) {
+export function isActive(state, i) {
   return state.phase === 1 ? state.flipped[i] === 0 : state.flipped[i] === 1;
 }
 
@@ -723,14 +740,14 @@ function ringCodeFor(target) {
 }
 
 // Standard cell match: that color or a purple/yellow wildcard.
-function isColorOrWild(shape, target) {
+export function isColorOrWild(shape, target) {
   return shape === target || shape === PURPLE || shape === YELLOW;
 }
 
 // A line scores for `target` in one of two disjoint ways: an all-shaped standard
 // triple, or an all-(neutral/that-color-ring) triple with at least one ring.
 // Rings bind neutrals to neutrals only — never a shaped/wildcard piece.
-function lineMatchesTarget(shapes, x, y, z, target) {
+export function lineMatchesTarget(shapes, x, y, z, target) {
   const ring = ringCodeFor(target);
   const sx = shapes[x];
   const sy = shapes[y];
@@ -747,11 +764,11 @@ function lineMatchesTarget(shapes, x, y, z, target) {
 }
 
 // A triple through a yellow wildcard counts -1 instead of +1.
-function tripleValue(sx, sy, sz) {
+export function tripleValue(sx, sy, sz) {
   return sx === YELLOW || sy === YELLOW || sz === YELLOW ? -1 : 1;
 }
 
-function countTriples(state, target) {
+export function countTriples(state, target) {
   const { lines } = state.geom;
   const shapes = state.shapes;
   let count = 0;
@@ -765,7 +782,7 @@ function countTriples(state, target) {
 }
 
 // Triples made entirely of pieces that can no longer move this phase.
-function countLockedTriples(state, target) {
+export function countLockedTriples(state, target) {
   const { lines } = state.geom;
   const shapes = state.shapes;
   let count = 0;
@@ -781,7 +798,7 @@ function countLockedTriples(state, target) {
 
 // Unflipped ("white") own-shape pieces; the 4x6 tie-breaker. Purple excluded,
 // matching countFlipRemainingWhitePieces.
-function whiteDiffGeneric(state) {
+export function whiteDiffGeneric(state) {
   const shapes = state.shapes;
   const flipped = state.flipped;
   let diff = 0;
@@ -791,6 +808,153 @@ function whiteDiffGeneric(state) {
     else if (shapes[i] === BLUE) diff -= 1;
   }
   return diff;
+}
+
+// ---------------------------------------------------------------------------
+// Frozen-piece features (permanence + completion spaces). These back the
+// weighted feature eval and are mirrored by the browser module
+// public/games/flip-triples/metrics.js (kept identical by
+// tools/flip-triples/metrics-check.mjs). Optimized for the leaf hot path:
+// precomputed geom.neighbors + reused scratch buffers, so a full recompute
+// allocates nothing. See the eval lab's comments for the derivation.
+// ---------------------------------------------------------------------------
+
+// Reused scratch for the permanence flood-fill (resized when board size changes).
+let _permScratchCells = -1;
+let _permMask, _permSeen, _permStack, _permBlob, _permMov;
+function ensurePermScratch(cells) {
+  if (_permScratchCells === cells) return;
+  _permMask = new Uint8Array(cells);
+  _permSeen = new Uint8Array(cells);
+  _permStack = new Int32Array(cells);
+  _permBlob = new Int32Array(cells);
+  _permMov = new Uint8Array(cells);
+  _permScratchCells = cells;
+}
+
+// Fill `perm` (1 = frozen forever). A piece is permanent if it is locked, OR it
+// belongs to a maximal same-shape movable 8-blob that touches no movable piece
+// of a different shape (nothing can swap into or out of it). Allocation-free
+// apart from `perm`.
+function fillPermanentMask(state, perm) {
+  const geom = state.geom;
+  const cells = geom.cells;
+  const shapes = state.shapes;
+  const nbrs = geom.neighbors;
+  ensurePermScratch(cells);
+  const seen = _permSeen;
+  const stack = _permStack;
+  const blob = _permBlob;
+  const mov = _permMov;
+  const phase1 = state.phase === 1;
+  const flipped = state.flipped;
+  for (let i = 0; i < cells; i += 1) {
+    const m = (phase1 ? flipped[i] === 0 : flipped[i] === 1) ? 1 : 0;
+    mov[i] = m;
+    perm[i] = m ? 0 : 1; // locked cells are permanent outright
+    seen[i] = m ? 0 : 1; // and are never flood-started
+  }
+  for (let start = 0; start < cells; start += 1) {
+    if (seen[start]) continue;
+    const myShape = shapes[start];
+    let sp = 0;
+    let bl = 0;
+    let sealed = true;
+    stack[sp++] = start;
+    seen[start] = 1;
+    while (sp > 0) {
+      const c = stack[--sp];
+      blob[bl++] = c;
+      const ns = nbrs[c];
+      for (let k = 0; k < ns.length; k += 1) {
+        const nb = ns[k];
+        if (!mov[nb]) continue; // locked neighbour can't swap
+        if (shapes[nb] === myShape) {
+          if (!seen[nb]) {
+            seen[nb] = 1;
+            stack[sp++] = nb;
+          }
+        } else {
+          sealed = false; // a different-shape movable neighbour is an escape route
+        }
+      }
+    }
+    if (sealed) for (let b = 0; b < bl; b += 1) perm[blob[b]] = 1;
+  }
+  return perm;
+}
+
+// Public: permanence mask as a fresh array. Uint8Array: 1 = never moves again.
+export function computePermanentMask(state) {
+  return fillPermanentMask(state, new Uint8Array(state.geom.cells));
+}
+// Internal: reuse the scratch mask (hot path). Valid until the next call.
+function permMaskForEval(state) {
+  ensurePermScratch(state.geom.cells);
+  return fillPermanentMask(state, _permMask);
+}
+
+// Triples whose three cells are ALL permanent (a superset of countLockedTriples).
+export function countPermanentTriples(state, target, perm = computePermanentMask(state)) {
+  const lines = state.geom.lines;
+  const shapes = state.shapes;
+  let count = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const ln = lines[i];
+    const x = ln[0];
+    const y = ln[1];
+    const z = ln[2];
+    if (!(perm[x] && perm[y] && perm[z])) continue;
+    if (lineMatchesTarget(shapes, x, y, z, target)) count += tripleValue(shapes[x], shapes[y], shapes[z]);
+  }
+  return count;
+}
+
+// One-move threats to lock a PERMANENT triple: a movable, non-target cell C
+// whose line's other two cells are BOTH permanent AND already count as target —
+// so sliding an adjacent target piece into C and locking it there makes a triple
+// that can't be broken. Geometrically the two permanent cells are either
+// adjacent (C at the far end) or straddle C. The filler (adjacent movable target)
+// is necessarily external to the line: a permanent support adjacent to the
+// movable cell C could not itself be movable, so it can never be the filler.
+// Counts once per line completed (a fork over 2 lines scores 2).
+export function countCompletionSpaces(state, target, perm = computePermanentMask(state)) {
+  const geom = state.geom;
+  const cells = geom.cells;
+  const lines = geom.lines;
+  const linesThrough = geom.linesThrough;
+  const nbrs = geom.neighbors;
+  const shapes = state.shapes;
+  const phase1 = state.phase === 1;
+  const flipped = state.flipped;
+  const movable = (i) => (phase1 ? flipped[i] === 0 : flipped[i] === 1);
+
+  let total = 0;
+  for (let c = 0; c < cells; c += 1) {
+    if (!movable(c)) continue; // non-black
+    if (isColorOrWild(shapes[c], target)) continue; // non-target
+    const ns = nbrs[c];
+    let hasFiller = false;
+    for (let k = 0; k < ns.length; k += 1) {
+      const nb = ns[k];
+      if (shapes[nb] === target && movable(nb)) {
+        hasFiller = true;
+        break;
+      }
+    }
+    if (!hasFiller) continue;
+    const through = linesThrough[c];
+    for (let t = 0; t < through.length; t += 1) {
+      const ln = lines[through[t]];
+      const x = ln[0];
+      const y = ln[1];
+      const z = ln[2];
+      const a = x === c ? y : x;
+      const b = z === c ? y : z; // the line's two cells other than c
+      if (perm[a] && perm[b] && isColorOrWild(shapes[a], target) && isColorOrWild(shapes[b], target)) total += 1;
+    }
+  }
+  return total;
 }
 
 function centerTiebreak(state) {
@@ -831,12 +995,72 @@ function terminalEval(state) {
 // they reward correlates of winning (hoarded whites), not causes. Moderate
 // corrections (white 100-300, soft 500, tempo 300) all landed 42-48%,
 // indistinguishable from the originals: at real search depths the engine
-// already compensates for static mispricing. The hand weights stand; env
-// overrides remain for future experiments.
+// already compensates for static mispricing.
+//
+// SOFT TRIPLES DROPPED (July 2026): a 50-game mirrored face-off (eval-faceoff.js,
+// via the heuristics registry) showed the soft term is actively HARMFUL — the
+// eval without it (locked+white, "basic") beat the eval with it ("classic")
+// 62-70% across 250ms-3s, strongest on defense (2nd-mover 84%). Soft triples are
+// fragile (the white piece gets swapped away) and mislead the search, so EVAL_SOFT
+// now defaults to 0. Set EVAL_SOFT=250 to restore the old behavior. Env overrides
+// remain for future experiments.
 const EVAL_LOCKED = Number(process.env.EVAL_LOCKED ?? 2000);
-const EVAL_SOFT = Number(process.env.EVAL_SOFT ?? 250);
+const EVAL_SOFT = Number(process.env.EVAL_SOFT ?? 0);
 const EVAL_WHITE = Number(process.env.EVAL_WHITE ?? 10);
 const EVAL_TEMPO = Number(process.env.EVAL_TEMPO ?? 0);
+
+// A named heuristic (a feature->weight dict, see heuristics.js) can be made
+// active with setHeuristic(weights); while set, it replaces the built-in hand
+// eval at every leaf (used by the A/B face-off tool). Pass null to restore the
+// default deployed eval. Feature weights stay well below TERMINAL_SCALE so
+// heuristic leaves never collide with exact TT entries.
+// Discount applied to the idle side's completion spaces in `completionSpacesHot`
+// (the mover's count full weight). 0 = ignore opponent threats entirely; 1 =
+// same as the tempo-blind `completionSpaces`.
+const COMPLETION_COLD_FRAC = 0.25;
+
+let activeWeights = null;
+
+export function setHeuristic(weights) {
+  activeWeights = weights || null;
+}
+export function getHeuristic() {
+  return activeWeights;
+}
+
+// Red-perspective weighted feature eval. Skips zero-weight features, and only
+// pays for the permanence flood-fill when a permanence-based feature is on.
+export function weightedEval(state, side, w) {
+  let v = 0;
+  if (w.lockedTriples)
+    v += w.lockedTriples * (countLockedTriples(state, RED) - countLockedTriples(state, BLUE) + state.carryDiff);
+  if (w.softTriples) v += w.softTriples * (countTriples(state, RED) - countTriples(state, BLUE));
+  if (w.permanentTriples || w.completionSpaces || w.completionSpacesHot) {
+    const perm = permMaskForEval(state);
+    if (w.permanentTriples)
+      v +=
+        w.permanentTriples *
+        (countPermanentTriples(state, RED, perm) - countPermanentTriples(state, BLUE, perm) + state.carryDiff);
+    if (w.completionSpaces)
+      v += w.completionSpaces * (countCompletionSpaces(state, RED, perm) - countCompletionSpaces(state, BLUE, perm));
+    // Tempo-aware completion spaces: a threat is only worth face value to the
+    // side to move (the mover converts it this turn; the opponent gets to block
+    // theirs). Full weight for the mover's spaces, COMPLETION_COLD_FRAC for the
+    // idle side's — the difference from `completionSpaces` is purely this bias.
+    if (w.completionSpacesHot) {
+      const csRed = countCompletionSpaces(state, RED, perm);
+      const csBlue = countCompletionSpaces(state, BLUE, perm);
+      const hot = w.completionSpacesHot;
+      const cold = hot * COMPLETION_COLD_FRAC;
+      const wRed = side === RED ? hot : cold;
+      const wBlue = side === BLUE ? hot : cold;
+      v += wRed * csRed - wBlue * csBlue;
+    }
+  }
+  if (w.whitePieces) v += w.whitePieces * (state.simple ? state.whiteRed - state.whiteBlue : whiteDiffGeneric(state));
+  if (w.tempo) v += side === RED ? w.tempo : -w.tempo;
+  return v;
+}
 
 // ---------------------------------------------------------------------------
 // Optional value-net leaf eval (EVAL_NET=path/to/weights.json, trained by
@@ -938,6 +1162,7 @@ function netEval(state, side) {
 }
 
 function staticEval(state, side) {
+  if (activeWeights) return weightedEval(state, side, activeWeights);
   if (netEnabled && state.simple && net.cells === state.geom.cells) {
     return netEval(state, side);
   }
@@ -1013,6 +1238,15 @@ const TT_LOWER = 1;
 const TT_UPPER = 2;
 let ttGen = 0;
 let ttContext = "";
+
+// Empty the transposition table. Used by A/B tools that alternate two evals in
+// one process and must NOT let one bot read the other's (even exact) entries —
+// a fair face-off gives each search a clean table.
+export function clearTT() {
+  ttMeta.fill(0);
+  ttContext = "";
+  ttGen = 0;
+}
 
 function ttPrepare(state) {
   const g = state.geom;

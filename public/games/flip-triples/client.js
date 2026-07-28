@@ -1,6 +1,7 @@
 // Flip Triples client: setup screen, board rendering, swap/flip animations,
 // phase 2 banner, score panel, and the undo button.
 import { socket, els, app, setBotThinking, prefersReducedMotion } from "../../shared/context.js";
+import { openPlayground } from "./playground.js";
 
 const flipPhaseIndicator = document.getElementById("flip-phase-indicator");
 const flipSetup = document.getElementById("flip-setup");
@@ -639,6 +640,7 @@ export const flipTriples = {
   name: "Flip Triples",
   description: "",
   hasBots: true,
+  openPlayground,
 
   onMatchFound() {
     flipSetupDraft = null;

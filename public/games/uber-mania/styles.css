@@ -121,8 +121,27 @@
 /* A scheduled upgrade waiting outside its window: muted until its time. */
 .um-loc-offtime .um-upgrade-sq,
 .um-loc-offtime .um-upgrade-icon,
-.um-loc-offtime .um-upgrade-window {
+.um-loc-offtime .um-upgrade-window,
+.um-loc-offtime .um-upgrade-depth {
   opacity: 0.45;
+}
+
+/* Landmark mode: how many upgrades still wait under the face-up top card,
+   tucked against the square's top-right corner. */
+.um-upgrade-depth {
+  font-size: 7px;
+  font-weight: 900;
+  text-anchor: middle;
+  dominant-baseline: central;
+  fill: rgba(18, 22, 28, 0.65);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Landmark mode's upgrade locations carry the window NAME as well as its
+   hours, so the label needs the room. */
+.um-loc-upgrade .um-upgrade-window {
+  font-size: 6.5px;
 }
 
 /* My collected upgrades, chips in the bottom-right panel. */
@@ -437,8 +456,79 @@
   line-height: 1;
 }
 
+/* Landmark mode: the face-down pile beside the two visible cards. */
+.um-ride-card.um-ride-stack .um-ride-emoji {
+  font-size: 22px;
+  font-weight: 900;
+  color: rgba(232, 236, 243, 0.92);
+}
+
 .um-stat-red {
   color: #f0a8a2;
+}
+
+/* ---- Landmark mode: the color track in the player panel -----------------
+   One row per color: pips for how many of its four I hold, then a dot per
+   place already claimed (2 points for the first player there, 1 for the
+   second). Hovering a row lights that color's locations on the board. */
+.um-colors {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-end;
+  margin-bottom: 2px;
+}
+
+.um-color-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(20, 24, 31, 0.72);
+  border-left: 3px solid var(--c, #888);
+  cursor: default;
+}
+
+.um-color-row:hover {
+  background: rgba(20, 24, 31, 0.95);
+}
+
+.um-color-pips {
+  display: flex;
+  gap: 2px;
+}
+
+.um-color-pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--c, #888);
+  background: transparent;
+}
+
+.um-color-pip-on {
+  background: var(--c, #888);
+}
+
+.um-color-places {
+  display: flex;
+  gap: 2px;
+  min-width: 26px;
+  justify-content: flex-end;
+}
+
+.um-color-claim {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(18, 22, 28, 0.85);
+  color: #12161c;
+  font-size: 8px;
+  font-weight: 900;
 }
 
 /* Day counter in the clock's day/night pill. */
@@ -561,6 +651,37 @@
   margin-top: 12px;
   font-size: 11px;
   opacity: 0.6;
+  line-height: 1.5;
+}
+
+/* Landmark mode's chart: the colors a player claimed, as swatches — filled
+   for the first place there, hollow for the second. */
+.um-results-swatches {
+  display: inline-flex;
+  gap: 2px;
+  vertical-align: middle;
+}
+
+.um-results-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 1px solid rgba(18, 22, 28, 0.7);
+}
+
+.um-results-swatch-second {
+  opacity: 0.45;
+}
+
+/* Level on points, but behind on fines. */
+.um-results-tiebreak {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(240, 133, 123, 0.16);
+  color: #f0a8a2;
+  font-size: 9.5px;
+  font-weight: 800;
 }
 
 .um-results-actions {
@@ -625,8 +746,8 @@ select.um-tune-input {
   text-align: left;
 }
 
-/* A tuning row that doesn't apply under the chosen mode (e.g. uber pickups
-   in duplicate mode). */
+/* A tuning row that doesn't apply under the chosen mode — landmark locations
+   in duplicate mode, or anything landmark mode derives for itself. */
 .um-tune-off {
   opacity: 0.4;
 }
@@ -635,6 +756,78 @@ select.um-tune-input {
 .um-tune-total {
   border-top: 1px solid rgba(255, 255, 255, 0.18);
   padding-top: 4px;
+}
+
+/* A heading inside the tuning grid (landmark scoring), spanning both columns. */
+.um-tune-subhead {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  color: #ffe17a;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+/* The landmark-mode switch at the top of the tuning panel — the one control
+   that re-tunes everything greyed out below it. */
+.um-tune-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.um-tune-mode-on {
+  border-color: #ffe17a;
+  background: rgba(255, 225, 122, 0.1);
+}
+
+.um-tune-mode input {
+  margin-top: 2px;
+  accent-color: #ffe17a;
+}
+
+.um-tune-mode-text {
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.um-tune-mode-text small {
+  opacity: 0.65;
+  font-size: 10.5px;
+}
+
+/* The same switch, compact, in the settings bar. */
+.um-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 11.5px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.um-mode-toggle input {
+  accent-color: #ffe17a;
+  cursor: pointer;
+}
+
+.um-mode-toggle.tm-active {
+  border-color: #ffe17a;
+  background: rgba(255, 225, 122, 0.14);
+  color: #ffe17a;
 }
 
 select.um-tune-input option {
@@ -897,8 +1090,10 @@ body.um-mode .game-footer .ghost-btn {
   pointer-events: none;
 }
 
-/* Sleep (night-only turn skip): button + free-hours picker. */
-.um-sleep-wrap {
+/* Sleep (night-only turn skip) and landmark mode's daytime nap: button +
+   free-hours picker. */
+.um-sleep-wrap,
+.um-nap-wrap {
   display: inline-flex;
   align-items: center;
   gap: 3px;

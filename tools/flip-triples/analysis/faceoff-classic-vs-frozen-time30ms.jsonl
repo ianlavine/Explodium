@@ -1,0 +1,4 @@
+{"seed":300000,"bSide":1,"outcome":"a","margin":-3.9,"plies":18,"solvedFromPly":11,"mode":"time","param":30,"aName":"classic","bName":"frozen"}
+{"seed":300000,"bSide":0,"outcome":"a","margin":-0.8,"plies":18,"solvedFromPly":11,"mode":"time","param":30,"aName":"classic","bName":"frozen"}
+{"seed":300001,"bSide":0,"outcome":"b","margin":1.2,"plies":17,"solvedFromPly":11,"mode":"time","param":30,"aName":"classic","bName":"frozen"}
+{"seed":300001,"bSide":1,"outcome":"a","margin":-1,"plies":17,"solvedFromPly":12,"mode":"time","param":30,"aName":"classic","bName":"frozen"}

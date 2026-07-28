@@ -526,9 +526,12 @@ function terminalEval(): i32 {
 }
 
 function staticEval(): i32 {
+  // Soft (non-locked) triples were dropped July 2026: a mirrored face-off showed
+  // locked+white beats locked+soft+white 62-70% (strongest on defense) — soft
+  // triples are fragile and mislead the search. Keep this in sync with the JS
+  // eval in solver.js (EVAL_SOFT defaults to 0).
   return (
     (cntLockedRed - cntLockedBlue + carryDiff) * 2000 +
-    (cntAllRed - cntAllBlue) * 250 +
     (whiteRed - whiteBlue) * TIE_SCALE
   );
 }

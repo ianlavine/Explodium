@@ -1,14 +1,27 @@
 // Uber Mania — a "Traffic Time" game on the Truck Mania city core: the same
 // generated streets, stop signs, clock and time stones, and a die banked for
 // every red light crossed. No packages, though. The board starts empty and the
-// buildings are locations of four types — time stones, tokens, destress, uber
-// pickups — each with two open circles. Visiting one lets the player place a
+// buildings are locations of four types — time stones, tokens, destress,
+// landmarks — each with two open circles. Visiting one lets the player place a
 // token of their color on a free circle (once per player per location) and
-// take the reward. Ride cards point at uber locations; driving there completes
-// them, like Truck Mania's tickets. In the default ride-2 mode each player
-// starts with two cards and a completed card is replaced on the spot; in
-// ride-pickup mode using any uber pickup deals a fresh card instead. Every
+// take the reward. Ride cards point at landmark locations; driving there
+// completes them, like Truck Mania's tickets. In the default ride-2 mode each
+// player starts with two cards and a completed card is replaced on the spot;
+// in ride-pickup mode using any landmark deals a fresh card instead. Every
 // location belongs to one of ~10 neighbourhoods, drawn as light tinted zones.
+//
+// LANDMARK MODE (the `landmarkMode` setting) is the other game on this board,
+// and turning it on derives every setting it owns. Fifty locations: 28 take
+// tokens (6 time stone, 7 token, 11 discovery, 4 upgrade) and 22 are landmark
+// destinations. No neighbourhoods and no destress locations — instead seven
+// COLORS are scattered four locations apiece over the token-takers, and
+// claiming three of a color's four scores 2 for the first player there and 1
+// for the second. Landmark cards aren't dealt at setup: they're picked up at
+// discovery locations, held two face up with the rest waiting face down, and
+// each one driven is a point. The four upgrade locations each hold a face-up
+// stack behind a named window (Morning / Afternoon / Evening / Night) with one
+// circle per player, so everybody gets exactly one upgrade from each. Stress
+// comes down by sleeping at night, napping by day, or the fun die.
 //
 // The stress bar sits beside the clock: 1–6, each player's marker in a gap
 // between two numbers (start: between 2 and 3, i.e. stress 2). At turn end the
@@ -74,11 +87,31 @@ const locOpen = (settings, b, t) =>
 const UPGRADE_WINDOW_COUNT = 6;
 const windowOf = (t) => Math.floor(((t + 23) % 24) / 4);
 
+// Landmark mode's four named upgrade windows — one per upgrade location, and
+// each one only usable inside its own hours. (Keep in sync with the client.)
+const LANDMARK_WINDOWS = [
+  { id: "morning", name: "Morning", label: "8–11am", from: 8, to: 11 },
+  { id: "afternoon", name: "Afternoon", label: "1–4pm", from: 13, to: 16 },
+  { id: "evening", name: "Evening", label: "7–10pm", from: 19, to: 22 },
+  { id: "night", name: "Night", label: "2–5am", from: 2, to: 5 }
+];
+const landmarkWindowOpen = (i, t) => {
+  const w = LANDMARK_WINDOWS[i];
+  return !w || (t >= w.from && t <= w.to);
+};
+
 const PLAYER_COLORS = ["#3ac0c0", "#e0559c", "#e0a13a", "#7b6fe0"];
 
-// The location types. Upgrade locations take no tokens: they sit dead until
-// the one roaming upgrade lands on them, and picking it up is the visit.
-const LOC_TYPES = ["timestone", "token", "destress", "upgrade", "uber"];
+// The location types.
+// - Classic: upgrade locations take no tokens — they sit dead until the one
+//   roaming upgrade lands on them, and picking it up is the visit.
+// - Landmark mode: "discovery" locations deal a landmark card, upgrade
+//   locations take a token like any other (one circle per player), and
+//   "landmark" locations are the card destinations. (The landmark type was
+//   called "uber" before landmark mode — saved tunings are migrated.)
+const LOC_TYPES = ["timestone", "token", "destress", "upgrade", "discovery", "landmark"];
+// The types that take a player's token onto a circle.
+const CIRCLE_TYPES = ["timestone", "token", "destress", "discovery"];
 
 // Neighbourhood colors: each location is painted its neighbourhood's color
 // (the client outlines it in a darker shade of the same). Names are internal
@@ -111,6 +144,17 @@ function hoodPalette(k) {
   return out;
 }
 
+// Landmark mode has no neighbourhoods — it has seven COLORS, each spread over
+// four token-requiring locations anywhere on the map. The first player to
+// claim three of a color's four scores, and so does the second. The palette is
+// the first seven hood colors (they read apart at a glance); the names are
+// only for tooltips and the scoring chart.
+const LANDMARK_COLOR_COUNT = 7;
+const LANDMARK_COLOR_SIZE = 4; // token locations per color
+const COLOR_NAMES = ["Red", "Blue", "Yellow", "Purple", "Orange", "Green", "Pink"];
+// Landmark locations belong to no color — they wear this neutral stone.
+const NO_COLOR = "#cfc9bd";
+
 // Names for the token-circle locations (time stones / tokens / destress) —
 // plain everyday places, the kind you'd actually run errands at.
 const LOC_NAMES = [
@@ -125,9 +169,9 @@ const LOC_NAMES = [
   "Furniture Store", "Bus Station", "City Hall"
 ];
 
-// Uber pickups are landmark places: a big emoji on the board, and the ride
-// card carries the name up top with the emoji in the middle.
-const UBER_PLACES = [
+// Landmark locations are famous places: a big emoji on the board, and the
+// landmark card carries the name up top with the emoji in the middle.
+const LANDMARK_PLACES = [
   { name: "Ferris Wheel", emoji: "🎡" }, { name: "Coaster Park", emoji: "🎢" },
   { name: "Big Top Circus", emoji: "🎪" }, { name: "Movie Palace", emoji: "🎬" },
   { name: "Bowling Lanes", emoji: "🎳" }, { name: "Grand Theatre", emoji: "🎭" },
@@ -189,6 +233,11 @@ const cleanHoodChoices = (raw) =>
 const STRESS_MIN = 1;
 const STRESS_MAX = 5;
 const DESTRESS_TO = 4; // where sleep lands (superCalm: 5)
+// Landmark mode has no destress locations. Stress comes down three ways:
+// sleeping at night (the full reset above), NAPPING during the day — the same
+// whole-turn cost for two steps down the bar — and the fun die.
+const NAP_STEPS = 2;
+const NAP_HOURS = 2; // free clock sweep a nap allows (sleep allows 4)
 
 // Ride modes: "ride-2" (default) starts every player with two ride cards and
 // replaces each one as it completes — uber pickups are destinations only.
@@ -203,13 +252,21 @@ const RIDE_MODES = ["ride-2", "ride-pickup", "duplicate"];
 // new one appears at another upgrade location when it's taken. "scheduled"
 // deals an upgrade to EVERY upgrade location up front; each location gets a
 // fixed 4-hour window and only opens during it, and nothing respawns.
-const UPGRADE_MODES = ["spawn", "scheduled"];
+// "stack" is landmark mode's: each of the four upgrade locations holds a
+// face-up STACK — take the top one (paying a token onto your own circle) and
+// the next one shows.
+const UPGRADE_MODES = ["spawn", "scheduled", "stack"];
 
 const BASE_SETTINGS = {
+  // Landmark mode: the alternative game — 50 locations, seven scoring colors,
+  // no neighbourhoods and no destress locations, landmark cards picked up at
+  // discovery locations. Turning it on derives every setting below it that
+  // the mode fixes (see landmarkOverrides).
+  landmarkMode: false,
   rideMode: "ride-2",
   upgradeMode: "spawn",
   // How many locations of each type get seated (≈45 total).
-  locations: { timestone: 11, token: 11, destress: 11, upgrade: 6, uber: 12 },
+  locations: { timestone: 11, token: 11, destress: 11, upgrade: 6, discovery: 0, landmark: 12 },
   // Timed locations: 0 (none — no periods, no rules) or 3 (the three visiting
   // periods; circle locations only open during theirs).
   timedPeriods: 0,
@@ -234,6 +291,23 @@ const BASE_SETTINGS = {
   // third and fourth upgrade slots instead.)
   ridePoints: 2,
   redPenalty: 3,
+  // ---- Landmark-mode scoring (ignored in the classic game) ----------------
+  // Colors: three of a color's four locations scores — 2 for the first player
+  // there, 1 for the second (21 points across the seven colors).
+  colorFirstPoints: 2,
+  colorSecondPoints: 1,
+  // Upgrades: one point each, plus a bonus for the first player to hold all
+  // four (one from each upgrade location).
+  upgradePoints: 1,
+  upgradeSweepBonus: 2,
+  // Landmark cards: one point per card completed, plus a bonus shared by
+  // everyone tied for the most completed.
+  landmarkPoints: 1,
+  mostLandmarksBonus: 2,
+  // Fines (tokens paid to failed dice): the player(s) who paid the most lose
+  // this, the player(s) who paid the least gain it. Fines are also the
+  // tiebreak on equal totals — fewest wins.
+  finePoints: 2,
   // Welfare: skipping the turn (before doing anything) pays this.
   welfareTokens: 1,
   welfareStones: 2,
@@ -254,34 +328,88 @@ function intClamp(v, min, max, fallback) {
   return Math.max(min, Math.min(max, n));
 }
 
+// Landmark mode fixes its own board and rewards — the user turns the mode on
+// and everything it owns is derived, so those fields go read-only in the
+// tuning panel. What's left tunable: the days, the starting stash, the stress
+// numbers, welfare, the stoplight mix and every scoring number.
+//
+// 50 locations: 28 take tokens (7 colors × 4) and 22 are landmark
+// destinations. The 28: 6 time stone, 7 token, 11 discovery, 4 upgrade.
+const LANDMARK_LOCATIONS = {
+  timestone: 6, token: 7, destress: 0, upgrade: 4, discovery: 11, landmark: 22
+};
+// The fields landmark mode takes over — greyed out in the tuning panel, and
+// stashed under `classic` so switching the mode back off puts the board the
+// user had built back exactly as it was.
+const LANDMARK_OWNED = [
+  "rideMode", "upgradeMode", "timedPeriods", "locations",
+  "timeStoneReward", "tokenReward", "neighbourhoods"
+];
+function landmarkOverrides(s, stashed) {
+  const classic = stashed ?? Object.fromEntries(LANDMARK_OWNED.map((k) => [k, s[k]]));
+  return {
+    ...s,
+    classic,
+    rideMode: "ride-2",       // landmark cards run on the ride-2 plumbing
+    upgradeMode: "stack",     // four locations, each a face-up stack
+    timedPeriods: 0,          // the upgrade windows are the only timed thing
+    locations: { ...LANDMARK_LOCATIONS },
+    timeStoneReward: 6,
+    tokenReward: 3,
+    neighbourhoods: LANDMARK_COLOR_COUNT
+  };
+}
+
 // Normalize a client-submitted settings object; null only when unusable.
 function sanitizeSettings(raw) {
   if (!raw || typeof raw !== "object") return null;
+  const landmarkMode = raw.landmarkMode === true;
+  // Switching landmark mode off restores whatever the classic board was
+  // before the mode covered it up.
+  const src = !landmarkMode && raw.classic && typeof raw.classic === "object"
+    ? { ...raw, ...raw.classic }
+    : raw;
   const locations = {};
   let total = 0;
   for (const type of LOC_TYPES) {
-    const v = intClamp(raw.locations?.[type], 0, 30, BASE_SETTINGS.locations[type]);
+    // Tunings saved before landmark mode call the destinations "uber".
+    const fallback = type === "landmark"
+      ? (src.locations?.uber ?? BASE_SETTINGS.locations.landmark)
+      : BASE_SETTINGS.locations[type];
+    const v = intClamp(src.locations?.[type], 0, 30, fallback);
     locations[type] = v;
     total += v;
   }
   if (total < 1) return null; // a board with no locations isn't a game
-  return {
-    rideMode: RIDE_MODES.includes(raw.rideMode) ? raw.rideMode : BASE_SETTINGS.rideMode,
-    upgradeMode: UPGRADE_MODES.includes(raw.upgradeMode) ? raw.upgradeMode : BASE_SETTINGS.upgradeMode,
-    timedPeriods: [2, 3].includes(Number(raw.timedPeriods)) ? Number(raw.timedPeriods) : 0,
+  const clean = {
+    landmarkMode,
+    rideMode: RIDE_MODES.includes(src.rideMode) ? src.rideMode : BASE_SETTINGS.rideMode,
+    // "stack" belongs to landmark mode alone (landmarkOverrides sets it) —
+    // it would leave the classic board's upgrade locations inert.
+    upgradeMode: UPGRADE_MODES.includes(src.upgradeMode) && src.upgradeMode !== "stack"
+      ? src.upgradeMode
+      : BASE_SETTINGS.upgradeMode,
+    timedPeriods: [2, 3].includes(Number(src.timedPeriods)) ? Number(src.timedPeriods) : 0,
     dayLocations: intClamp(raw.dayLocations, 0, 60, BASE_SETTINGS.dayLocations),
     nightLocations: intClamp(raw.nightLocations, 0, 60, BASE_SETTINGS.nightLocations),
     locations,
-    timeStoneReward: intClamp(raw.timeStoneReward, 0, 20, BASE_SETTINGS.timeStoneReward),
-    tokenReward: intClamp(raw.tokenReward, 0, 20, BASE_SETTINGS.tokenReward),
+    timeStoneReward: intClamp(src.timeStoneReward, 0, 20, BASE_SETTINGS.timeStoneReward),
+    tokenReward: intClamp(src.tokenReward, 0, 20, BASE_SETTINGS.tokenReward),
     startingTokens: intClamp(raw.startingTokens, 0, 60, BASE_SETTINGS.startingTokens),
     startingTimeStones: intClamp(raw.startingTimeStones, 0, 60, BASE_SETTINGS.startingTimeStones),
     startingStress: intClamp(raw.startingStress, STRESS_MIN, STRESS_MAX, BASE_SETTINGS.startingStress),
     tokensPerFail: intClamp(raw.tokensPerFail, 0, 6, BASE_SETTINGS.tokensPerFail),
-    neighbourhoods: intClamp(raw.neighbourhoods, 1, HOOD_BASE_COLORS.length, BASE_SETTINGS.neighbourhoods),
+    neighbourhoods: intClamp(src.neighbourhoods, 1, HOOD_BASE_COLORS.length, BASE_SETTINGS.neighbourhoods),
     days: intClamp(raw.days, 1, 12, BASE_SETTINGS.days),
     ridePoints: intClamp(raw.ridePoints, 0, 12, BASE_SETTINGS.ridePoints),
     redPenalty: intClamp(raw.redPenalty, 0, 12, BASE_SETTINGS.redPenalty),
+    colorFirstPoints: intClamp(raw.colorFirstPoints, 0, 12, BASE_SETTINGS.colorFirstPoints),
+    colorSecondPoints: intClamp(raw.colorSecondPoints, 0, 12, BASE_SETTINGS.colorSecondPoints),
+    upgradePoints: intClamp(raw.upgradePoints, 0, 12, BASE_SETTINGS.upgradePoints),
+    upgradeSweepBonus: intClamp(raw.upgradeSweepBonus, 0, 12, BASE_SETTINGS.upgradeSweepBonus),
+    landmarkPoints: intClamp(raw.landmarkPoints, 0, 12, BASE_SETTINGS.landmarkPoints),
+    mostLandmarksBonus: intClamp(raw.mostLandmarksBonus, 0, 12, BASE_SETTINGS.mostLandmarksBonus),
+    finePoints: intClamp(raw.finePoints, 0, 12, BASE_SETTINGS.finePoints),
     welfareTokens: intClamp(raw.welfareTokens, 0, 20, BASE_SETTINGS.welfareTokens),
     welfareStones: intClamp(raw.welfareStones, 0, 20, BASE_SETTINGS.welfareStones),
     blankLights: {
@@ -289,6 +417,7 @@ function sanitizeSettings(raw) {
       red: intClamp(raw.blankLights?.red, 0, 30, BASE_SETTINGS.blankLights.red)
     }
   };
+  return landmarkMode ? landmarkOverrides(clean, raw.classic) : clean;
 }
 
 function shuffle(arr) {
@@ -364,9 +493,37 @@ function assignNeighbourhoods(locations, hoodCount) {
   }));
 }
 
+// Landmark mode's colors: no geography at all — the seven colors are dealt
+// four apiece over the token-requiring locations, scattered wherever they
+// landed. Landmark destinations belong to no color. Returns the colors list
+// (same shape as hoods, so everything downstream reads it the same way).
+function assignColors(tokenLocs) {
+  const k = Math.min(LANDMARK_COLOR_COUNT, Math.max(1, Math.ceil(tokenLocs.length / LANDMARK_COLOR_SIZE)));
+  const bag = [];
+  for (let c = 0; c < k; c += 1) {
+    for (let i = 0; i < LANDMARK_COLOR_SIZE; i += 1) bag.push(c);
+  }
+  // A short board (a map that couldn't seat everything) just deals what fits
+  // and leaves the tail colorless rather than making lopsided colors.
+  const deal = shuffle(bag);
+  shuffle(tokenLocs).forEach((b, i) => {
+    if (i < deal.length) b.hood = deal[i];
+  });
+  const palette = hoodPalette(k);
+  return palette.map((color, i) => ({
+    id: i,
+    name: COLOR_NAMES[i % COLOR_NAMES.length],
+    color,
+    // How many of this color actually made it onto the board — the scoring
+    // threshold is "three of four", but a clipped color asks for what it has.
+    size: tokenLocs.filter((b) => b.hood === i).length
+  }));
+}
+
 // Deal the location types over the map's reachable buildings and cluster them
-// into neighbourhoods. Mutates the map; returns the hoods list.
-function assignLocations(map, settings) {
+// into neighbourhoods (or, in landmark mode, scatter the seven colors).
+// Mutates the map; returns the hoods/colors list.
+function assignLocations(map, settings, playerCount = 4) {
   const buildings = (map.blocks ?? []).flatMap((b) => b.buildings ?? []);
   buildings.forEach((b) => {
     b.role = "empty";
@@ -379,6 +536,7 @@ function assignLocations(map, settings) {
     delete b.emoji;
     delete b.period;
     delete b.upgrade;
+    delete b.stackLeft;
     delete b.window;
     // Upgrade locations get trimmed to a single entrance below, and a
     // re-deal can move them — so every deal starts from the full set.
@@ -386,18 +544,19 @@ function assignLocations(map, settings) {
     else b.baseConnectors = (b.connectors ?? []).map((c) => ({ ...c }));
   });
 
-  // Duplicate mode: no uber pickups — every location is a one-circle reward
-  // location that doubles as a ride destination.
+  // Duplicate mode: no landmark destinations — every location is a one-circle
+  // reward location that doubles as a ride destination.
   const duplicate = settings.rideMode === "duplicate";
+  const landmarkMode = settings.landmarkMode === true;
   const reachable = shuffle(buildings.filter((b) => (b.connectors ?? []).length > 0));
   const bag = [];
   for (const type of LOC_TYPES) {
-    if (duplicate && type === "uber") continue;
+    if (duplicate && type === "landmark") continue;
     for (let i = 0; i < (settings.locations[type] ?? 0); i += 1) bag.push(type);
   }
   const deal = shuffle(bag).slice(0, reachable.length);
   const names = shuffle(LOC_NAMES);
-  const places = shuffle(UBER_PLACES);
+  const places = shuffle(LANDMARK_PLACES);
   const emojis = shuffle(LOC_EMOJIS);
   const timed = [2, 3].includes(settings.timedPeriods ?? 0) ? settings.timedPeriods : 0;
   // The Day, Night scheme deals exactly the settings' day and night counts
@@ -405,7 +564,7 @@ function assignLocations(map, settings) {
   // hoods); every leftover carries no period and opens whenever.
   let dayNightBag = null;
   if (timed === 2) {
-    const circleTotal = deal.filter((t) => t !== "uber" && t !== "upgrade").length;
+    const circleTotal = deal.filter((t) => CIRCLE_TYPES.includes(t)).length;
     const day = Math.min(circleTotal, Math.max(0, settings.dayLocations ?? 0));
     const night = Math.min(circleTotal - day, Math.max(0, settings.nightLocations ?? 0));
     dayNightBag = shuffle([
@@ -414,6 +573,9 @@ function assignLocations(map, settings) {
       ...Array(circleTotal - day - night).fill(null)
     ]);
   }
+  // Landmark mode's four upgrade locations wear one named window each.
+  const windowBag = shuffle(LANDMARK_WINDOWS.map((_, i) => i));
+  let wi = 0;
   let ni = 0;
   let pi = 0;
   let pri = 0; // circle locations dealt — round-robins the periods
@@ -426,9 +588,9 @@ function assignLocations(map, settings) {
       // Upgrade locations have one and only one entrance.
       b.connectors = [b.connectors[Math.floor(Math.random() * b.connectors.length)]];
     }
-    if (type === "uber") {
-      // A landmark: a big emoji on the board, no token circles — visiting
-      // completes matching ride cards, and using it deals a fresh one.
+    if (type === "landmark") {
+      // A landmark: a big emoji on the board, no token circles — driving
+      // there completes matching landmark cards.
       const place = places[pi % places.length];
       const lap = Math.floor(pi / places.length);
       b.name = lap ? `${place.name} ${lap + 1}` : place.name;
@@ -437,10 +599,19 @@ function assignLocations(map, settings) {
     } else {
       b.name = ni < names.length ? names[ni] : `${names[ni % names.length]} ${Math.floor(ni / names.length) + 1}`;
       ni += 1;
-      if (type !== "upgrade") {
+      if (landmarkMode && type === "upgrade") {
+        // Landmark mode: an upgrade location takes a token like any other,
+        // but with ONE circle per player — so every player gets exactly one
+        // upgrade from each of the four, and none of them can be hogged.
+        // Its window (Morning / Afternoon / Evening / Night) is the only
+        // time gate in this mode. The stack is dealt in setupBoard.
+        b.slots = Array.from({ length: Math.max(1, playerCount) }, () => null);
+        b.window = windowBag[wi % windowBag.length];
+        wi += 1;
+      } else if (type !== "upgrade") {
         // The token circles: player index or null. One big circle in
-        // duplicate mode, two otherwise. (Upgrade locations carry no circles
-        // — the roaming upgrade is their whole state.)
+        // duplicate mode, two otherwise. (Classic upgrade locations carry no
+        // circles — the roaming upgrade is their whole state.)
         b.slots = duplicate ? [null] : [null, null];
         // Timed locations: round-robin over the shuffled deal spreads the
         // periods evenly across types and neighbourhoods. The Day, Night
@@ -458,11 +629,15 @@ function assignLocations(map, settings) {
     if (duplicate) b.emoji = emojis[i % emojis.length];
     locations.push(b);
   });
-  const hoods = assignNeighbourhoods(locations, settings.neighbourhoods);
-  // Every location wears its neighbourhood's color.
+  // Landmark mode scatters seven colors over the token-requiring locations
+  // only; the classic game clusters every location into neighbourhoods.
+  const hoods = landmarkMode
+    ? assignColors(locations.filter((b) => Array.isArray(b.slots)))
+    : assignNeighbourhoods(locations, settings.neighbourhoods);
+  // Every location wears its color (landmark destinations: neutral stone).
   const colorById = new Map(hoods.map((h) => [h.id, h.color]));
   locations.forEach((b) => {
-    b.color = colorById.get(b.hood) ?? "#d8d3c8";
+    b.color = colorById.get(b.hood) ?? (landmarkMode ? NO_COLOR : "#d8d3c8");
   });
   return hoods;
 }
@@ -499,19 +674,46 @@ export function createUberManiaGame({ io, rooms }) {
   function applySettingsToRoom(roomId, room, settings) {
     clearAiTimer(roomId);
     room.uberMania.settings = cloneSettings(settings);
-    room.uberMania.map = generateCityMap(Date.now(), genOpts(settings));
+    room.uberMania.map = makeMap(settings);
     setupBoard(room);
     room.uberMania.map.seed = `${room.uberMania.map.seed}-t${Date.now()}`;
   }
 
+  // Is this room playing landmark mode?
+  const isLandmark = (room) => S(room).landmarkMode === true;
+
+  // How many locations this tuning wants seated.
+  const locTotal = (settings) => LOC_TYPES.reduce((n, t) =>
+    n + (settings.rideMode === "duplicate" && t === "landmark" ? 0 : settings.locations?.[t] ?? 0), 0);
+
   function genOpts(settings) {
-    const total = LOC_TYPES.reduce((n, t) =>
-      n + (settings.rideMode === "duplicate" && t === "uber" ? 0 : settings.locations?.[t] ?? 0), 0);
+    const total = locTotal(settings);
     // Exactly 24 numbered lights + the chosen blanks (the four light-free
     // corners come on top inside the generator).
     const lights = 24 + (settings.blankLights?.green ?? 6) + (settings.blankLights?.red ?? 6);
     // Packed lots: locations fill the blocks wall to wall with small gaps.
-    return { dense: true, buildings: total + 4, intersections: lights, packed: true };
+    // The generator only lands near the building count it's asked for, and a
+    // lot with no driveway can't be a location — so ask for a margin over
+    // what the deal needs.
+    const buildings = total + Math.max(4, Math.ceil(total * 0.16));
+    return { dense: true, buildings, intersections: lights, packed: true };
+  }
+
+  // Generate a map that can actually seat the whole deal. Landmark mode's
+  // board is exact — 50 locations, seven colors of four — so a map that came
+  // up short would quietly deal a lopsided game; a couple of rerolls is
+  // cheaper than that. (Falls through to the last try if the size asked for
+  // is simply more than the generator will fit.)
+  function makeMap(settings) {
+    const need = locTotal(settings);
+    let map = null;
+    for (let tries = 0; tries < 6; tries += 1) {
+      map = generateCityMap(Date.now() + tries * 7919, genOpts(settings));
+      const seats = (map.blocks ?? []).flatMap((bl) => bl.buildings ?? [])
+        .filter((b) => (b.connectors ?? []).length > 0).length;
+      if (seats >= need) break;
+    }
+    return map;
   }
 
   // Deal fresh locations, park the cars off-board, reset every player.
@@ -522,7 +724,9 @@ export function createUberManiaGame({ io, rooms }) {
     const maxAi = maxAiFor(room);
     const aiCount = Math.max(0, Math.min(maxAi, room.uberMania.aiCount ?? maxAi));
     room.uberMania.aiCount = aiCount;
-    room.uberMania.hoods = assignLocations(room.uberMania.map, settings);
+    // Landmark mode sizes each upgrade location's circles to the table, so
+    // the deal needs the seat count.
+    room.uberMania.hoods = assignLocations(room.uberMania.map, settings, humans + aiCount);
     // The deal trims upgrade locations to a single entrance (and a re-deal
     // can move them), so the parking spots are re-derived to match.
     room.uberMania.map.spots = deriveSpots(room.uberMania.map);
@@ -541,10 +745,13 @@ export function createUberManiaGame({ io, rooms }) {
       tokens: settings.startingTokens,
       timeStones: settings.startingTimeStones,
       stress: settings.startingStress, // marker between stress and stress+1
-      rides: [],          // open ride cards: { id, loc: building bid }
+      // Ride / landmark cards: { id, loc: building bid }. In landmark mode
+      // only the first couple are face up — the rest wait in a face-down
+      // stack and flip once a turn ends with room for them.
+      rides: [],
       ridesCompleted: 0,
       upgrades: [],       // upgrade type ids picked up (see UPGRADE_TYPES)
-      redTokensLost: 0    // tokens paid to failed red-light dice, for the swing
+      redTokensLost: 0    // tokens paid to failed dice — landmark mode's "fines"
     }));
     room.uberMania.time = START_TIME;
     room.uberMania.elapsed = 0; // hours the clock has been moved, total
@@ -552,7 +759,10 @@ export function createUberManiaGame({ io, rooms }) {
     room.uberMania.turnState = freshTurnState();
     room.uberMania.lastRoll = null;
     room.uberMania.rideSeq = 0;
-    if (settings.rideMode !== "ride-pickup") {
+    if (settings.landmarkMode) {
+      // Landmark mode: nobody starts with a card — they're discovered.
+      room.uberMania.colorClaims = {};
+    } else if (settings.rideMode !== "ride-pickup") {
       // Ride-2: everyone opens on two face-up ride cards (cars start
       // off-board, so no neighbourhood to steer clear of yet).
       for (const p of room.uberMania.players) {
@@ -564,16 +774,42 @@ export function createUberManiaGame({ io, rooms }) {
     room.uberMania.results = null;
     room.uberMania.funRoll = null;
     // The race to fill all four upgrade slots: seats in finishing order,
-    // scored 7 / 5 / 3 / 1 at game end.
+    // scored 7 / 5 / 3 / 1 in the classic game, a flat bonus for the first
+    // in landmark mode.
     room.uberMania.upgradeChampions = [];
     // The upgrade supply: a shuffled depleting deck — two copies of every
-    // base type plus one neighbourhood upgrade per hood. Once it's empty no
-    // new upgrade appears on the board.
+    // base type plus one neighbourhood upgrade per hood (landmark mode has no
+    // neighbourhoods, so just the base types). Once it's empty no new upgrade
+    // appears on the board.
     room.uberMania.upgradeDeck = shuffle([
       ...UPGRADE_TYPES, ...UPGRADE_TYPES,
-      ...(room.uberMania.hoods ?? []).map((h) => `hood:${h.id}`)
+      ...(settings.landmarkMode ? [] : (room.uberMania.hoods ?? []).map((h) => `hood:${h.id}`))
     ]);
-    if (settings.upgradeMode === "scheduled") {
+    if (settings.upgradeMode === "stack") {
+      // Landmark mode: each of the four upgrade locations holds a face-up
+      // STACK dealt off the deck. You take the top one — paying a token onto
+      // your own circle — and the next one shows. A stack only needs to be
+      // as deep as the table (one pull per player), so the deck is split
+      // evenly and the rest never comes into play.
+      room.uberMania.upgradeAt = null;
+      room.uberMania.upgradeType = null;
+      const locs = shuffle((room.uberMania.map.blocks ?? []).flatMap((bl) => bl.buildings ?? [])
+        .filter((b) => b.role === "loc" && b.locType === "upgrade"));
+      // Only the top of a stack is public — the rest lives server-side so the
+      // map going over the wire never spoils what's underneath.
+      const stacks = (room.uberMania.upgradeStacks = {});
+      const depth = Math.max(1, humans + aiCount);
+      locs.forEach((b) => {
+        const stack = [];
+        for (let i = 0; i < depth; i += 1) {
+          const type = drawUpgrade(room);
+          if (type) stack.push(type);
+        }
+        b.upgrade = stack.shift() ?? null; // the face-up top
+        b.stackLeft = stack.length;        // how many wait beneath it
+        stacks[b.bid] = stack;
+      });
+    } else if (settings.upgradeMode === "scheduled") {
       // Scheduled mode: every upgrade location shows a dealt upgrade from
       // the start, each behind its own 4-hour window (round-robined over a
       // shuffled order). Taken upgrades never respawn.
@@ -608,6 +844,9 @@ export function createUberManiaGame({ io, rooms }) {
   // a hood with fewer claimable locations than the requirement only demands
   // what it has, so a thin hood can't lock the slots forever.
   function upgradeCap(room, seat) {
+    // Landmark mode: four upgrade locations, one circle each per player —
+    // the board itself is the cap, so the player sheet just holds four.
+    if (isLandmark(room)) return LANDMARK_WINDOWS.length;
     const total = new Map();
     const have = new Map();
     for (const bl of room.uberMania.map.blocks ?? []) {
@@ -637,6 +876,40 @@ export function createUberManiaGame({ io, rooms }) {
     return n;
   }
 
+  // Landmark mode's colors. Three of a color's four locations claims it: the
+  // first player there scores 2, the second 1. `colorClaims[colorId]` is the
+  // seats that hit three, in the order they did it.
+  const COLOR_TARGET = 3;
+
+  // How many of one color this player holds a top circle at. (Undercut
+  // tokens sit beneath and never count, same as the classic slot unlocks.)
+  function colorProgress(room, seat, color) {
+    let n = 0;
+    for (const bl of room.uberMania.map.blocks ?? []) {
+      for (const b of bl.buildings ?? []) {
+        if (b.role === "loc" && b.hood === color && Array.isArray(b.slots) && b.slots.includes(seat)) n += 1;
+      }
+    }
+    return n;
+  }
+
+  // What a color asks for: three of four, or all of a color the board could
+  // only fit fewer of.
+  function colorTarget(room, color) {
+    const size = (room.uberMania.hoods ?? []).find((h) => h.id === color)?.size ?? LANDMARK_COLOR_SIZE;
+    return Math.min(COLOR_TARGET, Math.max(1, size));
+  }
+
+  // Called after a token lands: if this player just reached the color's
+  // target and isn't already on its list, they take the next place on it.
+  function noteColorClaim(room, seat, color) {
+    if (!isLandmark(room) || color == null) return;
+    const claims = (room.uberMania.colorClaims ??= {});
+    const list = (claims[color] ??= []);
+    if (list.includes(seat)) return;
+    if (colorProgress(room, seat, color) >= colorTarget(room, color)) list.push(seat);
+  }
+
   // A random upgrade location other than `notBid` — falling back to `notBid`
   // itself when it's the only one, or null when the board has none.
   function pickUpgradeLocation(room, notBid) {
@@ -653,7 +926,74 @@ export function createUberManiaGame({ io, rooms }) {
   // swing — every player tied for most tokens lost pays it, every player tied
   // for least collects it (with one player, or everyone tied, both apply and
   // cancel out). Neighbourhood visits score nothing — they unlock slots.
+  // Landmark-mode scoring. Colors: 2 to the first player to claim each of the
+  // seven, 1 to the second (21 on the table). Upgrades: 1 apiece, plus a bonus
+  // to the first player holding all four. Landmark cards: 1 per card
+  // completed, plus a bonus shared by everyone tied for the most. Fines
+  // (tokens paid to failed dice): the most pays it, the least collects it,
+  // ties included on both ends. Equal totals break on fewest fines — and if
+  // that's equal too, they simply tie.
+  function finalizeLandmark(room) {
+    const settings = S(room);
+    const players = room.uberMania.players ?? [];
+    const claims = room.uberMania.colorClaims ?? {};
+    const champs = room.uberMania.upgradeChampions ?? [];
+    const fines = players.map((p) => p.redTokensLost ?? 0);
+    const mostFines = Math.max(...fines);
+    const leastFines = Math.min(...fines);
+    const doneCounts = players.map((p) => p.ridesCompleted ?? 0);
+    const mostDone = Math.max(...doneCounts);
+
+    const perPlayer = players.map((p, i) => {
+      // Colors claimed, and what each place paid.
+      let colorPts = 0;
+      const colorsFirst = [];
+      const colorsSecond = [];
+      for (const h of room.uberMania.hoods ?? []) {
+        const place = (claims[h.id] ?? []).indexOf(i);
+        if (place === 0) {
+          colorPts += settings.colorFirstPoints ?? 2;
+          colorsFirst.push(h.id);
+        } else if (place === 1) {
+          colorPts += settings.colorSecondPoints ?? 1;
+          colorsSecond.push(h.id);
+        }
+      }
+      const upgrades = (p.upgrades ?? []).length;
+      const sweep = champs[0] === i ? (settings.upgradeSweepBonus ?? 2) : 0;
+      const upgradePts = upgrades * (settings.upgradePoints ?? 1) + sweep;
+      const landmarks = p.ridesCompleted ?? 0;
+      // The "most cards" bonus only pays when somebody actually finished one.
+      const mostBonus = mostDone > 0 && landmarks === mostDone
+        ? (settings.mostLandmarksBonus ?? 2)
+        : 0;
+      const landmarkPts = landmarks * (settings.landmarkPoints ?? 1) + mostBonus;
+      let fineAdj = 0;
+      if ((p.redTokensLost ?? 0) === leastFines) fineAdj += settings.finePoints ?? 2;
+      if ((p.redTokensLost ?? 0) === mostFines) fineAdj -= settings.finePoints ?? 2;
+      return {
+        colorsFirst, colorsSecond, colorPts,
+        upgrades, sweep, upgradePts,
+        landmarks, mostBonus, landmarkPts,
+        fines: p.redTokensLost ?? 0, fineAdj,
+        total: colorPts + upgradePts + landmarkPts + fineAdj
+      };
+    });
+
+    const best = Math.max(...perPlayer.map((r) => r.total));
+    const topSeats = perPlayer.map((r, i) => (r.total === best ? i : -1)).filter((i) => i !== -1);
+    // Tiebreak among the leaders: fewest fines paid. Still level? They tie.
+    const fewest = Math.min(...topSeats.map((i) => perPlayer[i].fines));
+    const winners = topSeats.filter((i) => perPlayer[i].fines === fewest);
+    perPlayer.forEach((r, i) => {
+      r.tiebroken = topSeats.length > winners.length && topSeats.includes(i);
+    });
+    room.uberMania.results = { mode: "landmark", perPlayer, winners };
+    room.uberMania.winner = winners[0] ?? null;
+  }
+
   function finalizeGame(room) {
+    if (isLandmark(room)) return finalizeLandmark(room);
     const settings = S(room);
     const players = room.uberMania.players ?? [];
     const losses = players.map((p) => p.redTokensLost ?? 0);
@@ -699,13 +1039,17 @@ export function createUberManiaGame({ io, rooms }) {
         settings: S(room),
         upgradeAt: room.uberMania.upgradeAt ?? null,
         upgradeType: room.uberMania.upgradeType ?? null,
-        // Scheduled mode has no supply deck in play — the count is how many
-        // dealt upgrades are still waiting on the board.
-        upgradeDeckCount: S(room).upgradeMode === "scheduled"
+        // Scheduled and stack modes have no supply deck in play — the count is
+        // how many upgrades are still waiting on the board (tops plus the
+        // hidden cards under them).
+        upgradeDeckCount: ["scheduled", "stack"].includes(S(room).upgradeMode)
           ? (room.uberMania.map.blocks ?? []).flatMap((bl) => bl.buildings ?? [])
-            .filter((b) => b.upgrade).length
+            .reduce((n, b) => n + (b.upgrade ? 1 : 0) + (b.stackLeft ?? 0), 0)
           : (room.uberMania.upgradeDeck ?? []).length,
         upgradeChampions: room.uberMania.upgradeChampions ?? [],
+        // Landmark mode: which seats have claimed each color, in order (the
+        // first two on a list score 2 and 1).
+        colorClaims: room.uberMania.colorClaims ?? {},
         maxAi: maxAiFor(room), // free seats — bounds the AI-count picker
         aiMove: room.uberMania.aiMove ?? null,
         trucks: room.uberMania.trucks,
@@ -754,13 +1098,15 @@ export function createUberManiaGame({ io, rooms }) {
     if (S(room).rideMode === "duplicate") return;
     if (!player?.rides?.length) return;
     const b = buildingAtTruck(room, truck);
-    if (!b || b.role !== "loc" || b.locType !== "uber") return;
+    if (!b || b.role !== "loc" || b.locType !== "landmark") return;
     // Face-down cards are inert — they only join the hand when the turn ends.
     const done = player.rides.filter((r) => r.loc === b.bid && !r.faceDown).length;
     if (!done) return;
     player.rides = player.rides.filter((r) => r.loc !== b.bid || r.faceDown);
     player.ridesCompleted = (player.ridesCompleted ?? 0) + done;
-    if (S(room).rideMode !== "ride-pickup") {
+    // Landmark mode never replaces a completed card — new ones only come from
+    // discovery locations, and the face-down stack only flips at turn's end.
+    if (!isLandmark(room) && S(room).rideMode !== "ride-pickup") {
       for (let i = 0; i < done; i += 1) dealRide(room, player, b);
     }
     const ts = room.uberMania.turnState;
@@ -779,19 +1125,20 @@ export function createUberManiaGame({ io, rooms }) {
     resolveRidesAt(room, truck, player);
   }
 
-  // Deal a ride card: a random OTHER uber location on the board — never one
-  // the player already holds a card for (a hand carries no duplicates; if
-  // every destination is held, nothing is dealt), and never one in the
-  // neighbourhood the player is standing in (`from` is the building they're
-  // at, or null off-board), unless every other uber location shares it.
+  // Deal a ride / landmark card: a random OTHER landmark location on the board
+  // — never one the player already holds a card for (a hand carries no
+  // duplicates; if every destination is held, nothing is dealt), and never one
+  // in the neighbourhood the player is standing in (`from` is the building
+  // they're at, or null off-board), unless every other landmark shares it.
   // Cards dealt mid-turn arrive face down: inert until the turn ends and they
-  // flip up (the setup deal is face up — the game opens on known cards).
+  // flip up (the classic setup deal is face up — that game opens on known
+  // cards; landmark mode opens on none at all).
   function dealRide(room, player, from = null, faceDown = true) {
-    // Ride destinations: uber pickups — or, in duplicate mode, any location.
+    // Destinations: landmark locations — or, in duplicate mode, any location.
     const duplicate = S(room).rideMode === "duplicate";
     const held = new Set((player.rides ?? []).map((r) => r.loc));
     const dests = (room.uberMania.map.blocks ?? []).flatMap((bl) => bl.buildings ?? [])
-      .filter((b) => b.role === "loc" && (duplicate || b.locType === "uber") &&
+      .filter((b) => b.role === "loc" && (duplicate || b.locType === "landmark") &&
         b.bid !== from?.bid && !held.has(b.bid));
     if (!dests.length) return;
     const otherHood = from?.hood != null ? dests.filter((b) => b.hood !== from.hood) : dests;
@@ -805,11 +1152,37 @@ export function createUberManiaGame({ io, rooms }) {
     player.rides.push(ride);
   }
 
+  // Landmark mode: a player sees two cards at a time (three with extra ride).
+  // Everything past that waits face down in a stack beside the player board.
+  const RIDE_VISIBLE_BASE = 2;
+  const visibleRideCap = (player) => RIDE_VISIBLE_BASE + (hasUp(player, "extraRide") ? 1 : 0);
+
+  // Turn's over, dice rolled: face-down cards flip up now, and only now —
+  // completing a card mid-turn doesn't pull the next one up behind it. The
+  // classic game has no stack, so everything drawn this turn simply flips.
+  function flipRides(room, player) {
+    const rides = player?.rides ?? [];
+    if (!isLandmark(room)) {
+      for (const r of rides) delete r.faceDown;
+      return;
+    }
+    const cap = visibleRideCap(player);
+    let up = rides.filter((r) => !r.faceDown).length;
+    for (const r of rides) {
+      if (up >= cap) break;
+      if (!r.faceDown) continue;
+      delete r.faceDown;
+      up += 1;
+    }
+  }
+
   // Use the location the car is parked at. Shared by the socket handler and
   // the AI; returns the building or null. Token-circle locations (time stone /
-  // token / destress) take a token onto a free circle — once per player per
-  // location — and pay the reward. Uber pickups are free and unlimited: each
-  // use just deals a fresh ride card. Either way it ends the turn's movement.
+  // token / destress / discovery) take a token onto a free circle — once per
+  // player per location — and pay the reward. Landmark locations are free and
+  // unlimited (ride-pickup mode only). In landmark mode upgrade locations are
+  // token-circle locations too, with one circle per player, and the reward is
+  // the top of their upgrade stack. Either way it ends the turn's movement.
   function placeTokenCore(room, seat, truck, targetBid = null) {
     const ts = room.uberMania.turnState;
     if (ts.acted || room.uberMania.winner != null) return null;
@@ -829,11 +1202,40 @@ export function createUberManiaGame({ io, rooms }) {
     }
     if (b.role !== "loc") return null;
 
-    if (b.locType === "uber") {
-      // Pickups deal cards only in ride-pickup mode; in ride-2 they're pure
+    if (b.locType === "landmark") {
+      // Landmarks deal cards only in ride-pickup mode; otherwise they're pure
       // destinations — arriving already completed any matching cards.
       if (S(room).rideMode !== "ride-pickup") return null;
       dealRide(room, player, b);
+    } else if (b.locType === "upgrade" && S(room).upgradeMode === "stack") {
+      // Landmark mode: pay a token onto your own circle (every player has
+      // one, so nobody can be shut out) and take the top of the stack — the
+      // card underneath becomes the new face-up top. Only inside the
+      // location's window: Morning, Afternoon, Evening or Night.
+      if ((player.tokens ?? 0) < 1) return null;
+      if (!Array.isArray(b.slots)) return null;
+      if (b.slots.includes(seat)) return null; // one pull per player, ever
+      if (!hasUp(player, "timeAgnostic") &&
+          !landmarkWindowOpen(b.window, room.uberMania.time ?? START_TIME)) return null;
+      const type = b.upgrade;
+      if (!type) return null;
+      const free = b.slots.indexOf(null);
+      if (free === -1) return null;
+      player.tokens -= 1;
+      b.slots[free] = seat;
+      (player.upgrades ??= []).push(type);
+      const rest = (room.uberMania.upgradeStacks ??= {})[b.bid] ?? [];
+      b.upgrade = rest.shift() ?? null;
+      b.stackLeft = rest.length;
+      // (Extra ride needs no help here: it raises the face-up cap, so a card
+      // already waiting in the stack flips up when this turn ends.)
+      // All four upgrade locations visited — the sweep bonus goes to whoever
+      // got there first.
+      if (player.upgrades.length >= LANDMARK_WINDOWS.length) {
+        const champs = (room.uberMania.upgradeChampions ??= []);
+        if (!champs.includes(seat)) champs.push(seat);
+      }
+      noteColorClaim(room, seat, b.hood);
     } else if (b.locType === "upgrade") {
       // Free to use, no token. The player board caps the hand: two slots,
       // plus the neighbourhood-visit unlocks.
@@ -896,12 +1298,18 @@ export function createUberManiaGame({ io, rooms }) {
         player.timeStones += (settings.timeStoneReward ?? 4) + bonusStones(player);
       } else if (b.locType === "token") {
         player.tokens += (settings.tokenReward ?? 3) + bonusTokens(player);
+      } else if (b.locType === "discovery") {
+        // Landmark mode's card source: one landmark card, face down until the
+        // turn ends (and then only if there's room for it face up).
+        dealRide(room, player, b);
       } else if (b.locType === "destress") {
         // One gap down the bar — one more safe number, capped at the bottom.
         // (Sleeping is the full reset now.)
         player.stress = Math.min(STRESS_MAX, (player.stress ?? 2) + 1);
         ts.destressed = true; // destressing forces the turn to end — no keep going
       }
+      // Landmark mode: this may be the third of a color — which claims it.
+      if (!under) noteColorClaim(room, seat, b.hood);
     }
     ts.truck = truck.id;
     ts.acted = true;
@@ -951,15 +1359,21 @@ export function createUberManiaGame({ io, rooms }) {
   // welfare, nothing moved and no location used. Stress drops all the way to
   // between 4 and 5 (super calm: between 5 and 6), and the sleeper may sweep
   // the clock forward up to 4 hours for free. Ends the turn.
-  function sleepCore(room, seat, hours) {
+  function sleepCore(room, seat, hours, nap = false) {
     const ts = room.uberMania.turnState;
     if (ts.truck != null || ts.acted || room.uberMania.winner != null) return false;
     const t = room.uberMania.time ?? START_TIME;
-    if (!isNight(t)) return false;
+    // Sleeping is a night thing; napping is landmark mode's daytime version —
+    // it costs the whole turn just the same but only walks the marker two
+    // steps down the bar instead of resetting it.
+    if (nap && (!isLandmark(room) || isNight(t))) return false;
+    if (!nap && !isNight(t)) return false;
     const player = room.uberMania.players?.[seat];
     if (!player) return false;
-    player.stress = Math.max(player.stress ?? 2, hasUp(player, "superCalm") ? 5 : DESTRESS_TO);
-    const h = Math.max(0, Math.min(4, Number(hours) | 0));
+    player.stress = nap
+      ? Math.min(STRESS_MAX, (player.stress ?? 2) + NAP_STEPS)
+      : Math.max(player.stress ?? 2, hasUp(player, "superCalm") ? 5 : DESTRESS_TO);
+    const h = Math.max(0, Math.min(nap ? NAP_HOURS : 4, Number(hours) | 0));
     if (h > 0) {
       room.uberMania.time = (t + h) % 24;
       room.uberMania.elapsed = (room.uberMania.elapsed ?? 0) + h;
@@ -1062,8 +1476,6 @@ export function createUberManiaGame({ io, rooms }) {
   function endTurnCore(roomId, seat, hoodChoices = []) {
     const room = rooms.get(roomId);
     if (!room || room.gameId !== "uber-mania") return;
-    // The turn is over: cards drawn this turn flip face up.
-    for (const r of room.uberMania.players?.[seat]?.rides ?? []) delete r.faceDown;
     grantHoodBonuses(room, seat, hoodChoices);
     const ts = room.uberMania.turnState;
     room.uberMania.funRoll = null;
@@ -1074,6 +1486,9 @@ export function createUberManiaGame({ io, rooms }) {
     } else {
       rollMs = rollStressDice(room, seat);
     }
+    // Turn over, dice rolled and all: only now do face-down cards flip up —
+    // and in landmark mode only as far as the two-card window allows.
+    flipRides(room, room.uberMania.players?.[seat]);
     const endHours = (S(room).days ?? 3) * 24;
     if ((room.uberMania.elapsed ?? 0) >= endHours) {
       finalizeGame(room);
@@ -1342,10 +1757,28 @@ export function createUberManiaGame({ io, rooms }) {
   function aiPlaceValue(room, seat, player, b) {
     if (!b || b.role !== "loc") return 0;
     const settings = S(room);
-    if (b.locType === "uber") {
+    if (b.locType === "landmark") {
       if (settings.rideMode !== "ride-pickup") return 0; // destinations only
       const open = player.rides?.length ?? 0;
       return (0.55 * (settings.ridePoints ?? 2)) / (1 + open);
+    }
+    if (b.locType === "upgrade" && settings.upgradeMode === "stack") {
+      // Landmark mode: a token buys the top of the stack, once per player, and
+      // only inside the location's window. Every upgrade is a flat point, and
+      // the fourth also banks the sweep bonus if nobody's taken it.
+      if ((player.tokens ?? 0) < 1) return 0;
+      if (!Array.isArray(b.slots) || b.slots.includes(seat) || !b.slots.includes(null)) return 0;
+      if (!b.upgrade) return 0;
+      if (!hasUp(player, "timeAgnostic") &&
+          !landmarkWindowOpen(b.window, room.uberMania.time ?? START_TIME)) return 0;
+      const held = (player.upgrades ?? []).length;
+      let v = -TOKEN_VALUE + (settings.upgradePoints ?? 1) * 0.9;
+      if (!hasUp(player, b.upgrade)) v += 0.7; // a perk it doesn't have yet
+      if (held === LANDMARK_WINDOWS.length - 1 && !(room.uberMania.upgradeChampions ?? []).length) {
+        v += (settings.upgradeSweepBonus ?? 2) * 0.8;
+      }
+      v += colorClaimValue(room, seat, settings, b.hood);
+      return v;
     }
     if (b.locType === "upgrade") {
       // Free action for a real perk — but a type the AI already holds is
@@ -1387,15 +1820,50 @@ export function createUberManiaGame({ io, rooms }) {
       v += stress >= STRESS_MAX ? 0.02 : 0.5 + 0.15 * (DESTRESS_TO - stress);
     } else if (b.locType === "token") {
       v += TOKEN_VALUE * (settings.tokenReward ?? 3);
+    } else if (b.locType === "discovery") {
+      // A landmark card is a point once driven — worth less the more the AI
+      // is already sitting on undelivered.
+      const open = player.rides?.length ?? 0;
+      v += (0.75 * (settings.landmarkPoints ?? 1) + 0.35) / (1 + open * 0.6);
     }
     if (!under && b.hood != null) {
-      // Visits unlock upgrade slots: fresh hoods matter most, seconds count.
-      const c = hoodVisits(room, seat, b.hood);
-      if (c === 0) v += 0.5;
-      else if (c === 1) v += 0.25;
+      v += isLandmark(room)
+        // Landmark mode: hoods are scoring colors — the third of a color is
+        // where the points are.
+        ? colorClaimValue(room, seat, settings, b.hood)
+        // Classic: visits unlock upgrade slots — fresh hoods matter most.
+        : (() => {
+          const c = hoodVisits(room, seat, b.hood);
+          return c === 0 ? 0.5 : c === 1 ? 0.25 : 0;
+        })();
     }
     return v;
   }
+
+  // What another token of this color is worth to the AI: the claim points if
+  // this one seals it, a growing pull as it closes in, nothing once the color
+  // is already claimed twice or by this player.
+  function colorClaimValue(room, seat, settings, color) {
+    if (!isLandmark(room) || color == null) return 0;
+    const list = room.uberMania.colorClaims?.[color] ?? [];
+    if (list.includes(seat)) return 0;      // already banked
+    if (list.length >= 2) return 0;         // both places gone
+    const pts = list.length === 0
+      ? (settings.colorFirstPoints ?? 2)
+      : (settings.colorSecondPoints ?? 1);
+    const have = colorProgress(room, seat, color);
+    const need = colorTarget(room, color) - have;
+    if (need <= 1) return pts * 0.9;        // this token claims it
+    if (need === 2) return pts * 0.35;
+    return pts * 0.12;
+  }
+
+  // What completing one card is worth to the AI. Landmark mode pays less per
+  // card than the classic game does per ride, but the "most cards" bonus rides
+  // on top, so the two land close.
+  const cardPoints = (room, settings) => (isLandmark(room)
+    ? (settings.landmarkPoints ?? 1) + (settings.mostLandmarksBonus ?? 2) * 0.25
+    : (settings.ridePoints ?? 2));
 
   // Expected token cost of crossing `reds` red lights at this stress level.
   function aiRedRisk(room, player, reds) {
@@ -1431,7 +1899,7 @@ export function createUberManiaGame({ io, rooms }) {
       // completing is an action that replaces visiting (one or the other, and
       // parked counts), so the location is worth the better of the two.
       const matching = (player.rides ?? []).filter((r) => r.loc === b.bid && !r.faceDown).length;
-      const rideValue = matching * (settings.ridePoints ?? 2) * 0.95;
+      const rideValue = matching * cardPoints(room, settings) * 0.95;
       if (settings.rideMode === "duplicate") {
         if (matching > 0) value = Math.max(value, rideValue);
       } else if (i !== truck.spot && matching > 0) {
@@ -1479,14 +1947,20 @@ export function createUberManiaGame({ io, rooms }) {
       if (!best || score > best.score) best = { ...c, score };
     }
 
-    // Sleeping or welfare beats a bad board — but not on a keep-going
+    // Resting or welfare beats a bad board — but not on a keep-going
     // continuation (the turn already acted; there's no skip left to take).
     if (!ts.keptGoing) {
       const settings = S(room);
+      const now = room.uberMania.time ?? START_TIME;
       // Sleep off a stressed night: the full reset outweighs a mediocre stop.
-      if (isNight(room.uberMania.time ?? START_TIME) && (player.stress ?? 2) <= 2 &&
-          (!best || best.score < 1.2)) {
+      if (isNight(now) && (player.stress ?? 2) <= 2 && (!best || best.score < 1.2)) {
         if (sleepCore(room, idx, 0)) return false;
+      }
+      // Landmark mode's daytime nap: two steps down the bar, so it takes a
+      // worse board (and a worse marker) to be worth a whole turn.
+      if (isLandmark(room) && !isNight(now) && (player.stress ?? 2) <= 2 &&
+          (!best || best.score < 0.9)) {
+        if (sleepCore(room, idx, 0, true)) return false;
       }
       const welfare = TOKEN_VALUE * (settings.welfareTokens ?? 1) + 0.1 * (settings.welfareStones ?? 2);
       if (!best || best.score < welfare) {
@@ -1512,7 +1986,7 @@ export function createUberManiaGame({ io, rooms }) {
     const placeValue = aiPlaceValue(room, idx, player, b);
     if (S(room).rideMode === "duplicate" && b?.role === "loc") {
       const matching = (player.rides ?? []).filter((r) => r.loc === b.bid && !r.faceDown).length;
-      const rideValue = matching * (S(room).ridePoints ?? 2) * 0.95;
+      const rideValue = matching * cardPoints(room, S(room)) * 0.95;
       if (matching > 0 && rideValue >= Math.max(placeValue, 0.15)) {
         completeRideCore(room, idx, truck);
         return;
@@ -1620,7 +2094,7 @@ export function createUberManiaGame({ io, rooms }) {
       const settings = cloneSettings(latest?.settings ?? BASE_SETTINGS);
       const state = {
         uberMania: {
-          map: generateCityMap(Date.now(), genOpts(settings)),
+          map: makeMap(settings),
           time: START_TIME,
           trucks: [],
           settings
@@ -1643,7 +2117,7 @@ export function createUberManiaGame({ io, rooms }) {
         const room = playerRoom(socket, roomId);
         if (!room) return;
         clearAiTimer(roomId);
-        room.uberMania.map = generateCityMap(Date.now(), genOpts(S(room)));
+        room.uberMania.map = makeMap(S(room));
         setupBoard(room);
         emitState(roomId, room);
       });
@@ -1821,6 +2295,18 @@ export function createUberManiaGame({ io, rooms }) {
         const seat = room ? seatOf(room, socket) : -1;
         if (!room || room.uberMania.turn !== seat || room.uberMania.winner != null) return;
         if (!sleepCore(room, seat, hours)) return;
+        endTurnCore(roomId, seat, cleanHoodChoices(hoodChoices));
+      });
+
+      // Nap (landmark mode, daytime): sleeping's smaller daytime sibling —
+      // the whole turn for two steps down the stress bar and a short free
+      // clock sweep. Landmark mode has no destress locations, so this and
+      // sleeping are how the marker comes back down.
+      socket.on("uber_mania_nap", ({ roomId, hours, hoodChoices } = {}) => {
+        const room = playerRoom(socket, roomId);
+        const seat = room ? seatOf(room, socket) : -1;
+        if (!room || room.uberMania.turn !== seat || room.uberMania.winner != null) return;
+        if (!sleepCore(room, seat, hours, true)) return;
         endTurnCore(roomId, seat, cleanHoodChoices(hoodChoices));
       });
 
