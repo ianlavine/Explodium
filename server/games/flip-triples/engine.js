@@ -30,6 +30,10 @@ try {
     }
   });
   wasm = instance.exports;
+  // Deployed leaf eval = frozen (permanent triples + completion threats + white),
+  // the corrected-faceoff champion. setEvalMode(1) selects it; the binary keeps
+  // mode 0 (basic) available for A/B harnesses. Older binaries lack the export.
+  if (typeof wasm.setEvalMode === "function") wasm.setEvalMode(1);
 } catch (err) {
   console.error("flip-engine: wasm unavailable, using JS engine only:", err.message);
 }

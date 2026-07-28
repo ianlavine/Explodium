@@ -53,15 +53,24 @@ function parseArgs(argv) {
 // heuristic B; the other side uses A. Result is from B's perspective.
 function playOne(seed, bSide, aW, bW, mode, param, freshTT) {
   const state = makeRandomDeal({}, mulberry32(seed));
+  const rng = mulberry32(seed ^ 0x5bd1e995); // deterministic stream for random movers
   let side = 0;
   let plies = 0;
   let solvedFromPly = null;
   while (!isPhaseOver(state)) {
-    if (genMoves(state, side).length === 0) {
+    const moves = genMoves(state, side);
+    if (moves.length === 0) {
       side = 1 - side;
       continue;
     }
-    setHeuristic(side === bSide ? bW : aW);
+    const moverW = side === bSide ? bW : aW;
+    if (moverW === RANDOM) {
+      applyMove(state, moves[Math.floor(rng() * moves.length)]);
+      side = 1 - side;
+      plies += 1;
+      continue;
+    }
+    setHeuristic(moverW);
     if (freshTT) clearTT();
     const opts = mode === "depth" ? { timeMs: 3600000, maxDepth: param } : { timeMs: param };
     const r = search(state, side, opts);
@@ -71,20 +80,29 @@ function playOne(seed, bSide, aW, bW, mode, param, freshTT) {
     plies += 1;
   }
   const res = computeWinner(state);
-  const bColor = bSide === 0 ? "red" : "blue"; // solver: RED=0, BLUE=1
-  const bPts = bSide === 0 ? res.redPoints : res.bluePoints;
-  const aPts = bSide === 0 ? res.bluePoints : res.redPoints;
+  // Player-index convention (solver.js redSign / search): side 0 = BLUE, side 1 = RED.
+  // (This is the OPPOSITE of the shape codes RED=0/BLUE=1 — an easy trap.)
+  const bColor = bSide === 0 ? "blue" : "red";
+  const bPts = bSide === 0 ? res.bluePoints : res.redPoints;
+  const aPts = bSide === 0 ? res.redPoints : res.bluePoints;
   const outcome = res.winner === "tie" ? "tie" : res.winner === bColor ? "b" : "a";
   return { seed, bSide, outcome, margin: Number((bPts - aPts).toFixed(1)), plies, solvedFromPly };
 }
 
+// Sentinel for the special name "random": a side that plays a uniformly random
+// legal move (no search, no exact endgame solve) — the weakest possible player,
+// used to sanity-check the harness (a real eval must beat it ~always).
+const RANDOM = "__random__";
+const resolve = (name) => (name === "random" ? RANDOM : HEURISTICS[name]);
+const describeName = (name, w) => (name === "random" ? "uniform random moves" : describe(w));
+
 const args = parseArgs(process.argv.slice(2));
 const aName = String(args.a ?? "classic");
 const bName = String(args.b ?? "frozen");
-const aW = HEURISTICS[aName];
-const bW = HEURISTICS[bName];
+const aW = resolve(aName);
+const bW = resolve(bName);
 if (!aW || !bW) {
-  console.error(`unknown heuristic. available: ${Object.keys(HEURISTICS).join(", ")}`);
+  console.error(`unknown heuristic. available: random, ${Object.keys(HEURISTICS).join(", ")}`);
   process.exit(1);
 }
 const mode = String(args.mode ?? "time");
@@ -118,7 +136,7 @@ for (let p = 0; p < pairs; p += 1) {
   specs.push([seedBase + p, 1]);
 }
 const total = specs.length;
-console.log(`faceoff [${tag}]  A=${aName} (${describe(aW)})  vs  B=${bName} (${describe(bW)})`);
+console.log(`faceoff [${tag}]  A=${aName} (${describeName(aName, aW)})  vs  B=${bName} (${describeName(bName, bW)})`);
 console.log(`  ${total} games (${pairs} mirrored pairs) on ${workers} workers -> ${out}`);
 
 const chunks = Array.from({ length: workers }, () => []);

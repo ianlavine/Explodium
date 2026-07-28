@@ -525,11 +525,118 @@ function terminalEval(): i32 {
   return diff * TERMINAL_SCALE + tb * TIE_SCALE;
 }
 
+// 0 = basic (lockedTriples 2000 + white 10); 1 = frozen (permanentTriples 2000 +
+// completionSpaces 250 + white 10). Toggled per side by A/B harnesses; the live
+// bot leaves it at 0 unless the frozen eval is promoted.
+let evalMode: i32 = 0;
+export function setEvalMode(m: i32): void {
+  evalMode = m;
+}
+
+// Empty the TT (for A/B fairness: a shared table must not let one eval read the
+// other's entries; also makes fixed-depth verification deterministic).
+export function clearTT(): void {
+  for (let i = 0; i < TT_SIZE; i++) unchecked(ttMeta[i] = 0);
+  ttGen = 0;
+}
+
+// 8-directional dilation in the padded bit layout (the ghost column + boardMaskP
+// mask kill wraparound, same trick as genMovesAt).
+@inline
+function dilateP(m: i32): i32 {
+  return (
+    dsh(m, unchecked(dirsP[0])) | dsh(m, unchecked(dirsP[1])) |
+    dsh(m, unchecked(dirsP[2])) | dsh(m, unchecked(dirsP[3])) |
+    dsh(m, unchecked(dirsP[4])) | dsh(m, unchecked(dirsP[5])) |
+    dsh(m, unchecked(dirsP[6])) | dsh(m, unchecked(dirsP[7]))
+  ) & boardMaskP;
+}
+
+// Bitboard port of fillPermanentMask (solver.js), COLORED cells only (neutral
+// permanence never affects the frozen eval). A colored cell is permanent if it
+// is locked, or it sits in a same-shape movable 8-blob none of whose cells touch
+// a movable different-shape piece (nothing can swap in/out — true immobility).
+function permanentColoredMask(): i32 {
+  const M = activeMaskP();
+  const redMov = mRed & M;
+  const blueMov = mBlue & M;
+  let perm = (mRed | mBlue) & ~M & boardMaskP; // locked colored cells are permanent outright
+  const touchRed = redMov & dilateP(M & ~mRed & boardMaskP); // red movable cells adjacent to an escape
+  const touchBlue = blueMov & dilateP(M & ~mBlue & boardMaskP);
+  let rem = redMov;
+  while (rem != 0) {
+    let comp = rem & (0 - rem); // lowest set bit seeds a component
+    while (true) {
+      const grown = (comp | dilateP(comp)) & redMov;
+      if (grown == comp) break;
+      comp = grown;
+    }
+    if ((comp & touchRed) == 0) perm |= comp; // sealed -> whole blob permanent
+    rem &= ~comp;
+  }
+  rem = blueMov;
+  while (rem != 0) {
+    let comp = rem & (0 - rem);
+    while (true) {
+      const grown = (comp | dilateP(comp)) & blueMov;
+      if (grown == comp) break;
+      comp = grown;
+    }
+    if ((comp & touchBlue) == 0) perm |= comp;
+    rem &= ~comp;
+  }
+  return perm;
+}
+
+// frozen leaf eval: permanent triples (banked, unbreakable) + one-move threats to
+// LOCK a permanent triple + white tiebreak. Bitboard port of weightedEval(frozen).
+function frozenEval(): i32 {
+  const perm = permanentColoredMask();
+  let permRed = 0;
+  let permBlue = 0;
+  for (let l = 0; l < lineCount; l++) {
+    const L = unchecked(lineMasksP[l]);
+    if ((L & mRed) == L) {
+      if ((L & perm) == L) permRed++;
+    } else if ((L & mBlue) == L) {
+      if ((L & perm) == L) permBlue++;
+    }
+  }
+  const M = activeMaskP();
+  let compRed = 0;
+  let compBlue = 0;
+  // A completion space for red: a movable non-red cell C adjacent to a movable red
+  // filler, whose line's other two cells are both red AND both permanent.
+  let candR = M & ~mRed & dilateP(mRed & M);
+  while (candR != 0) {
+    const cell = unchecked(cellOfBit[ctz<i32>(candR)]);
+    candR &= candR - 1;
+    for (let p = unchecked(ltOff[cell]); p < unchecked(ltOff[cell + 1]); p++) {
+      const others = unchecked(ltOthers[p]);
+      if ((others & mRed) == others && (others & perm) == others) compRed++;
+    }
+  }
+  let candB = M & ~mBlue & dilateP(mBlue & M);
+  while (candB != 0) {
+    const cell = unchecked(cellOfBit[ctz<i32>(candB)]);
+    candB &= candB - 1;
+    for (let p = unchecked(ltOff[cell]); p < unchecked(ltOff[cell + 1]); p++) {
+      const others = unchecked(ltOthers[p]);
+      if ((others & mBlue) == others && (others & perm) == others) compBlue++;
+    }
+  }
+  return (
+    (permRed - permBlue + carryDiff) * 2000 +
+    (compRed - compBlue) * 250 +
+    (whiteRed - whiteBlue) * TIE_SCALE
+  );
+}
+
 function staticEval(): i32 {
-  // Soft (non-locked) triples were dropped July 2026: a mirrored face-off showed
-  // locked+white beats locked+soft+white 62-70% (strongest on defense) — soft
-  // triples are fragile and mislead the search. Keep this in sync with the JS
-  // eval in solver.js (EVAL_SOFT defaults to 0).
+  if (evalMode == 1) return frozenEval();
+  // basic: locked triples + white. Soft (non-locked) triples were dropped July
+  // 2026 but that was based on an INVERTED faceoff (see memory) — soft actually
+  // helps; kept as-is only as the mode-0 baseline for the frozen A/B.
   return (
     (cntLockedRed - cntLockedBlue + carryDiff) * 2000 +
     (whiteRed - whiteBlue) * TIE_SCALE

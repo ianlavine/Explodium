@@ -997,17 +997,22 @@ function terminalEval(state) {
 // indistinguishable from the originals: at real search depths the engine
 // already compensates for static mispricing.
 //
-// SOFT TRIPLES DROPPED (July 2026): a 50-game mirrored face-off (eval-faceoff.js,
-// via the heuristics registry) showed the soft term is actively HARMFUL — the
-// eval without it (locked+white, "basic") beat the eval with it ("classic")
-// 62-70% across 250ms-3s, strongest on defense (2nd-mover 84%). Soft triples are
-// fragile (the white piece gets swapped away) and mislead the search, so EVAL_SOFT
-// now defaults to 0. Set EVAL_SOFT=250 to restore the old behavior. Env overrides
-// remain for future experiments.
+// DEPLOYED EVAL = "frozen" (July 2026): permanentTriples + completionSpaces +
+// white. A prior arc concluded "soft triples harmful, permanence/completion
+// net-negative" and dropped soft — but that rested on eval-faceoff.js reporting
+// the LOSER as winner (a side<->color convention bug, since fixed). Corrected
+// faceoffs reversed it: frozen is the clear champion (beats the old basic 68-82%
+// across 50ms-1s in the wasm core). The wasm bakes frozen in (assembly/engine.ts
+// frozenEval, selected via setEvalMode(1) in engine.js); this JS path is the
+// fallback (exotic pieces / no-wasm) and uses the same weights via DEFAULT_WEIGHTS
+// so both agree. Weights env-overridable. EVAL_LOCKED/SOFT kept for the A/B
+// registry and any old locked+white experiments.
 const EVAL_LOCKED = Number(process.env.EVAL_LOCKED ?? 2000);
 const EVAL_SOFT = Number(process.env.EVAL_SOFT ?? 0);
 const EVAL_WHITE = Number(process.env.EVAL_WHITE ?? 10);
 const EVAL_TEMPO = Number(process.env.EVAL_TEMPO ?? 0);
+const EVAL_PERMANENT = Number(process.env.EVAL_PERMANENT ?? 2000);
+const EVAL_COMPLETION = Number(process.env.EVAL_COMPLETION ?? 250);
 
 // A named heuristic (a feature->weight dict, see heuristics.js) can be made
 // active with setHeuristic(weights); while set, it replaces the built-in hand
@@ -1018,6 +1023,14 @@ const EVAL_TEMPO = Number(process.env.EVAL_TEMPO ?? 0);
 // (the mover's count full weight). 0 = ignore opponent threats entirely; 1 =
 // same as the tempo-blind `completionSpaces`.
 const COMPLETION_COLD_FRAC = 0.25;
+
+// The deployed leaf eval as a weights dict (see heuristics.js "frozen"). Used by
+// staticEval when no A/B heuristic is active, so the JS fallback matches the wasm.
+const DEFAULT_WEIGHTS = {
+  permanentTriples: EVAL_PERMANENT,
+  completionSpaces: EVAL_COMPLETION,
+  whitePieces: EVAL_WHITE
+};
 
 let activeWeights = null;
 
@@ -1166,18 +1179,11 @@ function staticEval(state, side) {
   if (netEnabled && state.simple && net.cells === state.geom.cells) {
     return netEval(state, side);
   }
-  const tempo = side === 1 ? EVAL_TEMPO : -EVAL_TEMPO;
-  if (state.simple) {
-    return (
-      (state.cntLockedRed - state.cntLockedBlue + state.carryDiff) * EVAL_LOCKED +
-      (state.cntAllRed - state.cntAllBlue) * EVAL_SOFT +
-      (state.whiteRed - state.whiteBlue) * EVAL_WHITE +
-      tempo
-    );
-  }
-  const lockedDiffV = countLockedTriples(state, RED) - countLockedTriples(state, BLUE) + state.carryDiff;
-  const softDiff = countTriples(state, RED) - countTriples(state, BLUE);
-  return lockedDiffV * EVAL_LOCKED + softDiff * EVAL_SOFT + whiteDiffGeneric(state) * EVAL_WHITE + tempo;
+  // Deployed default = frozen (permanent + completion + white). The old
+  // incremental locked+soft+white fast path is available via EVAL_LOCKED/SOFT and
+  // the "basic"/"classic" heuristics if ever needed for A/B, but frozen is the
+  // shipped eval (see DEFAULT_WEIGHTS).
+  return weightedEval(state, side, DEFAULT_WEIGHTS);
 }
 
 export function isPhaseOver(state) {
