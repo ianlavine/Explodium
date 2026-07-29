@@ -39,11 +39,9 @@ const landmarkWindowOpen = (i, t) => {
   const w = LANDMARK_WINDOWS[i];
   return !w || (t >= w.from && t <= w.to);
 };
-// Claiming a color needs three of its four locations; the first player there
-// scores, and so does the second.
-const COLOR_TARGET = 3;
-// How many landmark cards a player sees at once — the rest wait face down.
-const visibleCardCap = () => 2 + (hasUpgrade("extraRide") ? 1 : 0);
+// How many landmark cards a player sees at once — the rest wait face down,
+// and every night that ends with cards still buried costs a point apiece.
+const visibleCardCap = () => 1 + (hasUpgrade("extraRide") ? 1 : 0);
 
 // The upgrade types the roaming upgrade spawns as (ids match the server).
 // The supply is a depleting deck: two copies of each of these, plus one
@@ -125,10 +123,18 @@ const upgradeWindowClosed = (b) => {
   if (isStackUpgrades()) return !landmarkWindowOpen(b.window, timeState);
   return isScheduledUpgrades() && upgradeWindowOf(timeState) !== b.window;
 };
-// The window label a location wears along the top of its upgrade square.
+// The window label a location wears on the board. Landmark mode's windows are
+// named, and the name is short enough for a small lot — the hours ride along
+// in the tooltip (windowTitleFor).
 const windowLabelFor = (b) => (isStackUpgrades()
-  ? `${LANDMARK_WINDOWS[b.window]?.name ?? ""} ${LANDMARK_WINDOWS[b.window]?.label ?? ""}`.trim()
+  ? (LANDMARK_WINDOWS[b.window]?.name ?? "")
   : UPGRADE_WINDOW_LABELS[b.window] ?? "");
+// The window spelled out, for tooltips and the turn line.
+const windowTitleFor = (b) => {
+  if (!isStackUpgrades()) return UPGRADE_WINDOW_LABELS[b.window] ?? "";
+  const w = LANDMARK_WINDOWS[b.window];
+  return w ? `${w.name} (${w.label})` : "";
+};
 
 // Is this hex color dark enough that text on it should go light?
 function isDarkColor(hex) {
@@ -492,6 +498,9 @@ function appendBuilding(parent, building) {
     if (building.window != null) {
       const label = svgEl("text", { x: cx, y: bb.minY + 8, class: "um-upgrade-window" }, g);
       label.textContent = windowLabelFor(building);
+      // The hours live in the tooltip — the lot has no room for them.
+      svgEl("title", {}, g).textContent =
+        `${windowTitleFor(building)} — one upgrade per player, costs a token`;
     }
     svgEl("rect", {
       x: cx - side / 2, y: sqY - side / 2, width: side, height: side, rx: 3,
@@ -1071,14 +1080,19 @@ function renderStressBar() {
     bar.appendChild(cell);
   }
   playersState.forEach((p, i) => {
-    const s = Math.max(1, Math.min(5, p.stress ?? 3));
+    // A super-calm rest can push the marker one step PAST the end of the bar,
+    // where no die can fine you at all — it parks on the rail below the 6.
+    const s = Math.max(1, Math.min(6, p.stress ?? 3));
+    const immune = s >= 6;
     const marker = document.createElement("span");
-    marker.className = "um-stress-marker";
+    marker.className = immune ? "um-stress-marker um-stress-immune" : "um-stress-marker";
     if (i === myIndex()) marker.classList.add("um-stress-mine");
     marker.style.background = p.color;
-    marker.style.top = `${((s - 0.5) / 5) * 100}%`;
+    marker.style.top = `${Math.min(100, ((s - 0.5) / 5) * 100)}%`;
     marker.style.left = `${5 + i * 12}px`;
-    marker.title = `${seatName(i)} — safe rolls: 1–${s}`;
+    marker.title = immune
+      ? `${seatName(i)} — every roll is safe`
+      : `${seatName(i)} — safe rolls: 1–${s}`;
     bar.appendChild(marker);
   });
   wrap.appendChild(bar);
@@ -2269,35 +2283,40 @@ function renderScoreboard() {
     const dot = document.createElement("span");
     dot.className = "tm-score-dot";
     dot.style.background = p.color;
-    const val = document.createElement("span");
-    val.className = "tm-score-val";
-    val.textContent = String(p.tokens ?? 0);
-    val.title = "Tokens in hand";
-    chip.append(dot, val);
-    if ((p.ridesCompleted ?? 0) > 0 || (p.rides?.length ?? 0) > 0) {
-      const rd = document.createElement("span");
-      rd.className = "tm-score-tickets";
-      rd.textContent = isLandmarkMode() ? `🗽${p.ridesCompleted ?? 0}` : `🚕${p.ridesCompleted ?? 0}`;
-      rd.title = isLandmarkMode() ? "Landmark cards completed" : "Rides completed";
-      chip.appendChild(rd);
-    }
-    // Landmark mode: colors claimed so far — the biggest pot on the board.
+    chip.appendChild(dot);
+
     if (isLandmarkMode()) {
-      const claimed = Object.values(colorClaimsState).filter((l) => l.includes(i)).length;
-      if (claimed) {
-        const cc = document.createElement("span");
-        cc.className = "tm-score-tickets";
-        cc.textContent = `🎨${claimed}`;
-        cc.title = "Colors claimed";
-        chip.appendChild(cc);
+      // Landmark mode keeps the table quiet: the chip is a color and a name,
+      // nothing more. Tokens, time stones, whether they're sitting on a
+      // face-down stack, the card they're showing and the colors they've
+      // claimed all live in a panel you have to hover for — and how many cards
+      // anyone has finished, or is scoring, stays hidden until the end.
+      const nm = document.createElement("span");
+      nm.className = "um-score-name";
+      nm.textContent = p.name ?? seatName(i);
+      chip.appendChild(nm);
+      chip.appendChild(playerHoverCard(p, i));
+      chip.classList.add("um-score-hover");
+    } else {
+      const val = document.createElement("span");
+      val.className = "tm-score-val";
+      val.textContent = String(p.tokens ?? 0);
+      val.title = "Tokens in hand";
+      chip.appendChild(val);
+      if ((p.ridesCompleted ?? 0) > 0 || (p.rides?.length ?? 0) > 0) {
+        const rd = document.createElement("span");
+        rd.className = "tm-score-tickets";
+        rd.textContent = `🚕${p.ridesCompleted ?? 0}`;
+        rd.title = "Rides completed";
+        chip.appendChild(rd);
       }
-    }
-    if (Array.isArray(p.upgrades) && p.upgrades.length) {
-      const up = document.createElement("span");
-      up.className = "tm-score-tickets";
-      up.textContent = `⬛${p.upgrades.length}`;
-      up.title = `Upgrades: ${p.upgrades.map((t) => upgradeMeta(t).name).join(", ")}`;
-      chip.appendChild(up);
+      if (Array.isArray(p.upgrades) && p.upgrades.length) {
+        const up = document.createElement("span");
+        up.className = "tm-score-tickets";
+        up.textContent = `⬛${p.upgrades.length}`;
+        up.title = `Upgrades: ${p.upgrades.map((t) => upgradeMeta(t).name).join(", ")}`;
+        chip.appendChild(up);
+      }
     }
     const garage = carsState.filter((t) => t.player === i && t.spot == null);
     if (garage.length) {
@@ -2315,60 +2334,110 @@ function renderScoreboard() {
   header.appendChild(bar);
 }
 
-// How many of one color a seat holds a top circle at.
-function colorProgress(seat, color) {
-  let n = 0;
-  for (const bl of mapState?.blocks ?? []) {
-    for (const b of bl.buildings ?? []) {
-      if (b.role === "loc" && b.hood === color && Array.isArray(b.slots) && b.slots.includes(seat)) n += 1;
-    }
+// Landmark mode: everything about another player you have to ask for. Built
+// into the scoreboard chip and revealed on hover — tokens, time stones, cards
+// completed, how deep their face-down stack is, the card they're showing, and
+// which colors they've claimed. (Their running score stays secret to the end.)
+function playerHoverCard(p, seat) {
+  const card = document.createElement("div");
+  card.className = "um-peek";
+
+  const head = document.createElement("div");
+  head.className = "um-peek-head";
+  head.textContent = seatName(seat);
+  head.style.color = p.color;
+  card.appendChild(head);
+
+  const line = (label, value) => {
+    const row = document.createElement("div");
+    row.className = "um-peek-row";
+    const l = document.createElement("span");
+    l.textContent = label;
+    const v = document.createElement("span");
+    v.className = "um-peek-val";
+    v.textContent = value;
+    row.append(l, v);
+    card.appendChild(row);
+  };
+  line("💰 Tokens", String(p.tokens ?? 0));
+  line("⬟ Time stones", String(p.timeStones ?? 0));
+  // Whether they're sitting on a face-down pile, never how deep it is — and
+  // how many cards they've finished is nobody's business until scoring.
+  const down = (p.rides ?? []).filter((r) => r.faceDown).length;
+  line("🂠 Stack", down > 0 ? "yes" : "none");
+
+  // The card they're actually showing (face-down ones stay secret).
+  const showing = (p.rides ?? []).filter((r) => !r.faceDown);
+  const cards = document.createElement("div");
+  cards.className = "um-peek-row";
+  const cl = document.createElement("span");
+  cl.textContent = "🎴 Showing";
+  const cv = document.createElement("span");
+  cv.className = "um-peek-val";
+  cv.textContent = showing.length
+    ? showing.map((r) => buildingByBid(r.loc)?.name ?? "?").join(", ")
+    : "—";
+  cards.append(cl, cv);
+  card.appendChild(cards);
+
+  // Colors claimed, as swatches carrying the place they took.
+  const claimRow = document.createElement("div");
+  claimRow.className = "um-peek-row";
+  const kl = document.createElement("span");
+  kl.textContent = "🎨 Colors";
+  const kv = document.createElement("span");
+  kv.className = "um-peek-val um-peek-swatches";
+  let any = false;
+  hoodsState.forEach((h) => {
+    const place = (colorClaimsState[h.id] ?? []).indexOf(seat);
+    if (place !== 0 && place !== 1) return;
+    any = true;
+    const sw = document.createElement("span");
+    sw.className = place === 1 ? "um-results-swatch um-results-swatch-second" : "um-results-swatch";
+    sw.style.background = h.color;
+    sw.title = `${h.name} — ${place === 0 ? "first" : "second"}`;
+    kv.appendChild(sw);
+  });
+  if (!any) kv.textContent = "—";
+  claimRow.append(kl, kv);
+  card.appendChild(claimRow);
+
+  if ((p.upgrades ?? []).length) {
+    const ur = document.createElement("div");
+    ur.className = "um-peek-row";
+    const ul = document.createElement("span");
+    ul.textContent = "⬛ Upgrades";
+    const uv = document.createElement("span");
+    uv.className = "um-peek-val";
+    uv.textContent = p.upgrades.map((t) => upgradeMeta(t).icon).join(" ");
+    uv.title = p.upgrades.map((t) => upgradeMeta(t).name).join(", ");
+    ur.append(ul, uv);
+    card.appendChild(ur);
   }
-  return n;
+  return card;
 }
 
-// Landmark mode's color track: one pip row per color showing my progress
-// toward three of four, with dots for the seats that already claimed its
-// first and second places. Hovering a row lights that color on the board.
-function renderColorTrack(wrap) {
-  const track = document.createElement("div");
-  track.className = "um-colors";
+// The one public piece of the color race: what each color still pays. Seven
+// circles showing the best place left — 2 until someone claims it, then 1,
+// then nothing. How far along anyone is toward three of four is not shown:
+// that's yours to read off the board.
+function renderColorPrizes(wrap) {
+  const row = document.createElement("div");
+  row.className = "um-prizes";
   const first = settingsState?.colorFirstPoints ?? 2;
   const second = settingsState?.colorSecondPoints ?? 1;
   hoodsState.forEach((h) => {
-    const row = document.createElement("div");
-    row.className = "um-color-row";
-    row.style.setProperty("--c", h.color);
-    const mine = colorProgress(myIndex(), h.id);
-    const claimed = colorClaimsState[h.id] ?? [];
-    const size = h.size ?? 4;
-
-    const pips = document.createElement("span");
-    pips.className = "um-color-pips";
-    for (let i = 0; i < size; i += 1) {
-      const pip = document.createElement("span");
-      pip.className = i < mine ? "um-color-pip um-color-pip-on" : "um-color-pip";
-      pips.appendChild(pip);
-    }
-    row.appendChild(pips);
-
-    const places = document.createElement("span");
-    places.className = "um-color-places";
-    claimed.slice(0, 2).forEach((seat, i) => {
-      const dot = document.createElement("span");
-      dot.className = "um-color-claim";
-      dot.style.background = playersState[seat]?.color ?? "#888";
-      dot.textContent = String(i === 0 ? first : second);
-      dot.title = `${seatName(seat)} claimed ${h.name} for ${i === 0 ? first : second}`;
-      places.appendChild(dot);
-    });
-    row.appendChild(places);
-
-    row.title = claimed.includes(myIndex())
-      ? `${h.name}: claimed — ${mine} of ${size}`
-      : claimed.length >= 2
-      ? `${h.name}: both places gone (${mine} of ${size} yours)`
-      : `${h.name}: ${mine} of ${size} — ${Math.max(0, Math.min(COLOR_TARGET, size) - mine)} more to claim it for ${claimed.length === 0 ? first : second}`;
-    // Light this color's locations up on the board while hovered.
+    const taken = (colorClaimsState[h.id] ?? []).length;
+    const dot = document.createElement("span");
+    dot.className = taken >= 2 ? "um-prize um-prize-gone" : "um-prize";
+    dot.style.background = h.color;
+    dot.textContent = taken >= 2 ? "" : String(taken === 0 ? first : second);
+    dot.title = taken >= 2
+      ? `${h.name}: both places gone`
+      : taken === 1
+      ? `${h.name}: ${second} left — be the second to three of its four`
+      : `${h.name}: ${first} for the first player to three of its four, then ${second}`;
+    // Hovering a prize lights that color's locations on the board.
     const lit = (on) => {
       for (const bl of mapState?.blocks ?? []) {
         for (const b of bl.buildings ?? []) {
@@ -2378,12 +2447,13 @@ function renderColorTrack(wrap) {
         }
       }
     };
-    row.addEventListener("mouseenter", () => lit(true));
-    row.addEventListener("mouseleave", () => lit(false));
-    track.appendChild(row);
+    dot.addEventListener("mouseenter", () => lit(true));
+    dot.addEventListener("mouseleave", () => lit(false));
+    row.appendChild(dot);
   });
-  wrap.appendChild(track);
+  wrap.appendChild(row);
 }
+
 
 // Bottom-right panel: my tokens, time stones, and open ride cards.
 function renderPlayerPanel() {
@@ -2417,8 +2487,11 @@ function renderPlayerPanel() {
 
   const stress = document.createElement("div");
   stress.className = "um-stat";
-  stress.textContent = `😰 1–${Math.max(1, Math.min(5, me.stress ?? 3))} safe`;
-  stress.title = "Stress — end-of-turn dice at or under this are fine, over it costs a token";
+  const safe = Math.max(1, Math.min(6, me.stress ?? 3));
+  stress.textContent = safe >= 6 ? "😌 all safe" : `😰 1–${safe} safe`;
+  stress.title = safe >= 6
+    ? "Super calm — no end-of-turn die can fine you until stress climbs back up"
+    : "Stress — end-of-turn dice at or under this are fine, over it costs a token";
   stats.appendChild(stress);
 
   const redLost = document.createElement("div");
@@ -2428,15 +2501,14 @@ function renderPlayerPanel() {
     ? `🚦 ${me.redTokensLost ?? 0} fines`
     : `🚦 −${me.redTokensLost ?? 0}`;
   redLost.title = isLandmarkMode()
-    ? `Fines paid — tokens lost to failed dice. Most fines at game end: −${fine}; fewest: +${fine}. Fines also break ties on points.`
+    ? `Fines paid — tokens lost to failed dice. Fewest at game end: +${fine}, and fines break ties on points. A fine you can't cover costs a point per token short.`
     : "Tokens lost to red-light dice so far — the player who loses the most is docked points at game end, the least gains them";
   stats.appendChild(redLost);
 
   wrap.appendChild(stats);
 
-  // Landmark mode: the seven colors, each showing how far along I am (three
-  // of four claims it) and who has already banked its two places.
-  if (isLandmarkMode() && hoodsState.length) renderColorTrack(wrap);
+  // The one public part of the color race: what each color still pays.
+  if (isLandmarkMode() && hoodsState.length) renderColorPrizes(wrap);
 
   // My upgrade board: four slots. Held upgrades fill from the left; the
   // third slot unlocks with a token in every neighbourhood, the fourth with
@@ -2462,7 +2534,7 @@ function renderPlayerPanel() {
         slot.className = `um-upgrade-chip um-upgrade-slot${locked ? " um-upgrade-locked" : ""}`;
         slot.textContent = locked ? "🔒" : "···";
         slot.title = isLandmarkMode()
-          ? `Empty — one upgrade waits at each of the four upgrade locations (${LANDMARK_WINDOWS.map((w) => w.name).join(", ")}), 1 point each and +${settingsState?.upgradeSweepBonus ?? 2} for the first player holding all four`
+          ? `Empty — a stack waits at each of the four upgrade locations (${LANDMARK_WINDOWS.map((w) => w.name).join(", ")}), one pull each per player, ${settingsState?.upgradePoints ?? 1} point apiece`
           : locked
           ? (i === 2
             ? "Locked — place a token in every neighbourhood to unlock this upgrade slot"
@@ -2502,7 +2574,9 @@ function renderPlayerPanel() {
       emoji.className = "um-ride-emoji";
       emoji.textContent = `×${down}`;
       card.append(name, emoji);
-      card.title = `${down} landmark card${down > 1 ? "s" : ""} waiting. You hold ${visibleCardCap()} face up — the pile flips one up whenever a turn ends with room for it.`;
+      const per = settingsState?.cardPenalty ?? 1;
+      card.title = `${down} landmark card${down > 1 ? "s" : ""} waiting. You hold ${visibleCardCap()} face up — the pile flips one up whenever a turn ends with room for it. Every card still down when a night ends (6am) costs ${per} point.`;
+      card.classList.add("um-ride-urgent");
       row.appendChild(card);
     }
     me.rides.forEach((r) => {
@@ -2695,8 +2769,17 @@ function endTurnLabel() {
   return isMyTurn() && dicePoolState > 0 ? `End turn · 🎲×${dicePoolState}` : "End turn";
 }
 
-// Welfare: skip the turn — before doing anything with it — for a token and
-// some time stones.
+// Landmark mode's clock splits every skip in two: by DAY you may nap (stress)
+// or take welfare (tokens); by NIGHT you may sleep (stress) or beg (a token).
+// Nothing else sits a turn out.
+const isNightNow = () => timeState >= 19 || timeState <= 6;
+
+// The handout on offer right now — welfare by day, begging by night. (The
+// classic game only has welfare, any hour.)
+const handoutKind = () => (isLandmarkMode() && isNightNow() ? "beg" : "welfare");
+
+// Welfare / begging: skip the turn — before doing anything with it — for the
+// handout that's open at this hour.
 function canSkipTurn() {
   return isMyTurn() && winnerState == null && turnTruck == null && !turnActed &&
     dicePoolState === 0;
@@ -2704,12 +2787,20 @@ function canSkipTurn() {
 
 function skipTurnLabel() {
   const s = settingsState;
-  return `Welfare · +${s?.welfareTokens ?? 1}● +${s?.welfareStones ?? 2}⬟`;
+  if (handoutKind() === "beg") return `🥺 Beg · +${s?.begTokens ?? 1}●`;
+  const stones = s?.welfareStones ?? 2;
+  return stones > 0
+    ? `Welfare · +${s?.welfareTokens ?? 1}● +${stones}⬟`
+    : `🤲 Welfare · +${s?.welfareTokens ?? 1}●`;
 }
 
 function skipTurnButton() {
   const btn = button(skipTurnLabel(), "skipturn", "ghost-btn um-skip-turn");
-  btn.title = "Sit this turn out and collect welfare: tokens and time stones";
+  btn.title = handoutKind() === "beg"
+    ? "Sit the turn out and beg (night only): one token"
+    : isLandmarkMode()
+    ? "Sit the turn out and collect welfare (day only): tokens, no time stones"
+    : "Sit this turn out and collect welfare: tokens and time stones";
   btn.style.display = canSkipTurn() ? "" : "none";
   btn.disabled = diceAnimating || anyCarAnimating() || flipping;
   return btn;
@@ -2720,13 +2811,19 @@ function skipTurnButton() {
 // the clock can sweep forward up to 4 hours for free.
 function canSleep() {
   return isMyTurn() && winnerState == null && turnTruck == null && !turnActed &&
-    dicePoolState === 0 && (timeState >= 19 || timeState <= 6);
+    dicePoolState === 0 && isNightNow();
 }
+
+// Where a full rest lands the marker, in the bar's own numbering: the bottom
+// of it, or one past the end (nothing can fine you) with super calm.
+const restLabel = () => (hasUpgrade("superCalm")
+  ? "all safe"
+  : isLandmarkMode() ? "1–2" : "2–3");
 
 function sleepButton() {
   const wrap = document.createElement("span");
   wrap.className = "um-sleep-wrap";
-  const btn = button(`😴 Sleep · calm to ${hasUpgrade("superCalm") ? "1–2" : "2–3"}`, "", "ghost-btn um-sleep");
+  const btn = button(`😴 Sleep · calm to ${restLabel()}`, "", "ghost-btn um-sleep");
   btn.title = "Sit the turn out to sleep (night only): stress drops all the way down, and the clock can sweep forward for free";
   const sel = document.createElement("select");
   sel.className = "um-sleep-hours";
@@ -2753,7 +2850,7 @@ function sleepButton() {
 // the bar instead of resetting. (Landmark mode has no destress locations.)
 function canNap() {
   return isLandmarkMode() && isMyTurn() && winnerState == null && turnTruck == null &&
-    !turnActed && dicePoolState === 0 && !(timeState >= 19 || timeState <= 6);
+    !turnActed && dicePoolState === 0 && !isNightNow();
 }
 
 function napButton() {
@@ -2994,7 +3091,7 @@ function renderControls() {
   // the tuning panel.
   const lmWrap = document.createElement("label");
   lmWrap.className = "um-mode-toggle";
-  lmWrap.title = "Landmark mode: 50 locations, 7 scoring colors, landmark cards from discovery locations, 4 timed upgrade stacks. Everything else tunes itself — switching back restores your classic board.";
+  lmWrap.title = "Landmark mode: 50 locations, 7 scoring colors, landmark cards discovered one at a time, 7 day / 7 night locations, 4 upgrade stacks behind named windows. Everything else tunes itself — switching back restores your classic board.";
   const lmBox = document.createElement("input");
   lmBox.type = "checkbox";
   lmBox.checked = isLandmarkMode();
@@ -3154,7 +3251,7 @@ function updateTurnControls() {
     const sb = sw.querySelector(".um-sleep");
     if (sb) {
       sb.disabled = diceAnimating || anyCarAnimating() || flipping;
-      sb.textContent = `😴 Sleep · calm to ${hasUpgrade("superCalm") ? "1–2" : "2–3"}`;
+      sb.textContent = `😴 Sleep · calm to ${restLabel()}`;
     }
   }
   const nw = els.hand.querySelector(".um-nap-wrap");
@@ -3206,7 +3303,8 @@ function renderResults() {
   const table = document.createElement("table");
   table.className = "um-results-table";
 
-  // Landmark mode has its own five-column breakdown.
+  // Landmark mode has its own breakdown: colors, upgrades, landmark cards,
+  // fines and the two running penalties.
   if (resultsState.mode === "landmark") {
     renderLandmarkResults(table);
     panel.appendChild(table);
@@ -3272,7 +3370,7 @@ function renderResults() {
 function renderLandmarkResults(table) {
   const winners = resultsState.winners ?? [];
   const head = document.createElement("tr");
-  ["", "🎨 Colors", "⬛ Upgrades", "🗽 Landmarks", "🚦 Fines", "Total"].forEach((h) => {
+  ["", "🎨 Colors", "⬛ Upgrades", "🗽 Landmarks", "🚦 Fines", "➖ Penalties", "Total"].forEach((h) => {
     const th = document.createElement("th");
     th.textContent = h;
     head.appendChild(th);
@@ -3327,8 +3425,7 @@ function renderLandmarkResults(table) {
     tr.appendChild(colors);
 
     const ups = document.createElement("td");
-    ups.innerHTML = `${r.upgrades ?? 0}${r.sweep ? " 🏅" : ""} <span class="um-results-pts">+${r.upgradePts ?? 0}</span>`;
-    if (r.sweep) ups.title = `All four upgrades first — +${r.sweep} bonus`;
+    ups.innerHTML = `${r.upgrades ?? 0} <span class="um-results-pts">+${r.upgradePts ?? 0}</span>`;
     tr.appendChild(ups);
 
     const lm = document.createElement("td");
@@ -3337,9 +3434,19 @@ function renderLandmarkResults(table) {
     tr.appendChild(lm);
 
     const fines = document.createElement("td");
-    const adj = r.fineAdj > 0 ? `+${r.fineAdj}` : String(r.fineAdj);
-    fines.innerHTML = `${r.fines ?? 0} <span class="um-results-pts ${r.fineAdj < 0 ? "um-results-neg" : r.fineAdj > 0 ? "um-results-pos" : ""}">${r.fineAdj === 0 ? "±0" : adj}</span>`;
+    fines.innerHTML = `${r.fines ?? 0} <span class="um-results-pts ${r.fineAdj > 0 ? "um-results-pos" : ""}">${r.fineAdj > 0 ? `+${r.fineAdj}` : "±0"}</span>`;
+    if (r.fineAdj > 0) fines.title = "Fewest fines paid";
     tr.appendChild(fines);
+
+    // The two running penalties, revealed only now: cards caught face down at
+    // the end of a night, and tokens come up short paying the dice.
+    const pen = document.createElement("td");
+    const bits = [];
+    if (r.cardPen) bits.push(`🂠${r.cardPen}`);
+    if (r.shortPen) bits.push(`💸${r.shortPen}`);
+    pen.innerHTML = `${bits.join(" ") || "—"} <span class="um-results-pts ${r.penalties ? "um-results-neg" : ""}">${r.penalties ? `−${r.penalties}` : "±0"}</span>`;
+    pen.title = `${r.cardPen ?? 0} for landmark cards left face down at the end of a night · ${r.shortPen ?? 0} for tokens come up short when the dice asked to be paid`;
+    tr.appendChild(pen);
 
     const total = document.createElement("td");
     total.className = "um-results-total";
@@ -3356,7 +3463,7 @@ function finishResults(panel, overlay) {
   if (resultsState.mode === "landmark") {
     const hint = document.createElement("div");
     hint.className = "um-results-hint";
-    hint.textContent = `Colors: ${s?.colorFirstPoints ?? 2} to the first player at three of a color's four, ${s?.colorSecondPoints ?? 1} to the second (21 on the table) · Upgrades: ${s?.upgradePoints ?? 1} each, +${s?.upgradeSweepBonus ?? 2} for the first player holding all four · Landmark cards: ${s?.landmarkPoints ?? 1} each, +${s?.mostLandmarksBonus ?? 2} to everyone tied for the most · Fines: ±${s?.finePoints ?? 2} for the most and fewest paid, and the tiebreak on equal totals`;
+    hint.textContent = `Colors: ${s?.colorFirstPoints ?? 2} to the first player at three of a color's four, ${s?.colorSecondPoints ?? 1} to the second (21 on the table) · Upgrades: ${s?.upgradePoints ?? 1} each · Landmark cards: ${s?.landmarkPoints ?? 1} each, +${s?.mostLandmarksBonus ?? 2} to everyone tied for the most · Fines: +${s?.finePoints ?? 2} for the fewest paid, and the tiebreak on equal totals · Penalties: −${s?.cardPenalty ?? 1} per landmark card still face down when a night ends, −${s?.shortPenalty ?? 1} per token you couldn't cover on a roll`;
     panel.appendChild(hint);
   }
 
@@ -3418,10 +3525,12 @@ const TUNE_LANDMARK_FIELDS = [
   ["colorFirstPoints", "🎨 Color — first player"],
   ["colorSecondPoints", "🎨 Color — second player"],
   ["upgradePoints", "⬛ Points per upgrade"],
-  ["upgradeSweepBonus", "🏅 All four upgrades bonus"],
   ["landmarkPoints", "🗽 Points per landmark card"],
   ["mostLandmarksBonus", "⭐ Most landmark cards bonus"],
-  ["finePoints", "🚦 Fines swing (±)"]
+  ["finePoints", "🚦 Fewest fines bonus"],
+  ["cardPenalty", "🂠 Per card left face down"],
+  ["shortPenalty", "💸 Per token short on a roll"],
+  ["begTokens", "🥺 Beg tokens (night)"]
 ];
 // The classic scoring numbers landmark mode replaces.
 const TUNE_CLASSIC_SCORING = ["ridePoints", "redPenalty"];
@@ -3429,7 +3538,9 @@ const TUNE_CLASSIC_SCORING = ["ridePoints", "redPenalty"];
 // LANDMARK_OWNED.)
 const LANDMARK_OWNED = new Set([
   "rideMode", "upgradeMode", "timedPeriods", "locations",
-  "timeStoneReward", "tokenReward", "neighbourhoods"
+  "timeStoneReward", "tokenReward", "neighbourhoods",
+  "dayLocations", "nightLocations", "startingTokens", "startingTimeStones",
+  "welfareTokens", "welfareStones"
 ]);
 // Blank stoplights beyond the guaranteed 24 numbered (corners carry none).
 const TUNE_LIGHT_FIELDS = [
@@ -3552,7 +3663,7 @@ function renderTuning() {
   });
   const lmText = document.createElement("span");
   lmText.className = "um-tune-mode-text";
-  lmText.innerHTML = "<b>🗽 Landmark mode</b><br><small>50 locations · 7 scoring colors · landmark cards from discovery locations · 4 timed upgrade stacks · no neighbourhoods, no destress locations. The greyed settings below are set for you.</small>";
+  lmText.innerHTML = "<b>🗽 Landmark mode</b><br><small>50 locations · 7 scoring colors, 4 locations each · landmark cards discovered one at a time, the rest face down and bleeding a point every night · 7 day / 7 night locations · 4 upgrade stacks behind named windows · no neighbourhoods, no destress locations. The greyed settings below are set for you.</small>";
   lmRow.append(lmBox, lmText);
   panel.appendChild(lmRow);
 
@@ -3770,7 +3881,9 @@ els.hand.addEventListener("click", (event) => {
       break;
     case "skipturn":
       withHoodChoices((hoodChoices) =>
-        socket.emit("uber_mania_skip_turn", { roomId: app.roomId, hoodChoices }));
+        socket.emit("uber_mania_skip_turn", {
+          roomId: app.roomId, kind: handoutKind(), hoodChoices
+        }));
       break;
     case "routemode":
       moveMode = moveMode === "build" ? "auto" : "build";
@@ -3902,7 +4015,7 @@ function setTurnStatus() {
       b && !locOpen(b, timeState) && Array.isArray(b.slots) && b.slots.includes(null)
         ? `Your turn — ${b.name ?? "this location"} only opens ${PERIOD_PHRASES[b.period] ?? `in the ${b.period}`} ${PERIOD_SYMBOLS[b.period] ?? ""}`
         : b && b.locType === "upgrade" && upgradeTypeAt(b) != null && upgradeWindowClosed(b)
-        ? `Your turn — this upgrade spot only opens ${windowLabelFor(b) || "later"}`
+        ? `Your turn — this upgrade spot only opens ${windowTitleFor(b) || "later"}`
         : "Your turn";
   }
 }

@@ -146,11 +146,79 @@ function createFlipTriplesBoard(settings) {
   return board;
 }
 
+const FLIP_SHAPE_NAMES = new Set([
+  "red-x",
+  "blue-o",
+  "neutral",
+  "purple",
+  "yellow",
+  "hopper",
+  "red-ring",
+  "blue-ring"
+]);
+
+// A starting deal supplied by the client (from a saved game file) instead of a
+// fresh shuffle. Returns rows of shape names when the payload fits the board
+// preset, or null — a null falls back to a random deal.
+function normalizeFlipStartShapes(startShapes, boardSize) {
+  if (!Array.isArray(startShapes)) return null;
+  const preset = flipBoardPreset(boardSize);
+  if (startShapes.length !== preset.rows) return null;
+  const rows = [];
+  for (const row of startShapes) {
+    if (!Array.isArray(row) || row.length !== preset.cols) return null;
+    for (const shape of row) {
+      if (!FLIP_SHAPE_NAMES.has(shape)) return null;
+    }
+    rows.push(row.slice());
+  }
+  return rows;
+}
+
+function flipBoardFromShapes(shapes) {
+  let index = 0;
+  return shapes.map((row) => row.map((shape) => makeFlipPiece(index++, shape)));
+}
+
+// Piece counts implied by a loaded deal, so state.settings keeps describing the
+// board that is actually in play (a rematch re-shuffles from these counts).
+function flipSettingsForShapes(shapes, options) {
+  const counts = {};
+  shapes.forEach((row) => row.forEach((shape) => {
+    counts[shape] = (counts[shape] ?? 0) + 1;
+  }));
+  return normalizeFlipSettings({
+    ...options,
+    playerPieces: Math.min(counts["red-x"] ?? 0, counts["blue-o"] ?? 0),
+    purple: counts.purple ?? 0,
+    yellow: counts.yellow ?? 0,
+    hopper: counts.hopper ?? 0,
+    rings: Math.min(counts["red-ring"] ?? 0, counts["blue-ring"] ?? 0)
+  });
+}
+
+// A seat->color map replayed from a saved game; null unless it is a real
+// red/blue pair.
+function normalizeFlipSeatColors(seatColors) {
+  if (!Array.isArray(seatColors) || seatColors.length !== 2) return null;
+  const [a, b] = seatColors;
+  const valid = (c) => c === "red" || c === "blue";
+  if (!valid(a) || !valid(b) || a === b) return null;
+  return [a, b];
+}
+
+function flipSeatIndex(value, fallback) {
+  return value === 0 || value === 1 ? value : fallback;
+}
+
 function createFlipTriplesState() {
   return {
     setup: true,
     settings: defaultFlipSettings(),
     board: [],
+    // Shapes of the deal as it was dealt (rows of shape names), kept so a
+    // finished game can be exported and re-analyzed from its starting position.
+    startShapes: null,
     phase: 1,
     // Color-pick pre-game: player one (colorPicker seat) chooses a color, then
     // player two (firstMover seat) makes the opening move. seatColors maps seat
@@ -540,11 +608,17 @@ export function createFlipTriplesGame({ io, rooms }) {
   }
 
   function startFlipTriplesGame(room, options) {
-    const settings = normalizeFlipSettings(options);
+    // A saved game can supply its exact opening deal (and the color assignment
+    // it was played with); anything else falls back to a fresh shuffle.
+    const loadedShapes = normalizeFlipStartShapes(options.startShapes, options.boardSize);
+    const settings = loadedShapes
+      ? flipSettingsForShapes(loadedShapes, options)
+      : normalizeFlipSettings(options);
     const state = room.flipTriples;
     state.setup = false;
     state.settings = settings;
-    state.board = createFlipTriplesBoard(settings);
+    state.board = loadedShapes ? flipBoardFromShapes(loadedShapes) : createFlipTriplesBoard(settings);
+    state.startShapes = state.board.map((row) => row.map((piece) => piece.shape));
     state.phase = 1;
     state.pendingPhase2 = false;
     state.phaseScores = {
@@ -576,6 +650,17 @@ export function createFlipTriplesGame({ io, rooms }) {
       return;
     }
 
+    // A loaded game replays its recorded color assignment, so there is no pick.
+    const loadedColors = normalizeFlipSeatColors(options.seatColors);
+    if (loadedColors) {
+      state.pickingColor = false;
+      state.colorPicker = flipSeatIndex(options.colorPicker, 0);
+      state.firstMover = flipSeatIndex(options.firstMover, 1 - state.colorPicker);
+      state.seatColors = loadedColors;
+      beginFlipPlay(room);
+      return;
+    }
+
     // Online / vs AI: randomly choose which seat picks the color (player one)
     // and which seat makes the opening move (player two). Play is gated until a
     // color is chosen.
@@ -584,6 +669,17 @@ export function createFlipTriplesGame({ io, rooms }) {
     state.firstMover = 1 - state.colorPicker;
     state.seatColors = null;
     room.turn = null;
+  }
+
+  // Colors are settled: hand the opening move to the first mover (skipping a
+  // seat with no legal move) and start the game.
+  function beginFlipPlay(room) {
+    const state = room.flipTriples;
+    const fm = state.firstMover;
+    if (playerHasFlipMove(state, fm)) room.turn = room.players[fm];
+    else if (playerHasFlipMove(state, 1 - fm)) room.turn = room.players[1 - fm];
+    else room.turn = room.players[fm];
+    if (!anyFlipMove(state)) advanceFlipPhaseOrEnd(room);
   }
 
   // Player one has chosen a color; assign colors, hand the opening move to
@@ -597,12 +693,7 @@ export function createFlipTriplesGame({ io, rooms }) {
     seatColors[state.firstMover] = other;
     state.seatColors = seatColors;
     state.pickingColor = false;
-
-    const fm = state.firstMover;
-    if (playerHasFlipMove(state, fm)) room.turn = room.players[fm];
-    else if (playerHasFlipMove(state, 1 - fm)) room.turn = room.players[1 - fm];
-    else room.turn = room.players[fm];
-    if (!anyFlipMove(state)) advanceFlipPhaseOrEnd(room);
+    beginFlipPlay(room);
   }
 
   // Applies a validated swap to the live state. The first piece flips (locks) and

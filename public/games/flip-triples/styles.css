@@ -460,6 +460,23 @@
   margin-top: 2px;
 }
 
+.flip-save-btn {
+  flex-basis: 100%;
+  margin-top: 6px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.flip-save-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
 .flip-score-row strong {
   color: #fff;
   font-size: 34px;
@@ -508,6 +525,37 @@
 .flip-setup-card h3 {
   margin: 0;
   font-size: 22px;
+}
+
+.flip-setup-card .flip-load-btn {
+  justify-self: center;
+  margin-top: -10px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.flip-setup-card .flip-load-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.flip-load-hint {
+  margin-top: -14px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.flip-load-error {
+  margin: 0;
+  color: #ff8080;
+  font-size: 13px;
+  text-align: center;
 }
 
 .flip-setup-grid {

@@ -2,6 +2,9 @@
 // second dot to see what connecting them costs. Building across an enemy line
 // cuts it — the doomed lines flash red in the preview. First player to link
 // both shrines wins.
+//
+// The board is much larger than it looks: the camera opens on all of it, and
+// you drag and zoom (wheel/pinch, or the corner buttons) to work up close.
 import { socket, els, app } from "../../shared/context.js";
 import {
   BOARD_WIDTH,
@@ -9,7 +12,9 @@ import {
   DEFAULT_SETTINGS,
   SETTING_RANGES,
   evaluateBuild,
-  resolveDestruction
+  resolveDestruction,
+  displayMoney,
+  productionFor
 } from "./rules.js";
 
 // The pre-game setup screen. Order here is the order shown.
@@ -61,14 +66,9 @@ const SLIDER_FIELDS = [
     format: (v) => `${trimNum(v)} / 100`
   },
   {
-    key: "baseIncomeSecs",
-    label: "Base income ($1)",
-    format: (v) => `every ${trimNum(v)}s`
-  },
-  {
-    key: "groupIncomeSecs",
-    label: "Network income",
-    format: (v) => `every ${trimNum(v)}s`
+    key: "incomePerNode",
+    label: "Income per node",
+    format: (v) => `$${Number(v).toFixed(2)}/s`
   },
   {
     key: "dotCount",
@@ -79,7 +79,15 @@ const SLIDER_FIELDS = [
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PLAYER_CLASSES = ["lino-p0", "lino-p1"];
-const HOVER_RADIUS = 5; // board units — how close the cursor must be to light a dot
+const HOVER_PX = 20; // screen pixels — how close the cursor must be to light a dot
+const MIN_VIEW_WIDTH = 55; // deepest zoom, in board units
+const DRAG_SLOP_PX = 4; // movement below this still counts as a click, not a pan
+const ZOOM_SENSITIVITY = 0.0016;
+// Board units are multiplied by (unitsPerPixel * SIZE_REFERENCE) so art holds a
+// constant pixel size. 6.6 is the px-per-unit the sizes below were drawn at.
+const SIZE_REFERENCE = 6.6;
+// …except right out at full board view, where constant-size dots would touch.
+const MAX_ZOOM_SCALE = 1.25;
 
 let linoState = null;
 let selectedDotId = null;
@@ -87,11 +95,23 @@ let lastCursor = null;
 let svg = null;
 let linesLayer = null;
 let previewLine = null;
-let dotEls = new Map(); // dotId -> { group, label }
+let costLabel = null; // one shared cost readout, moved to the hovered dot
+let dotEls = new Map(); // dotId -> <g>
 let lineEls = new Map(); // lineId -> <line>
+let highlighted = []; // dot/line elements currently carrying a preview class
 let hud = null; // { mine, theirs, banner }
 let pendingSetup = null; // { mode, onReady } while the setup screen is open
 let chosenSettings = { ...DEFAULT_SETTINGS };
+
+// --- camera -----------------------------------------------------------------
+// The board is far larger than the window onto it. The camera is a centre point
+// plus a width; the height falls out of the element's pixel aspect ratio, so
+// the viewBox always matches the element exactly and nothing is letterboxed.
+let camera = null; // { cx, cy, w }
+let zoomScale = 1; // how much to inflate board-unit sizes at this zoom level
+let panState = null; // { pointerId, lastX, lastY, moved }
+let panned = false; // the click closing a drag must not also select a dot
+let resizeObserver = null;
 
 function isActive() {
   return app.currentGame?.id === "lino";
@@ -116,6 +136,97 @@ function toBoardCoords(event) {
   return point.matrixTransform(svg.getScreenCTM().inverse());
 }
 
+function pixelSize() {
+  const rect = svg?.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
+    return { width: BOARD_WIDTH, height: BOARD_HEIGHT };
+  }
+  return { width: rect.width, height: rect.height };
+}
+
+function aspectRatio() {
+  const px = pixelSize();
+  return px.width / px.height;
+}
+
+// The camera width at which the whole board fits inside the element — the same
+// "meet" behaviour a plain viewBox would give, expressed as a zoom level. This
+// is both the starting view and the furthest you can pull back.
+function maxWidth() {
+  return Math.max(BOARD_WIDTH, BOARD_HEIGHT * aspectRatio());
+}
+
+// Board units per screen pixel right now — used to keep hit radii, and the
+// pan gesture, in screen terms rather than board terms.
+function unitsPerPixel() {
+  if (!camera) return 1;
+  return camera.w / pixelSize().width;
+}
+
+function applyCamera() {
+  if (!svg || !camera) return;
+  camera.w = Math.min(maxWidth(), Math.max(MIN_VIEW_WIDTH, camera.w));
+  const height = camera.w / aspectRatio();
+  // Once the view is wider than the world there is nothing left to pan to, so
+  // it locks to centre; otherwise the edges stop at the board's edges.
+  const clamp = (centre, span, board) =>
+    span >= board ? board / 2 : Math.min(board - span / 2, Math.max(span / 2, centre));
+  camera.cx = clamp(camera.cx, camera.w, BOARD_WIDTH);
+  camera.cy = clamp(camera.cy, height, BOARD_HEIGHT);
+
+  svg.setAttribute(
+    "viewBox",
+    `${camera.cx - camera.w / 2} ${camera.cy - height / 2} ${camera.w} ${height}`
+  );
+
+  // Everything drawn in board units is multiplied by this so it holds a
+  // constant size on screen as you zoom. SIZE_REFERENCE is picked so k lands
+  // on 1 at the zoom the art was designed at; the cap keeps dots from merging
+  // into a blob when the whole board is on screen at once.
+  const next = Math.min(MAX_ZOOM_SCALE, Math.round(unitsPerPixel() * SIZE_REFERENCE * 100) / 100);
+  if (next !== zoomScale) {
+    zoomScale = next;
+    svg.style.setProperty("--lino-k", String(zoomScale));
+    scaleDots();
+  }
+}
+
+// Circle radii are geometry, not style, so they can't ride on the CSS variable
+// the way stroke widths and font sizes do.
+function scaleDots() {
+  dotEls.forEach(({ core, halo, shrine }) => {
+    core.setAttribute("r", (shrine ? 2.4 : 1.6) * zoomScale);
+    if (halo) halo.setAttribute("r", 3.6 * zoomScale);
+  });
+}
+
+// The match opens on the whole board, which is also the reset target.
+function resetCamera() {
+  camera = { cx: BOARD_WIDTH / 2, cy: BOARD_HEIGHT / 2, w: maxWidth() };
+  applyCamera();
+}
+
+// Zoom by `factor`, keeping the board point currently under (clientX, clientY)
+// pinned to that same screen position.
+function zoomAt(factor, clientX, clientY) {
+  if (!camera) return;
+  const rect = svg.getBoundingClientRect();
+  const anchor = toBoardCoords({ clientX, clientY });
+  const u = rect.width > 0 ? (clientX - rect.left) / rect.width - 0.5 : 0;
+  const v = rect.height > 0 ? (clientY - rect.top) / rect.height - 0.5 : 0;
+
+  camera.w = Math.min(maxWidth(), Math.max(MIN_VIEW_WIDTH, camera.w * factor));
+  const height = camera.w / aspectRatio();
+  camera.cx = anchor.x - u * camera.w;
+  camera.cy = anchor.y - v * height;
+  applyCamera();
+}
+
+function zoomCentre(factor) {
+  const rect = svg.getBoundingClientRect();
+  zoomAt(factor, rect.left + rect.width / 2, rect.top + rect.height / 2);
+}
+
 function evaluate(toId) {
   return evaluateBuild({
     dots: linoState.dots,
@@ -134,10 +245,11 @@ function clearSelection() {
 }
 
 // The dot nearest the cursor, but only if the cursor is basically on top of it.
+// The reach is a fixed number of *pixels*, so it feels the same at every zoom.
 function hoveredDot(cursor) {
   if (!cursor) return null;
   let best = null;
-  let bestDistance = HOVER_RADIUS;
+  let bestDistance = HOVER_PX * unitsPerPixel();
   linoState.dots.forEach((dot) => {
     if (dot.id === selectedDotId) return;
     const gap = Math.hypot(dot.x - cursor.x, dot.y - cursor.y);
@@ -167,12 +279,17 @@ function updatePreview(cursor) {
     previewLine.setAttribute("y2", cursor.y);
   }
 
-  dotEls.forEach(({ group, label }, dotId) => {
-    group.classList.toggle("selected", dotId === selectedDotId);
-    group.classList.remove("lit", "blocked", "doomed");
-    label.classList.add("hidden");
-  });
-  lineEls.forEach((el) => el.classList.remove("doomed"));
+  // Only the handful of elements we lit last time need clearing — sweeping
+  // every dot would mean thousands of class writes per mouse move.
+  highlighted.forEach((el) => el.classList.remove("lit", "blocked", "doomed", "selected"));
+  highlighted = [];
+  costLabel.classList.add("hidden");
+
+  const selected = selectedDotId ? dotEls.get(selectedDotId) : null;
+  if (selected) {
+    selected.group.classList.add("selected");
+    highlighted.push(selected.group);
+  }
 
   const target = live ? hoveredDot(cursor) : null;
   if (!target) return;
@@ -183,19 +300,24 @@ function updatePreview(cursor) {
   const el = dotEls.get(target.id);
   if (!el) return;
   el.group.classList.add("lit");
-  el.group.classList.toggle("blocked", !result.ok);
-  el.label.classList.remove("hidden");
+  if (!result.ok) el.group.classList.add("blocked");
+  highlighted.push(el.group);
+
+  costLabel.classList.remove("hidden");
+  costLabel.classList.toggle("blocked", !result.ok);
+  costLabel.setAttribute("x", target.x);
+  costLabel.setAttribute("y", target.y - (target.shrine ? 4.4 : 3.2) * zoomScale);
 
   if (result.reason === "self-cross") {
-    el.label.textContent = "blocked";
+    costLabel.textContent = "blocked";
   } else if (result.reason === "taken") {
-    el.label.textContent = "taken";
+    costLabel.textContent = "taken";
   } else if (result.reason === "brass") {
-    el.label.textContent = "brass wall";
+    costLabel.textContent = "brass wall";
   } else if (result.reason === "too-short") {
-    el.label.textContent = "too short";
+    costLabel.textContent = "too short";
   } else {
-    el.label.textContent = `$${result.cost}`;
+    costLabel.textContent = `$${result.cost}`;
   }
 
   // Show everything this build would take out, even if it's not yet
@@ -207,8 +329,18 @@ function updatePreview(cursor) {
       cutLineIds: result.destroys,
       settings: linoState.settings
     });
-    lineIds.forEach((lineId) => lineEls.get(lineId)?.classList.add("doomed"));
-    dotIds.forEach((dotId) => dotEls.get(dotId)?.group.classList.add("doomed"));
+    lineIds.forEach((lineId) => {
+      const line = lineEls.get(lineId);
+      if (!line) return;
+      line.classList.add("doomed");
+      highlighted.push(line);
+    });
+    dotIds.forEach((dotId) => {
+      const dot = dotEls.get(dotId);
+      if (!dot) return;
+      dot.group.classList.add("doomed");
+      highlighted.push(dot.group);
+    });
   }
 }
 
@@ -241,8 +373,9 @@ function buildBoard() {
 
   svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "lino-field");
-  svg.setAttribute("viewBox", `0 0 ${BOARD_WIDTH} ${BOARD_HEIGHT}`);
-  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  // The viewBox is the camera and is rewritten on every pan/zoom, so it is not
+  // set here; applyCamera() installs it once the element has a size.
+  svg.setAttribute("preserveAspectRatio", "none");
 
   linesLayer = document.createElementNS(SVG_NS, "g");
   svg.appendChild(linesLayer);
@@ -251,25 +384,19 @@ function buildBoard() {
   previewLine.setAttribute("class", `lino-preview ${PLAYER_CLASSES[mySeat()]} hidden`);
   svg.appendChild(previewLine);
 
+  const dotsLayer = document.createElementNS(SVG_NS, "g");
   dotEls = new Map();
+  highlighted = [];
   linoState.dots.forEach((dot) => {
     const group = document.createElementNS(SVG_NS, "g");
     group.setAttribute("class", `lino-dot${dot.shrine ? " shrine" : ""}`);
-    group.dataset.dotId = dot.id;
 
-    // Oversized invisible circle so dots are easy to click.
-    const hit = document.createElementNS(SVG_NS, "circle");
-    hit.setAttribute("class", "lino-hit");
-    hit.setAttribute("cx", dot.x);
-    hit.setAttribute("cy", dot.y);
-    hit.setAttribute("r", 4);
-
+    let halo = null;
     if (dot.shrine) {
-      const halo = document.createElementNS(SVG_NS, "circle");
+      halo = document.createElementNS(SVG_NS, "circle");
       halo.setAttribute("class", "lino-halo");
       halo.setAttribute("cx", dot.x);
       halo.setAttribute("cy", dot.y);
-      halo.setAttribute("r", 3.6);
       group.appendChild(halo);
     }
 
@@ -277,37 +404,123 @@ function buildBoard() {
     core.setAttribute("class", "lino-core");
     core.setAttribute("cx", dot.x);
     core.setAttribute("cy", dot.y);
-    core.setAttribute("r", dot.shrine ? 2.4 : 1.6);
 
-    const label = document.createElementNS(SVG_NS, "text");
-    label.setAttribute("class", "lino-cost hidden");
-    label.setAttribute("x", dot.x);
-    label.setAttribute("y", dot.y - (dot.shrine ? 4.4 : 3.2));
-
-    group.appendChild(hit);
     group.appendChild(core);
-    group.appendChild(label);
-    svg.appendChild(group);
-    dotEls.set(dot.id, { group, label });
+    dotsLayer.appendChild(group);
+    dotEls.set(dot.id, { group, core, halo, shrine: !!dot.shrine });
   });
+  svg.appendChild(dotsLayer);
 
-  svg.addEventListener("mousemove", (event) => {
-    if (!linoState) return;
-    updatePreview(toBoardCoords(event));
-  });
+  // One cost readout for the whole board, parked on whichever dot is hovered.
+  costLabel = document.createElementNS(SVG_NS, "text");
+  costLabel.setAttribute("class", "lino-cost hidden");
+  svg.appendChild(costLabel);
 
-  svg.addEventListener("mouseleave", () => updatePreview(null));
+  attachCameraControls();
 
+  // Hit-testing is by proximity, not by SVG hit areas: zoomed out the dots
+  // sit closer together than any sensible click target, and this way the dot
+  // you click is always exactly the one the preview lit up.
   svg.addEventListener("click", (event) => {
-    const dotGroup = event.target.closest?.(".lino-dot");
-    if (dotGroup) {
-      handleDotClick(dotGroup.dataset.dotId);
-    } else {
-      clearSelection();
+    if (panned) {
+      panned = false; // that click was the end of a drag
+      return;
     }
+    const target = hoveredDot(toBoardCoords(event));
+    if (target) handleDotClick(target.id);
+    else clearSelection();
   });
 
   els.gameBoard.appendChild(svg);
+  els.gameBoard.appendChild(buildZoomControls());
+
+  // Preserve the camera across rebuilds (destroyDots re-creates the board).
+  if (camera) applyCamera();
+  else resetCamera();
+  scaleDots();
+
+  resizeObserver?.disconnect();
+  resizeObserver = new ResizeObserver(() => applyCamera());
+  resizeObserver.observe(svg);
+}
+
+// Wheel to zoom (trackpad pinch arrives here as a ctrl-wheel), drag to pan.
+// A drag shorter than DRAG_SLOP_PX still counts as a click so tapping a dot
+// never gets swallowed.
+function attachCameraControls() {
+  svg.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      const step = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      zoomAt(Math.exp(step * ZOOM_SENSITIVITY), event.clientX, event.clientY);
+      updatePreview(lastCursor);
+    },
+    { passive: false }
+  );
+
+  svg.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 && event.button !== 1) return;
+    panned = false;
+    panState = { pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY, moved: 0 };
+    svg.setPointerCapture(event.pointerId);
+  });
+
+  svg.addEventListener("pointermove", (event) => {
+    if (!linoState) return;
+    if (panState && panState.pointerId === event.pointerId) {
+      const dx = event.clientX - panState.lastX;
+      const dy = event.clientY - panState.lastY;
+      panState.lastX = event.clientX;
+      panState.lastY = event.clientY;
+      panState.moved += Math.hypot(dx, dy);
+      if (panState.moved > DRAG_SLOP_PX) {
+        const unit = unitsPerPixel();
+        camera.cx -= dx * unit;
+        camera.cy -= dy * unit;
+        svg.classList.add("panning");
+        applyCamera();
+        // Fall through: the cursor is over a different board point now, so the
+        // preview has to be re-read against the new camera or it drifts.
+      }
+    }
+    updatePreview(toBoardCoords(event));
+  });
+
+  // Only a real pointerup arms the click guard: a cancelled gesture never
+  // produces a click, so the flag would linger and eat the next real one.
+  const endPan = (event, dragged) => {
+    if (!panState || panState.pointerId !== event.pointerId) return;
+    panned = dragged && panState.moved > DRAG_SLOP_PX;
+    svg.classList.remove("panning");
+    svg.releasePointerCapture?.(event.pointerId);
+    panState = null;
+  };
+  svg.addEventListener("pointerup", (event) => endPan(event, true));
+  svg.addEventListener("pointercancel", (event) => endPan(event, false));
+
+  svg.addEventListener("pointerleave", () => {
+    if (!panState) updatePreview(null);
+  });
+}
+
+function buildZoomControls() {
+  const box = document.createElement("div");
+  box.className = "lino-zoom";
+  const buttons = [
+    { label: "+", title: "Zoom in", run: () => zoomCentre(1 / 1.35) },
+    { label: "−", title: "Zoom out", run: () => zoomCentre(1.35) },
+    { label: "⌂", title: "Reset view", run: () => resetCamera() }
+  ];
+  buttons.forEach(({ label, title, run }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.title = title;
+    button.addEventListener("click", run);
+    box.appendChild(button);
+  });
+  return box;
 }
 
 function renderLines() {
@@ -379,15 +592,27 @@ function buildHud() {
   renderHud();
 }
 
+// Two stats per player: money in the bank (whole dollars, always rounded
+// down) and production, the dollars per second that money is growing by.
+function statsFor(seat) {
+  const production =
+    linoState.production?.[seat] ??
+    productionFor(linoState.lines, seat, linoState.settings);
+  return {
+    money: displayMoney(linoState.money[seat]),
+    // Up to two decimals, without the trailing zeros ("1", "2.4", "0.65").
+    production: String(Math.round(production * 100) / 100)
+  };
+}
+
 function renderHud() {
   if (!hud || !linoState) return;
   const seat = mySeat();
-  const groups = linoState.groups || [0, 0];
-  const per = trimNum(linoState.settings?.groupIncomeSecs ?? DEFAULT_SETTINGS.groupIncomeSecs);
-  hud.mine.innerHTML = `<strong>You $${linoState.money[seat]}</strong><small>group ${groups[seat]} · +${groups[seat]}/${per}s</small>`;
+  const mine = statsFor(seat);
+  hud.mine.innerHTML = `<strong>You $${mine.money}</strong><small>+$${mine.production}/s</small>`;
   if (hud.theirs) {
-    const foe = 1 - seat;
-    hud.theirs.innerHTML = `<strong>Opponent $${linoState.money[foe]}</strong><small>group ${groups[foe]} · +${groups[foe]}/${per}s</small>`;
+    const foe = statsFor(1 - seat);
+    hud.theirs.innerHTML = `<strong>Opponent $${foe.money}</strong><small>+$${foe.production}/s</small>`;
   }
 
   if (isOver()) {
@@ -524,10 +749,11 @@ els.linoSetup.addEventListener("click", (event) => {
   onReady(options, choice === "queue" || choice === "none" ? null : Number(choice));
 });
 
-socket.on("lino_tick", ({ money, groups } = {}) => {
+socket.on("lino_tick", ({ money, groups, production } = {}) => {
   if (!isActive() || !linoState || !money) return;
   linoState.money = money;
   if (groups) linoState.groups = groups;
+  if (production) linoState.production = production;
   renderHud();
   // Affordability may have just changed — refresh the hovered cost label.
   updatePreview(lastCursor);
@@ -574,11 +800,19 @@ export const lino = {
   },
 
   clearState() {
+    resizeObserver?.disconnect();
+    resizeObserver = null;
     linoState = null;
     svg = null;
     selectedDotId = null;
     lastCursor = null;
     hud = null;
+    camera = null; // next match starts on the default view again
+    panState = null;
+    panned = false;
+    zoomScale = 1;
+    costLabel = null;
+    highlighted = [];
     dotEls = new Map();
     lineEls = new Map();
   },

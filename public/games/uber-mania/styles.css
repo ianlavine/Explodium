@@ -467,68 +467,96 @@
   color: #f0a8a2;
 }
 
-/* ---- Landmark mode: the color track in the player panel -----------------
-   One row per color: pips for how many of its four I hold, then a dot per
-   place already claimed (2 points for the first player there, 1 for the
-   second). Hovering a row lights that color's locations on the board. */
-.um-colors {
+/* ---- Landmark mode: the public color prizes ----------------------------
+   Seven circles, one per color, carrying the best place still on offer: 2
+   until somebody claims it, then 1, then blank. How far along anyone is
+   toward three of four is deliberately NOT shown — read the board. */
+.um-prizes {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: flex-end;
-  margin-bottom: 2px;
-}
-
-.um-color-row {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: rgba(20, 24, 31, 0.72);
-  border-left: 3px solid var(--c, #888);
-  cursor: default;
-}
-
-.um-color-row:hover {
-  background: rgba(20, 24, 31, 0.95);
-}
-
-.um-color-pips {
-  display: flex;
-  gap: 2px;
-}
-
-.um-color-pip {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  border: 1px solid var(--c, #888);
-  background: transparent;
-}
-
-.um-color-pip-on {
-  background: var(--c, #888);
-}
-
-.um-color-places {
-  display: flex;
-  gap: 2px;
-  min-width: 26px;
+  gap: 4px;
   justify-content: flex-end;
+  margin-bottom: 3px;
 }
 
-.um-color-claim {
+.um-prize {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 12px;
-  height: 12px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  border: 1px solid rgba(18, 22, 28, 0.85);
+  border: 1.5px solid rgba(18, 22, 28, 0.85);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
   color: #12161c;
-  font-size: 8px;
+  font-size: 10.5px;
   font-weight: 900;
+  cursor: default;
+}
+
+.um-prize-gone {
+  opacity: 0.25;
+  box-shadow: none;
+}
+
+/* ---- Landmark mode: the hidden-information scoreboard -------------------
+   A chip is just a color dot, a name, and a card back if that player is
+   sitting on a face-down stack. Everything else waits in the hover panel. */
+.um-score-name {
+  font-size: 11.5px;
+  font-weight: 800;
+}
+
+.um-score-hover {
+  position: relative;
+}
+
+.um-peek {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: none;
+  min-width: 190px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(16, 20, 27, 0.97);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  color: #e8ecf3;
+  text-align: left;
+  cursor: default;
+}
+
+.um-score-hover:hover .um-peek,
+.um-score-hover:focus-within .um-peek {
+  display: block;
+}
+
+.um-peek-head {
+  margin-bottom: 5px;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.um-peek-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.um-peek-val {
+  font-weight: 800;
+  opacity: 0.92;
+}
+
+.um-peek-swatches {
+  display: inline-flex;
+  gap: 2px;
 }
 
 /* Day counter in the clock's day/night pill. */
@@ -1194,4 +1222,16 @@ body.um-mode .game-footer .ghost-btn {
 
 .um-fun-dice .tm-die-rolling {
   animation: tm-die-shake-big 0.13s linear infinite;
+}
+
+/* A face-down pile is a liability in landmark mode — every card still in it
+   when a night ends costs a point, so it wears a warning edge. */
+.um-ride-card.um-ride-urgent {
+  border-color: #d4915a;
+  box-shadow: 0 0 0 1px rgba(212, 145, 90, 0.35), 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* Super calm parked the marker past the end of the bar: nothing can fine it. */
+.um-stress-marker.um-stress-immune {
+  box-shadow: 0 0 0 2px rgba(127, 206, 142, 0.9), 0 2px 6px rgba(0, 0, 0, 0.5);
 }

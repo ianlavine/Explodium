@@ -1,22 +1,25 @@
 // Lino: real-time race to link two shrines. Both players build lines on a
 // shared scatter of dots; the first to hold both shrines in one connected
-// group wins. Income is flat cash plus the size of your largest group, so
-// consolidating your network is the economy. Lines may be cut by building a
-// strictly longer line across them, paying for both.
+// group wins. Income is continuous: your largest group pays $0.20 per dot per
+// second (never less than $1/s), so consolidating your network is the economy.
+// Lines may be cut by building a strictly longer line across them, paying for
+// both.
 //
 // Rules/geometry live in public/games/lino/rules.js and are shared verbatim
 // with the client, so previewed costs always match what the server enforces.
 import {
   BOARD_WIDTH,
   BOARD_HEIGHT,
-  SHRINE_A_ID,
-  SHRINE_B_ID,
+  SHRINE_POSITIONS,
   distance,
   lineCost,
   evaluateBuild,
   resolveDestruction,
   sanitizeSettings,
   largestGroupSize,
+  productionFor,
+  quantizeMoney,
+  MONEY_STEP,
   connectsShrines
 } from "../../../public/games/lino/rules.js";
 import { createLinoBot, normalizeBotLevel, LINO_BOT_ID } from "./bot.js";
@@ -24,34 +27,54 @@ import { createLinoBot, normalizeBotLevel, LINO_BOT_ID } from "./bot.js";
 const MARGIN = 6;
 const MIN_SPACING = 8; // rejection-sampling distance between dots
 
-// Income clocks are per-match settings now; the room runs one fast master
-// tick and pays each stream whenever its own period has elapsed.
+// One income stream, paid continuously: production dollars per second, moved
+// into the bank in whole $0.20 steps so stored money stays exactly divisible.
 const MASTER_TICK_MS = 100;
-const BASE_INCOME = 1;
 const STARTING_MONEY = 15;
-
-// Shrines sit on opposite edges, level with each other: both players race for
-// the same pair, so the map is identical for each of them.
-const SHRINE_POSITIONS = [
-  { id: SHRINE_A_ID, x: 10, y: BOARD_HEIGHT / 2 },
-  { id: SHRINE_B_ID, x: BOARD_WIDTH - 10, y: BOARD_HEIGHT / 2 }
-];
 
 function generateDots(count) {
   const dots = SHRINE_POSITIONS.map((shrine) => ({ ...shrine, shrine: true }));
   let placed = 0;
   let attempts = 0;
-  while (placed < count && attempts < 8000) {
+  // Dart-throwing jams well before a full packing, so the budget scales with
+  // the request rather than being a flat cap tuned to the old small board.
+  const maxAttempts = count * 200;
+
+  // Spacing is checked against a MIN_SPACING-sized grid, so each dart looks at
+  // its nine neighbouring cells instead of the whole (now much longer) list.
+  const grid = new Map(); // "col,row" -> dots in that cell
+  const cellOf = (x, y) => `${Math.floor(x / MIN_SPACING)},${Math.floor(y / MIN_SPACING)}`;
+  const tooClose = (x, y) => {
+    const col = Math.floor(x / MIN_SPACING);
+    const row = Math.floor(y / MIN_SPACING);
+    for (let dc = -1; dc <= 1; dc += 1) {
+      for (let dr = -1; dr <= 1; dr += 1) {
+        const bucket = grid.get(`${col + dc},${row + dr}`);
+        if (bucket?.some((dot) => distance(dot, { x, y }) < MIN_SPACING)) return true;
+      }
+    }
+    return false;
+  };
+  const index = (dot) => {
+    const key = cellOf(dot.x, dot.y);
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(dot);
+  };
+  dots.forEach(index);
+
+  while (placed < count && attempts < maxAttempts) {
     attempts += 1;
     const x = MARGIN + Math.random() * (BOARD_WIDTH - MARGIN * 2);
     const y = MARGIN + Math.random() * (BOARD_HEIGHT - MARGIN * 2);
-    if (dots.some((dot) => distance(dot, { x, y }) < MIN_SPACING)) continue;
-    dots.push({
+    if (tooClose(x, y)) continue;
+    const dot = {
       id: `d${placed}`,
       x: Math.round(x * 10) / 10,
       y: Math.round(y * 10) / 10,
       shrine: false
-    });
+    };
+    dots.push(dot);
+    index(dot);
     placed += 1;
   }
   return dots;
@@ -89,6 +112,11 @@ export function createLinoGame({ io, rooms }) {
     return [largestGroupSize(room.lino.lines, 0), largestGroupSize(room.lino.lines, 1)];
   }
 
+  function production(room) {
+    const { lines, settings } = room.lino;
+    return [productionFor(lines, 0, settings), productionFor(lines, 1, settings)];
+  }
+
   // The one path by which a line ever gets built, for humans and the bot
   // alike. Returns whether the build actually happened.
   function applyBuild(roomId, room, seat, fromId, toId) {
@@ -104,7 +132,7 @@ export function createLinoGame({ io, rooms }) {
     });
     if (!result.ok) return false;
 
-    room.lino.money[seat] -= result.cost;
+    room.lino.money[seat] = quantizeMoney(room.lino.money[seat] - result.cost);
     if (result.destroys.length) {
       // With destroyDots on this also takes out the end dots and the lines
       // hanging off them. The new line can never be caught: a line that
@@ -153,6 +181,7 @@ export function createLinoGame({ io, rooms }) {
         lines: room.lino.lines,
         money: room.lino.money,
         groups: groupSizes(room),
+        production: production(room),
         winner: room.lino.winner,
         settings: room.lino.settings
       },
@@ -173,10 +202,11 @@ export function createLinoGame({ io, rooms }) {
     // re-checks the room each tick and shuts itself down when it's gone.
     onRoomCreated(roomId) {
       stopIncome(roomId);
-      // Two independent income clocks (both per-match settings) run off one
-      // master tick; an emit goes out only on ticks where money moved.
-      let baseAcc = 0;
-      let groupAcc = 0;
+      // Income is continuous — production dollars per second — but the bank
+      // only ever moves in whole MONEY_STEP units, so each seat carries the
+      // sub-step remainder here rather than letting it into `money`. That is
+      // what keeps stored money exactly divisible by $0.20.
+      const remainder = [0, 0];
       incomeTimers.set(
         roomId,
         setInterval(() => {
@@ -189,34 +219,26 @@ export function createLinoGame({ io, rooms }) {
             stopIncome(roomId);
             return;
           }
-          const settings = room.lino.settings;
-          const baseMs = Math.max(MASTER_TICK_MS, settings.baseIncomeSecs * 1000);
-          const groupMs = Math.max(MASTER_TICK_MS, settings.groupIncomeSecs * 1000);
+          const rates = production(room);
           let paid = false;
 
-          baseAcc += MASTER_TICK_MS;
-          if (baseAcc >= baseMs) {
-            const times = Math.floor(baseAcc / baseMs);
-            baseAcc -= times * baseMs;
-            room.lino.money[0] += BASE_INCOME * times;
-            room.lino.money[1] += BASE_INCOME * times;
-            paid = true;
-          }
-
-          groupAcc += MASTER_TICK_MS;
-          if (groupAcc >= groupMs) {
-            const times = Math.floor(groupAcc / groupMs);
-            groupAcc -= times * groupMs;
-            const groups = groupSizes(room);
-            room.lino.money[0] += groups[0] * times;
-            room.lino.money[1] += groups[1] * times;
+          for (let seat = 0; seat < 2; seat += 1) {
+            // Count in whole steps: how many $0.20 units this tick earned.
+            remainder[seat] += (rates[seat] * MASTER_TICK_MS) / 1000 / MONEY_STEP;
+            const steps = Math.floor(remainder[seat] + 1e-9);
+            if (steps <= 0) continue;
+            remainder[seat] -= steps;
+            room.lino.money[seat] = quantizeMoney(
+              room.lino.money[seat] + steps * MONEY_STEP
+            );
             paid = true;
           }
 
           if (paid) {
             io.to(roomId).emit("lino_tick", {
               money: room.lino.money,
-              groups: groupSizes(room)
+              groups: groupSizes(room),
+              production: rates
             });
           }
         }, MASTER_TICK_MS)

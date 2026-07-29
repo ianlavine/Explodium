@@ -2,24 +2,60 @@
 // Imported by BOTH the server (authoritative validation) and the client
 // (cost preview) so the two can never disagree about what's legal.
 
-export const BOARD_WIDTH = 220;
-export const BOARD_HEIGHT = 120;
+// The whole world. The camera opens on all of it and zooms in from there.
+export const BOARD_WIDTH = 660;
+export const BOARD_HEIGHT = 360;
 
-// Tuned together with the board size: the shrine gap is 200 units, so at 0.7
-// a direct span still costs ~$140 — the same as on the old 160x100 board.
-// Bigger screen, same economy.
 export const COST_PER_UNIT = 0.7; // dollars per board unit of line length
 export const SHRINE_A_ID = "shrine-a";
 export const SHRINE_B_ID = "shrine-b";
 
-// Per-match rules, chosen in the pre-game setup screen. All default off, so
-// the plain game is: cut anything you can pay for, keep off dots the enemy
-// holds, don't weave through yourself, and cutting removes only the line.
+// A quarter and three quarters of the way across, level with each other: the
+// same 330-unit race for both players, with board on every side of it. At the
+// default cost dial (30) a direct span costs ~$139.
+export const SHRINE_POSITIONS = [
+  { id: SHRINE_A_ID, x: BOARD_WIDTH * 0.25, y: BOARD_HEIGHT / 2 },
+  { id: SHRINE_B_ID, x: BOARD_WIDTH * 0.75, y: BOARD_HEIGHT / 2 }
+];
+
+// Money is stored as a decimal but is always an exact multiple of $0.20 — the
+// income quantum. Every payment moves whole steps, so the stored value can be
+// compared and displayed without float noise creeping in.
+export const MONEY_STEP = 0.2;
+const MONEY_UNITS = Math.round(1 / MONEY_STEP); // fifths of a dollar
+
+// Snap to the nearest $0.20. Dividing an integer count of fifths is exact
+// enough that repeated addition never drifts.
+export function quantizeMoney(value) {
+  return Math.round(value * MONEY_UNITS) / MONEY_UNITS;
+}
+
+// What the player sees: whole dollars, always rounded down.
+export function displayMoney(value) {
+  return Math.floor(quantizeMoney(value));
+}
+
+// The floor everyone earns before any network exists.
+export const BASE_PRODUCTION = 1;
+
+// A player's income per second. Every dot in their largest connected group
+// adds `incomePerNode` ON TOP of the base — the base is a floor to start from,
+// not a threshold the first few dots have to climb back up to.
+export function productionFor(lines, seat, settings) {
+  const per = settings?.incomePerNode ?? DEFAULT_SETTINGS.incomePerNode;
+  const raw = BASE_PRODUCTION + largestGroupSize(lines, seat) * per;
+  return Math.round(raw * 100) / 100;
+}
+
+// Per-match rules, chosen in the pre-game setup screen. Every rule toggle is
+// off by default except the last two — the plain game is: cut anything you can
+// pay for, keep off dots the enemy holds, don't weave through yourself, and
+// cutting removes only the line, with strengths visible and kills compounding.
 export const DEFAULT_SETTINGS = {
   // A line that destroys another turns to brass: permanently indestructible,
   // and therefore an uncrossable wall. Cuts can't loop — every battle closes
-  // a corridor for good. On by default; it's the game's anti-stalemate.
-  brassPipes: true,
+  // a corridor for good.
+  brassPipes: false,
   // A cutting line must be strictly longer than the line it destroys.
   requireLonger: false,
   // You may connect to a dot the opponent already has a line on.
@@ -30,30 +66,28 @@ export const DEFAULT_SETTINGS = {
   // them. Deliberately one level deep — no further cascade.
   destroyDots: false,
   // Draw each line's strength (the price to cut it) as a number along it.
-  showStrength: false,
+  showStrength: true,
   // A cutting line absorbs the strength of everything it kills: its stored
   // cut-cost becomes what its builder paid (own length + victims' strengths),
   // so a killer grows steadily harder to cut — kills compound without limit.
-  consumption: false,
+  consumption: true,
   // --- economy dials (sliders in the setup screen) ---
-  // Line price knob: 50 keeps the baseline COST_PER_UNIT, 100 doubles it,
-  // 0 makes every line the $1 minimum.
-  costScale: 50,
-  // $1 of base income every this many seconds.
-  baseIncomeSecs: 0.5,
-  // The largest group pays its size every this many seconds.
-  groupIncomeSecs: 2,
-  // Dots scattered on the board (plus the two shrines).
-  dotCount: 65
+  // Line price knob: 50 is the baseline COST_PER_UNIT, 100 doubles it, 0 makes
+  // every line the $1 minimum. At 30 the 330-unit shrine span costs ~$139.
+  costScale: 30,
+  // Dollars per second added per dot in your largest group, on top of the
+  // BASE_PRODUCTION floor.
+  incomePerNode: 0.2,
+  // Dots scattered over the whole board (plus the two shrines).
+  dotCount: 200
 };
 
 // Slider bounds, shared by the setup UI and server-side sanitizing.
 // dotCount tops out where MIN_SPACING still lets the sampler place them all.
 export const SETTING_RANGES = {
   costScale: { min: 0, max: 100, step: 1 },
-  baseIncomeSecs: { min: 0.1, max: 5, step: 0.1 },
-  groupIncomeSecs: { min: 0.1, max: 5, step: 0.1 },
-  dotCount: { min: 10, max: 110, step: 5 }
+  incomePerNode: { min: 0.05, max: 1, step: 0.05 },
+  dotCount: { min: 100, max: 700, step: 25 }
 };
 
 // Client input is untrusted: keep known boolean keys and clamp the numbers.
@@ -263,7 +297,7 @@ export function playerComponents(lines, seat) {
   return components;
 }
 
-// This is the player's periodic income: the size of their biggest group.
+// The number that drives income — see productionFor.
 export function largestGroupSize(lines, seat) {
   return playerComponents(lines, seat).reduce(
     (best, component) => Math.max(best, component.length),

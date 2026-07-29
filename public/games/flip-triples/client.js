@@ -368,7 +368,242 @@ function renderFlipTriplesScore() {
     replayBtn.className = "primary-btn flip-replay-btn";
     replayBtn.textContent = "Play again";
     els.hand.appendChild(replayBtn);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "flip-save-btn";
+    saveBtn.textContent = "Save game";
+    els.hand.appendChild(saveBtn);
+
+    const loadBtn = document.createElement("button");
+    loadBtn.type = "button";
+    loadBtn.className = "flip-save-btn flip-load-btn";
+    loadBtn.textContent = "Load saved game…";
+    els.hand.appendChild(loadBtn);
+
+    if (flipLoadError) {
+      const error = document.createElement("p");
+      error.className = "flip-load-error";
+      error.textContent = flipLoadError;
+      els.hand.appendChild(error);
+    }
   }
+}
+
+// --- Game export ------------------------------------------------------------
+// A saved game holds three things: the deal it started from, the color pick
+// (who chose and what they took), and the final position. That is enough to
+// re-run the deal through the solver offline and see where the result came from.
+
+const FLIP_SHAPE_CHAR = {
+  "red-x": "R",
+  "blue-o": "B",
+  neutral: "N",
+  purple: "P",
+  yellow: "Y",
+  hopper: "H",
+  "red-ring": "r",
+  "blue-ring": "b"
+};
+
+const FLIP_BOT_LEVEL_NAMES = {
+  0: "Baby bot",
+  1: "Level 1 bot",
+  2: "Level 2 bot",
+  3: "Level 3 bot",
+  4: "God bot"
+};
+
+function flipShapesToString(shapeRows) {
+  return shapeRows.map((row) => row.map((shape) => FLIP_SHAPE_CHAR[shape] ?? "?").join("")).join("");
+}
+
+function buildFlipSaveRecord() {
+  const state = flipTriplesState;
+  if (!state || !state.gameOver) return null;
+  const preset = flipBoardPreset(state.settings?.boardSize);
+  const startShapes = state.startShapes ?? state.board.map((row) => row.map((p) => p.shape));
+  const finalShapes = state.board.map((row) => row.map((p) => p.shape));
+  const finalFlipped = state.board.map((row) => row.map((p) => p.flipped === true));
+
+  const mySeat = app.myPlayerIndex ?? null;
+  // Against the bot the human is whichever seat isn't the bot's (seat 1).
+  const opponentSeat = mySeat == null ? null : 1 - mySeat;
+  const picker = state.colorPicker;
+  const colorPick =
+    picker == null || !state.seatColors
+      ? null
+      : {
+          pickerSeat: picker,
+          pickerIsMe: mySeat != null && picker === mySeat,
+          pickedColor: state.seatColors[picker],
+          firstMoverSeat: state.firstMover,
+          firstMoverIsMe: mySeat != null && state.firstMover === mySeat
+        };
+
+  return {
+    game: "flip-triples",
+    formatVersion: 1,
+    savedAt: new Date().toISOString(),
+    settings: state.settings ?? null,
+    board: { rows: preset.rows, cols: preset.cols },
+    // Shape letters: R red ×, B blue ○, N neutral, P purple, Y yellow,
+    // H hopper, r red ring, b blue ring — board read left-to-right, top-to-bottom.
+    players: {
+      mySeat,
+      myColor: mySeat == null ? null : state.seatColors?.[mySeat] ?? null,
+      opponent: app.isBotGame
+        ? {
+            seat: opponentSeat,
+            type: "bot",
+            level: app.botLevel ?? null,
+            name: FLIP_BOT_LEVEL_NAMES[app.botLevel] ?? null
+          }
+        : { seat: opponentSeat, type: app.isSoloGame ? "self" : "human" },
+      seatColors: state.seatColors ?? null
+    },
+    colorPick,
+    start: { shapes: startShapes, string: flipShapesToString(startShapes) },
+    final: {
+      shapes: finalShapes,
+      string: flipShapesToString(finalShapes),
+      flipped: finalFlipped,
+      phase: state.phase
+    },
+    result: {
+      winner: state.winner ?? null,
+      scores: state.scores ?? null,
+      phaseScores: state.phaseScores ?? null,
+      // null for a tie, or when there is no seat/color to judge from (solo play).
+      iWon:
+        mySeat != null && state.seatColors && state.winner && state.winner !== "tie"
+          ? state.winner === state.seatColors[mySeat]
+          : null
+    }
+  };
+}
+
+// --- Game import ------------------------------------------------------------
+// The mirror of the export: a saved file can be loaded from the setup screen (or
+// the game-over panel) to deal its exact opening board again, with the colors it
+// was played with, so a game can be replayed and studied move by move.
+
+const FLIP_CHAR_SHAPE = Object.fromEntries(
+  Object.entries(FLIP_SHAPE_CHAR).map(([shape, char]) => [char, shape])
+);
+
+let flipLoadError = "";
+
+const flipFileInput = document.createElement("input");
+flipFileInput.type = "file";
+flipFileInput.accept = "application/json,.json";
+flipFileInput.style.display = "none";
+document.body.appendChild(flipFileInput);
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
+
+// Prefer the structured rows; fall back to the compact letter string so a
+// hand-written file only needs `board` + `start.string`.
+function flipShapesFromRecord(record) {
+  const shapes = record?.start?.shapes;
+  if (Array.isArray(shapes)) return shapes;
+  const string = record?.start?.string;
+  const rows = record?.board?.rows;
+  const cols = record?.board?.cols;
+  if (typeof string !== "string" || !Number.isInteger(rows) || !Number.isInteger(cols)) return null;
+  if (string.length !== rows * cols) return null;
+  const out = [];
+  for (let row = 0; row < rows; row += 1) {
+    out.push([...string.slice(row * cols, (row + 1) * cols)].map((char) => FLIP_CHAR_SHAPE[char]));
+  }
+  return out;
+}
+
+// Throws an Error whose message is shown to the player.
+function flipOptionsFromSave(record) {
+  if (!record || record.game !== "flip-triples") throw new Error("Not a Flip Triples save file.");
+  const shapes = flipShapesFromRecord(record);
+  if (!Array.isArray(shapes) || shapes.length === 0) throw new Error("File has no starting board.");
+  const rows = shapes.length;
+  const cols = Array.isArray(shapes[0]) ? shapes[0].length : 0;
+  const wellFormed = shapes.every(
+    (row) => Array.isArray(row) && row.length === cols && row.every((shape) => FLIP_SHAPE_CHAR[shape])
+  );
+  if (!wellFormed) throw new Error("Starting board is malformed.");
+  const boardSize =
+    rows === 6 && cols === 4 ? "4x6" : rows === 5 && cols === 5 ? "5x5" : null;
+  if (!boardSize) throw new Error(`Unsupported board size (${rows}×${cols}).`);
+
+  const options = { ...(record.settings ?? {}), boardSize, startShapes: shapes };
+
+  // Replay the colors this game was played with, mapped onto my current seat, so
+  // the color pick is skipped and the rematch is the same game.
+  const myColor = record.players?.myColor;
+  if (myColor === "red" || myColor === "blue") {
+    const mySeat = app.myPlayerIndex ?? 0;
+    const seatColors = [null, null];
+    seatColors[mySeat] = myColor;
+    seatColors[1 - mySeat] = myColor === "red" ? "blue" : "red";
+    options.seatColors = seatColors;
+    const pick = record.colorPick ?? {};
+    options.colorPicker = pick.pickerIsMe === false ? 1 - mySeat : mySeat;
+    options.firstMover =
+      pick.firstMoverIsMe === true
+        ? mySeat
+        : pick.firstMoverIsMe === false
+        ? 1 - mySeat
+        : 1 - options.colorPicker;
+  }
+  return options;
+}
+
+function showFlipLoadError(message) {
+  flipLoadError = message;
+  if (flipTriplesState?.setup) renderFlipSetup();
+  else if (flipTriplesState?.gameOver) renderFlipTriplesScore();
+}
+
+function loadFlipSaveFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let options;
+    try {
+      options = flipOptionsFromSave(JSON.parse(String(reader.result)));
+    } catch (err) {
+      showFlipLoadError(err instanceof SyntaxError ? "That file isn't valid JSON." : err.message);
+      return;
+    }
+    flipLoadError = "";
+    socket.emit("flip_triples_start", { roomId: app.roomId, options });
+  };
+  reader.onerror = () => showFlipLoadError("Could not read that file.");
+  reader.readAsText(file);
+}
+
+flipFileInput.addEventListener("change", () => {
+  const file = flipFileInput.files?.[0];
+  flipFileInput.value = ""; // so re-picking the same file fires another change
+  if (!file || !isActive() || !app.roomId) return;
+  loadFlipSaveFile(file);
+});
+
+function saveFlipGame() {
+  const record = buildFlipSaveRecord();
+  if (!record) return;
+  const stamp = record.savedAt.replace(/[:.]/g, "-").slice(0, 19);
+  const outcome =
+    record.result.iWon === true ? "win" : record.result.iWon === false ? "loss" : record.result.winner ?? "game";
+  const blob = new Blob([JSON.stringify(record, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `flip-triples-${stamp}-${outcome}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function getFlipWinnerText() {
@@ -422,6 +657,9 @@ function renderFlipSetup() {
         </button>
       </div>
       <button type="button" class="primary-btn flip-start-btn">Start game</button>
+      <button type="button" class="flip-load-btn">Load saved game…</button>
+      <small class="flip-load-hint">Deals the exact opening board from a saved .json instead of a random one</small>
+      ${flipLoadError ? `<p class="flip-load-error">${escapeHtml(flipLoadError)}</p>` : ""}
     </div>
   `;
 }
@@ -554,6 +792,15 @@ els.hand.addEventListener("click", (event) => {
   if (!isActive()) return;
   const target = event.target;
   if (!(target instanceof Element)) return;
+  if (target.closest(".flip-load-btn")) {
+    flipFileInput.click();
+    return;
+  }
+  const saveBtn = target.closest(".flip-save-btn");
+  if (saveBtn && flipTriplesState?.gameOver) {
+    saveFlipGame();
+    return;
+  }
   const replayBtn = target.closest(".flip-replay-btn");
   if (replayBtn && app.roomId && flipTriplesState?.gameOver) {
     // Same settings, fresh shuffle — the server re-randomizes the layout.
@@ -620,6 +867,12 @@ flipSetup.addEventListener("click", (event) => {
     return;
   }
 
+  if (target.closest(".flip-load-btn")) {
+    if (!app.roomId) return;
+    flipFileInput.click();
+    return;
+  }
+
   const startBtn = target.closest(".flip-start-btn");
   if (startBtn) {
     if (!app.roomId) return;
@@ -644,6 +897,7 @@ export const flipTriples = {
 
   onMatchFound() {
     flipSetupDraft = null;
+    flipLoadError = "";
     flipPhase2Pressed = false;
     lastTransitionId = 0;
     lastAnimatedMoveId = 0;
@@ -775,6 +1029,7 @@ export const flipTriples = {
 
   onExit() {
     flipTriplesState = null;
+    flipLoadError = "";
     selectedFlipPiece = null;
     lastAnimatedMoveId = 0;
     flipSwapBusy = false;

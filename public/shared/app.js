@@ -120,6 +120,7 @@ function startSoloGame(selected, options = {}) {
   app.activeGameOptions = options;
   app.isSoloGame = true;
   app.isBotGame = false;
+  app.botLevel = null;
   els.lobbyGameName.textContent = selected.name;
   els.gameTitle.textContent = selected.name;
   resetGameUi();
@@ -137,6 +138,7 @@ function startBotGame(selected, botLevel, options = {}) {
   app.activeGameOptions = options;
   app.isSoloGame = false;
   app.isBotGame = true;
+  app.botLevel = botLevel;
   els.lobbyGameName.textContent = selected.name;
   els.gameTitle.textContent = selected.name;
   resetGameUi();
@@ -227,6 +229,7 @@ function startQueue(selected, options = {}) {
   app.activeGameOptions = options;
   app.isSoloGame = false;
   app.isBotGame = false;
+  app.botLevel = null;
   els.lobbyGameName.textContent = selected.name;
   els.gameTitle.textContent = selected.name;
   resetGameUi();
@@ -256,6 +259,8 @@ els.exitButton.addEventListener("click", () => {
   app.myPlayerIndex = null;
   games.forEach((game) => game.onExit?.());
   app.isSoloGame = false;
+  app.isBotGame = false;
+  app.botLevel = null;
   app.activeGameOptions = {};
   resetGameUi();
   setScreen("home");

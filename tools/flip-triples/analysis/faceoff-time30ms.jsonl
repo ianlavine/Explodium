@@ -1,4 +1,0 @@
-{"seed":300000,"newSide":1,"outcome":"new","margin":0.6,"plies":16,"solvedFromPly":10,"mode":"time","param":30}
-{"seed":300000,"newSide":0,"outcome":"new","margin":0.4,"plies":18,"solvedFromPly":11,"mode":"time","param":30}
-{"seed":300001,"newSide":1,"outcome":"new","margin":0.6,"plies":18,"solvedFromPly":10,"mode":"time","param":30}
-{"seed":300001,"newSide":0,"outcome":"new","margin":0.8,"plies":18,"solvedFromPly":11,"mode":"time","param":30}

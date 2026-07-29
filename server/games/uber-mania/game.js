@@ -87,17 +87,21 @@ const locOpen = (settings, b, t) =>
 const UPGRADE_WINDOW_COUNT = 6;
 const windowOf = (t) => Math.floor(((t + 23) % 24) / 4);
 
-// Landmark mode's four named upgrade windows — one per upgrade location, and
-// each one only usable inside its own hours. (Keep in sync with the client.)
+// Landmark mode's four named upgrade windows — one per upgrade location, each
+// only usable inside its own hours. They tile the whole clock in six-hour
+// blocks starting at 7am, so Evening wraps midnight. (Keep in sync with the
+// client.)
 const LANDMARK_WINDOWS = [
-  { id: "morning", name: "Morning", label: "8–11am", from: 8, to: 11 },
-  { id: "afternoon", name: "Afternoon", label: "1–4pm", from: 13, to: 16 },
-  { id: "evening", name: "Evening", label: "7–10pm", from: 19, to: 22 },
-  { id: "night", name: "Night", label: "2–5am", from: 2, to: 5 }
+  { id: "morning", name: "Morning", label: "7am–noon", from: 7, to: 12 },
+  { id: "afternoon", name: "Afternoon", label: "1–6pm", from: 13, to: 18 },
+  { id: "evening", name: "Evening", label: "7pm–midnight", from: 19, to: 0 },
+  { id: "dawn", name: "Dawn", label: "1–6am", from: 1, to: 6 }
 ];
 const landmarkWindowOpen = (i, t) => {
   const w = LANDMARK_WINDOWS[i];
-  return !w || (t >= w.from && t <= w.to);
+  if (!w) return true;
+  // Evening runs 19:00 through midnight, so its range wraps past 23.
+  return w.from <= w.to ? t >= w.from && t <= w.to : t >= w.from || t <= w.to;
 };
 
 const PLAYER_COLORS = ["#3ac0c0", "#e0559c", "#e0a13a", "#7b6fe0"];
@@ -232,7 +236,12 @@ const cleanHoodChoices = (raw) =>
 // drops it all the way to between 4 and 5 — between 5 and 6 with super calm.
 const STRESS_MIN = 1;
 const STRESS_MAX = 5;
-const DESTRESS_TO = 4; // where sleep lands (superCalm: 5)
+const DESTRESS_TO = 4; // where the classic game's sleep lands (superCalm: 5)
+// Landmark mode rests deeper: sleeping, napping and the fun die all cap at
+// the bottom of the bar (5 — only a 6 fines you), and super calm pushes one
+// step PAST it, where no die can fine you at all.
+const STRESS_IMMUNE = 6;
+const restCap = (player) => (hasUp(player, "superCalm") ? STRESS_IMMUNE : STRESS_MAX);
 // Landmark mode has no destress locations. Stress comes down three ways:
 // sleeping at night (the full reset above), NAPPING during the day — the same
 // whole-turn cost for two steps down the bar — and the fun die.
@@ -296,21 +305,29 @@ const BASE_SETTINGS = {
   // there, 1 for the second (21 points across the seven colors).
   colorFirstPoints: 2,
   colorSecondPoints: 1,
-  // Upgrades: one point each, plus a bonus for the first player to hold all
-  // four (one from each upgrade location).
+  // Upgrades: one point each.
   upgradePoints: 1,
-  upgradeSweepBonus: 2,
   // Landmark cards: one point per card completed, plus a bonus shared by
   // everyone tied for the most completed.
   landmarkPoints: 1,
   mostLandmarksBonus: 2,
-  // Fines (tokens paid to failed dice): the player(s) who paid the most lose
-  // this, the player(s) who paid the least gain it. Fines are also the
-  // tiebreak on equal totals — fewest wins.
+  // Fines (tokens paid to failed dice): the player(s) who paid the FEWEST
+  // gain this. Fines are also the tiebreak on equal totals — fewest wins.
+  // (Paying the most costs nothing extra.)
   finePoints: 2,
-  // Welfare: skipping the turn (before doing anything) pays this.
+  // The two ways landmark mode takes points off you, both counted as they
+  // happen and revealed at the end:
+  // — every landmark card still face down in your stack when a night ends
+  //   (the clock crossing 6am into 7am) costs this,
+  cardPenalty: 1,
+  // — and every token you come up short when the dice ask you to pay.
+  shortPenalty: 1,
+  // Welfare: skipping the turn (before doing anything) pays this. In landmark
+  // mode welfare is the DAYTIME skip (tokens only, no stones) and begging is
+  // its night counterpart.
   welfareTokens: 1,
   welfareStones: 2,
+  begTokens: 1,
   // Blank stoplights on top of the guaranteed 24 numbered ones. The map is
   // generated to carry exactly 24 + green + red lights; the four light-free
   // corners come on top of that.
@@ -338,12 +355,21 @@ function intClamp(v, min, max, fallback) {
 const LANDMARK_LOCATIONS = {
   timestone: 6, token: 7, destress: 0, upgrade: 4, discovery: 11, landmark: 22
 };
+// Of the 24 non-upgrade token locations, this many open only by day and this
+// many only by night; the other 10 are open whenever. (You can always drive to
+// a closed one — you just can't use it until its time.)
+const LANDMARK_DAY_LOCATIONS = 7;
+const LANDMARK_NIGHT_LOCATIONS = 7;
 // The fields landmark mode takes over — greyed out in the tuning panel, and
 // stashed under `classic` so switching the mode back off puts the board the
-// user had built back exactly as it was.
+// user had built back exactly as it was. EVERY key listed here must be read
+// through `src` in sanitizeSettings (not `raw`), or leaving the mode hands
+// back the override instead of the value it was covering.
 const LANDMARK_OWNED = [
   "rideMode", "upgradeMode", "timedPeriods", "locations",
-  "timeStoneReward", "tokenReward", "neighbourhoods"
+  "timeStoneReward", "tokenReward", "neighbourhoods",
+  "dayLocations", "nightLocations", "startingTokens", "startingTimeStones",
+  "welfareTokens", "welfareStones"
 ];
 function landmarkOverrides(s, stashed) {
   const classic = stashed ?? Object.fromEntries(LANDMARK_OWNED.map((k) => [k, s[k]]));
@@ -352,10 +378,21 @@ function landmarkOverrides(s, stashed) {
     classic,
     rideMode: "ride-2",       // landmark cards run on the ride-2 plumbing
     upgradeMode: "stack",     // four locations, each a face-up stack
-    timedPeriods: 0,          // the upgrade windows are the only timed thing
+    // Day / Night locations: 7 sun, 7 moon, 10 unrestricted. (The upgrade
+    // locations sit outside this — they have their own named windows.)
+    timedPeriods: 2,
+    dayLocations: LANDMARK_DAY_LOCATIONS,
+    nightLocations: LANDMARK_NIGHT_LOCATIONS,
     locations: { ...LANDMARK_LOCATIONS },
-    timeStoneReward: 6,
+    timeStoneReward: 5,
     tokenReward: 3,
+    // The first seat opens on this many tokens and each seat after it gets one
+    // more, to pay off the turn-order advantage.
+    startingTokens: 5,
+    startingTimeStones: 5,
+    // Daytime welfare is two tokens flat — no time stones in this mode.
+    welfareTokens: 2,
+    welfareStones: 0,
     neighbourhoods: LANDMARK_COLOR_COUNT
   };
 }
@@ -390,13 +427,13 @@ function sanitizeSettings(raw) {
       ? src.upgradeMode
       : BASE_SETTINGS.upgradeMode,
     timedPeriods: [2, 3].includes(Number(src.timedPeriods)) ? Number(src.timedPeriods) : 0,
-    dayLocations: intClamp(raw.dayLocations, 0, 60, BASE_SETTINGS.dayLocations),
-    nightLocations: intClamp(raw.nightLocations, 0, 60, BASE_SETTINGS.nightLocations),
+    dayLocations: intClamp(src.dayLocations, 0, 60, BASE_SETTINGS.dayLocations),
+    nightLocations: intClamp(src.nightLocations, 0, 60, BASE_SETTINGS.nightLocations),
     locations,
     timeStoneReward: intClamp(src.timeStoneReward, 0, 20, BASE_SETTINGS.timeStoneReward),
     tokenReward: intClamp(src.tokenReward, 0, 20, BASE_SETTINGS.tokenReward),
-    startingTokens: intClamp(raw.startingTokens, 0, 60, BASE_SETTINGS.startingTokens),
-    startingTimeStones: intClamp(raw.startingTimeStones, 0, 60, BASE_SETTINGS.startingTimeStones),
+    startingTokens: intClamp(src.startingTokens, 0, 60, BASE_SETTINGS.startingTokens),
+    startingTimeStones: intClamp(src.startingTimeStones, 0, 60, BASE_SETTINGS.startingTimeStones),
     startingStress: intClamp(raw.startingStress, STRESS_MIN, STRESS_MAX, BASE_SETTINGS.startingStress),
     tokensPerFail: intClamp(raw.tokensPerFail, 0, 6, BASE_SETTINGS.tokensPerFail),
     neighbourhoods: intClamp(src.neighbourhoods, 1, HOOD_BASE_COLORS.length, BASE_SETTINGS.neighbourhoods),
@@ -406,12 +443,14 @@ function sanitizeSettings(raw) {
     colorFirstPoints: intClamp(raw.colorFirstPoints, 0, 12, BASE_SETTINGS.colorFirstPoints),
     colorSecondPoints: intClamp(raw.colorSecondPoints, 0, 12, BASE_SETTINGS.colorSecondPoints),
     upgradePoints: intClamp(raw.upgradePoints, 0, 12, BASE_SETTINGS.upgradePoints),
-    upgradeSweepBonus: intClamp(raw.upgradeSweepBonus, 0, 12, BASE_SETTINGS.upgradeSweepBonus),
     landmarkPoints: intClamp(raw.landmarkPoints, 0, 12, BASE_SETTINGS.landmarkPoints),
     mostLandmarksBonus: intClamp(raw.mostLandmarksBonus, 0, 12, BASE_SETTINGS.mostLandmarksBonus),
     finePoints: intClamp(raw.finePoints, 0, 12, BASE_SETTINGS.finePoints),
-    welfareTokens: intClamp(raw.welfareTokens, 0, 20, BASE_SETTINGS.welfareTokens),
-    welfareStones: intClamp(raw.welfareStones, 0, 20, BASE_SETTINGS.welfareStones),
+    cardPenalty: intClamp(raw.cardPenalty, 0, 12, BASE_SETTINGS.cardPenalty),
+    shortPenalty: intClamp(raw.shortPenalty, 0, 12, BASE_SETTINGS.shortPenalty),
+    welfareTokens: intClamp(src.welfareTokens, 0, 20, BASE_SETTINGS.welfareTokens),
+    welfareStones: intClamp(src.welfareStones, 0, 20, BASE_SETTINGS.welfareStones),
+    begTokens: intClamp(raw.begTokens, 0, 20, BASE_SETTINGS.begTokens),
     blankLights: {
       green: intClamp(raw.blankLights?.green, 0, 30, BASE_SETTINGS.blankLights.green),
       red: intClamp(raw.blankLights?.red, 0, 30, BASE_SETTINGS.blankLights.red)
@@ -742,7 +781,9 @@ export function createUberManiaGame({ io, rooms }) {
       color: PLAYER_COLORS[i % PLAYER_COLORS.length],
       name: i >= humans ? `AI ${i - humans + 1}` : humans === 1 ? "You" : `P${i + 1}`,
       isAI: i >= humans,
-      tokens: settings.startingTokens,
+      // Landmark mode pays off the turn-order advantage: each seat after the
+      // first opens on one more token than the seat before it.
+      tokens: settings.startingTokens + (settings.landmarkMode ? i : 0),
       timeStones: settings.startingTimeStones,
       stress: settings.startingStress, // marker between stress and stress+1
       // Ride / landmark cards: { id, loc: building bid }. In landmark mode
@@ -751,7 +792,11 @@ export function createUberManiaGame({ io, rooms }) {
       rides: [],
       ridesCompleted: 0,
       upgrades: [],       // upgrade type ids picked up (see UPGRADE_TYPES)
-      redTokensLost: 0    // tokens paid to failed dice — landmark mode's "fines"
+      redTokensLost: 0,   // tokens paid to failed dice — landmark mode's "fines"
+      // Landmark mode's two running point penalties, tallied as they happen
+      // and only revealed in the end-game chart.
+      cardPenalties: 0,   // face-down cards caught by the end of a night
+      shortPenalties: 0   // tokens come up short when the dice asked to be paid
     }));
     room.uberMania.time = START_TIME;
     room.uberMania.elapsed = 0; // hours the clock has been moved, total
@@ -876,6 +921,34 @@ export function createUberManiaGame({ io, rooms }) {
     return n;
   }
 
+  // The clock only ever runs forward, and the game opens at 7am — so a night
+  // ends (6am rolls into 7am) exactly when `elapsed` crosses a multiple of 24.
+  // Push the clock through this and every night it passes bills each player
+  // for the landmark cards still face down in their stack: that's the urgency
+  // on a card, and the reason to keep the pile short.
+  function runClock(room, hours) {
+    const before = room.uberMania.elapsed ?? 0;
+    const after = before + Math.max(0, hours);
+    room.uberMania.elapsed = after;
+    room.uberMania.time = (room.uberMania.time ?? START_TIME) + Math.max(0, hours);
+    room.uberMania.time = ((room.uberMania.time % 24) + 24) % 24;
+    const nights = Math.floor(after / 24) - Math.floor(before / 24);
+    if (nights > 0) billFaceDownCards(room, nights);
+    return nights;
+  }
+
+  // A night has ended: every card still face down costs its holder a point,
+  // once per night it survives.
+  function billFaceDownCards(room, nights = 1) {
+    if (!isLandmark(room)) return;
+    const per = S(room).cardPenalty ?? 1;
+    if (per <= 0) return;
+    for (const p of room.uberMania.players ?? []) {
+      const down = (p.rides ?? []).filter((r) => r.faceDown).length;
+      if (down > 0) p.cardPenalties = (p.cardPenalties ?? 0) + down * per * nights;
+    }
+  }
+
   // Landmark mode's colors. Three of a color's four locations claims it: the
   // first player there scores 2, the second 1. `colorClaims[colorId]` is the
   // seats that hit three, in the order they did it.
@@ -927,19 +1000,18 @@ export function createUberManiaGame({ io, rooms }) {
   // for least collects it (with one player, or everyone tied, both apply and
   // cancel out). Neighbourhood visits score nothing — they unlock slots.
   // Landmark-mode scoring. Colors: 2 to the first player to claim each of the
-  // seven, 1 to the second (21 on the table). Upgrades: 1 apiece, plus a bonus
-  // to the first player holding all four. Landmark cards: 1 per card
-  // completed, plus a bonus shared by everyone tied for the most. Fines
-  // (tokens paid to failed dice): the most pays it, the least collects it,
-  // ties included on both ends. Equal totals break on fewest fines — and if
-  // that's equal too, they simply tie.
+  // seven, 1 to the second (21 on the table). Upgrades: 1 apiece. Landmark
+  // cards: 1 per card completed, plus a bonus shared by everyone tied for the
+  // most. Fines (tokens paid to failed dice): the player(s) who paid the
+  // FEWEST collect a bonus — paying the most costs nothing extra. Then the two
+  // running penalties come off: cards caught face down at the end of a night,
+  // and tokens come up short when the dice asked to be paid. Equal totals
+  // break on fewest fines — and if that's equal too, they simply tie.
   function finalizeLandmark(room) {
     const settings = S(room);
     const players = room.uberMania.players ?? [];
     const claims = room.uberMania.colorClaims ?? {};
-    const champs = room.uberMania.upgradeChampions ?? [];
     const fines = players.map((p) => p.redTokensLost ?? 0);
-    const mostFines = Math.max(...fines);
     const leastFines = Math.min(...fines);
     const doneCounts = players.map((p) => p.ridesCompleted ?? 0);
     const mostDone = Math.max(...doneCounts);
@@ -960,23 +1032,27 @@ export function createUberManiaGame({ io, rooms }) {
         }
       }
       const upgrades = (p.upgrades ?? []).length;
-      const sweep = champs[0] === i ? (settings.upgradeSweepBonus ?? 2) : 0;
-      const upgradePts = upgrades * (settings.upgradePoints ?? 1) + sweep;
+      const upgradePts = upgrades * (settings.upgradePoints ?? 1);
       const landmarks = p.ridesCompleted ?? 0;
       // The "most cards" bonus only pays when somebody actually finished one.
       const mostBonus = mostDone > 0 && landmarks === mostDone
         ? (settings.mostLandmarksBonus ?? 2)
         : 0;
       const landmarkPts = landmarks * (settings.landmarkPoints ?? 1) + mostBonus;
-      let fineAdj = 0;
-      if ((p.redTokensLost ?? 0) === leastFines) fineAdj += settings.finePoints ?? 2;
-      if ((p.redTokensLost ?? 0) === mostFines) fineAdj -= settings.finePoints ?? 2;
+      // Fewest fines is worth a bonus; paying the most simply costs the
+      // tokens it already cost.
+      const fineAdj = (p.redTokensLost ?? 0) === leastFines ? (settings.finePoints ?? 2) : 0;
+      // The two running penalties, revealed only now.
+      const cardPen = p.cardPenalties ?? 0;
+      const shortPen = p.shortPenalties ?? 0;
+      const penalties = cardPen + shortPen;
       return {
         colorsFirst, colorsSecond, colorPts,
-        upgrades, sweep, upgradePts,
+        upgrades, upgradePts,
         landmarks, mostBonus, landmarkPts,
         fines: p.redTokensLost ?? 0, fineAdj,
-        total: colorPts + upgradePts + landmarkPts + fineAdj
+        cardPen, shortPen, penalties,
+        total: colorPts + upgradePts + landmarkPts + fineAdj - penalties
       };
     });
 
@@ -1152,9 +1228,10 @@ export function createUberManiaGame({ io, rooms }) {
     player.rides.push(ride);
   }
 
-  // Landmark mode: a player sees two cards at a time (three with extra ride).
-  // Everything past that waits face down in a stack beside the player board.
-  const RIDE_VISIBLE_BASE = 2;
+  // Landmark mode: a player sees ONE card at a time (two with extra ride).
+  // Everything past that waits face down in a stack beside the player board —
+  // and every night that ends with cards still in it costs points.
+  const RIDE_VISIBLE_BASE = 1;
   const visibleRideCap = (player) => RIDE_VISIBLE_BASE + (hasUp(player, "extraRide") ? 1 : 0);
 
   // Turn's over, dice rolled: face-down cards flip up now, and only now —
@@ -1229,12 +1306,6 @@ export function createUberManiaGame({ io, rooms }) {
       b.stackLeft = rest.length;
       // (Extra ride needs no help here: it raises the face-up cap, so a card
       // already waiting in the stack flips up when this turn ends.)
-      // All four upgrade locations visited — the sweep bonus goes to whoever
-      // got there first.
-      if (player.upgrades.length >= LANDMARK_WINDOWS.length) {
-        const champs = (room.uberMania.upgradeChampions ??= []);
-        if (!champs.includes(seat)) champs.push(seat);
-      }
       noteColorClaim(room, seat, b.hood);
     } else if (b.locType === "upgrade") {
       // Free to use, no token. The player board caps the hand: two slots,
@@ -1347,12 +1418,27 @@ export function createUberManiaGame({ io, rooms }) {
   const bonusTokens = (player) => (hasUp(player, "extraCash") ? 1 : 0);
   const bonusStones = (player) => (hasUp(player, "extraTime") ? 2 : 0);
 
-  // Welfare: sitting the turn out pays a token and some time stones.
-  function payWelfare(room, player) {
-    const t = S(room).welfareTokens ?? 1;
-    const s = S(room).welfareStones ?? 2;
+  // Sitting the turn out. The classic game has one option — welfare, a token
+  // and some time stones, any hour. Landmark mode splits the clock: by DAY you
+  // can nap (stress) or take WELFARE (2 tokens, no stones); by night you can
+  // sleep (stress) or BEG (1 token). Nothing else skips a turn.
+  //
+  // `kind` is "welfare" or "beg"; returns false when it isn't on offer now.
+  function payWelfare(room, player, kind = "welfare") {
+    const settings = S(room);
+    if (isLandmark(room)) {
+      const night = isNight(room.uberMania.time ?? START_TIME);
+      if (kind === "beg" ? !night : night) return false; // wrong half of the day
+    } else if (kind === "beg") {
+      return false; // begging is a landmark-mode thing
+    }
+    const t = kind === "beg" ? (settings.begTokens ?? 1) : (settings.welfareTokens ?? 1);
+    // Begging is a token and nothing else; landmark welfare pays no stones
+    // either (landmarkOverrides zeroes them).
+    const s = kind === "beg" ? 0 : (settings.welfareStones ?? 2);
     player.tokens = (player.tokens ?? 0) + t + (t > 0 ? bonusTokens(player) : 0);
     player.timeStones = (player.timeStones ?? 0) + s + (s > 0 ? bonusStones(player) : 0);
+    return true;
   }
 
   // Sleep: only at night (7pm–6am), only in place of the whole turn — like
@@ -1370,13 +1456,19 @@ export function createUberManiaGame({ io, rooms }) {
     if (!nap && !isNight(t)) return false;
     const player = room.uberMania.players?.[seat];
     if (!player) return false;
+    // Landmark mode rests deeper than the classic game: napping walks the
+    // marker two steps down and sleeping takes it all the way, both capped at
+    // the bottom of the bar — one step past it with super calm, where no die
+    // can fine you.
+    const cap = isLandmark(room) ? restCap(player) : STRESS_MAX;
     player.stress = nap
-      ? Math.min(STRESS_MAX, (player.stress ?? 2) + NAP_STEPS)
+      ? Math.min(cap, (player.stress ?? 2) + NAP_STEPS)
+      : isLandmark(room)
+      ? Math.max(player.stress ?? 2, cap)
       : Math.max(player.stress ?? 2, hasUp(player, "superCalm") ? 5 : DESTRESS_TO);
     const h = Math.max(0, Math.min(nap ? NAP_HOURS : 4, Number(hours) | 0));
     if (h > 0) {
-      room.uberMania.time = (t + h) % 24;
-      room.uberMania.elapsed = (room.uberMania.elapsed ?? 0) + h;
+      runClock(room, h);
       // Same rule as a paid clock change: the signs carrying the arrival
       // hour's number flip.
       const arrival = faceHour(room.uberMania.time);
@@ -1399,15 +1491,23 @@ export function createUberManiaGame({ io, rooms }) {
       const stress = player.stress ?? 2;
       const dice = Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6));
       const fails = dice.filter((d) => d > stress).length;
-      const loss = Math.min(player.tokens ?? 0, fails * (S(room).tokensPerFail ?? 1));
-      player.tokens = Math.max(0, (player.tokens ?? 0) - fails * (S(room).tokensPerFail ?? 1));
+      const owed = fails * (S(room).tokensPerFail ?? 1);
+      const loss = Math.min(player.tokens ?? 0, owed);
+      player.tokens = Math.max(0, (player.tokens ?? 0) - owed);
       player.redTokensLost = (player.redTokensLost ?? 0) + loss; // the end-game swing tracks this
+      // Landmark mode: a fine you can't cover is paid in points instead —
+      // one per token you came up short.
+      const short = owed - loss;
+      if (isLandmark(room) && short > 0) {
+        player.shortPenalties = (player.shortPenalties ?? 0) + short * (S(room).shortPenalty ?? 1);
+      }
       room.uberMania.rollSeq = (room.uberMania.rollSeq || 0) + 1;
       room.uberMania.lastRoll = {
         seq: room.uberMania.rollSeq, player: playerIdx, dice,
         aversion: stress, // the safe-roll threshold, named as the client's dice code expects
         tickets: fails,   // failed dice (drives the shared dice animation)
         loss,             // tokens actually paid
+        short,            // tokens short — paid in points in landmark mode
         mode: "tokens"
       };
       return diceMsFor(room.uberMania.lastRoll);
@@ -1463,7 +1563,10 @@ export function createUberManiaGame({ io, rooms }) {
     } else if (face === "stones") {
       player.timeStones = (player.timeStones ?? 0) + 2 + bonusStones(player);
     } else {
-      player.stress = Math.min(STRESS_MAX, (player.stress ?? 2) + 1);
+      // The fun die's destress step obeys the same cap as sleeping and
+      // napping: the bottom of the bar, one past it with super calm.
+      const cap = isLandmark(room) ? restCap(player) : STRESS_MAX;
+      player.stress = Math.min(cap, (player.stress ?? 2) + 1);
     }
     room.uberMania.funSeq = (room.uberMania.funSeq || 0) + 1;
     room.uberMania.funRoll = { seq: room.uberMania.funSeq, player: seat, face };
@@ -1617,8 +1720,7 @@ export function createUberManiaGame({ io, rooms }) {
     }
     if (!best) return false;
     player.timeStones -= best.cost;
-    room.uberMania.time = (t + best.cost) % 24;
-    room.uberMania.elapsed = (room.uberMania.elapsed ?? 0) + best.cost;
+    runClock(room, best.cost);
     for (const oct of room.uberMania.map.intersections) {
       if (oct.number === best.num) oct.color = oct.color === "green" ? "red" : "green";
     }
@@ -1764,19 +1866,14 @@ export function createUberManiaGame({ io, rooms }) {
     }
     if (b.locType === "upgrade" && settings.upgradeMode === "stack") {
       // Landmark mode: a token buys the top of the stack, once per player, and
-      // only inside the location's window. Every upgrade is a flat point, and
-      // the fourth also banks the sweep bonus if nobody's taken it.
+      // only inside the location's window. Every upgrade is a flat point.
       if ((player.tokens ?? 0) < 1) return 0;
       if (!Array.isArray(b.slots) || b.slots.includes(seat) || !b.slots.includes(null)) return 0;
       if (!b.upgrade) return 0;
       if (!hasUp(player, "timeAgnostic") &&
           !landmarkWindowOpen(b.window, room.uberMania.time ?? START_TIME)) return 0;
-      const held = (player.upgrades ?? []).length;
       let v = -TOKEN_VALUE + (settings.upgradePoints ?? 1) * 0.9;
       if (!hasUp(player, b.upgrade)) v += 0.7; // a perk it doesn't have yet
-      if (held === LANDMARK_WINDOWS.length - 1 && !(room.uberMania.upgradeChampions ?? []).length) {
-        v += (settings.upgradeSweepBonus ?? 2) * 0.8;
-      }
       v += colorClaimValue(room, seat, settings, b.hood);
       return v;
     }
@@ -1821,10 +1918,17 @@ export function createUberManiaGame({ io, rooms }) {
     } else if (b.locType === "token") {
       v += TOKEN_VALUE * (settings.tokenReward ?? 3);
     } else if (b.locType === "discovery") {
-      // A landmark card is a point once driven — worth less the more the AI
-      // is already sitting on undelivered.
-      const open = player.rides?.length ?? 0;
+      // A landmark card is a point once driven — but one it can't see yet
+      // bleeds a point every night it sits face down, so a card the AI has no
+      // room to flip is worth taking only when it's nearly free.
+      const open = (player.rides ?? []).filter((r) => !r.faceDown).length;
+      const buried = (player.rides ?? []).filter((r) => r.faceDown).length;
       v += (0.75 * (settings.landmarkPoints ?? 1) + 0.35) / (1 + open * 0.6);
+      // The nights left are roughly how many times a buried card gets billed.
+      const nightsLeft = Math.max(0,
+        (settings.days ?? 3) - Math.floor((room.uberMania.elapsed ?? 0) / 24));
+      const wouldBury = open + buried >= visibleRideCap(player);
+      if (wouldBury) v -= (settings.cardPenalty ?? 1) * Math.min(2, nightsLeft) * 0.8;
     }
     if (!under && b.hood != null) {
       v += isLandmark(room)
@@ -1962,11 +2066,19 @@ export function createUberManiaGame({ io, rooms }) {
           (!best || best.score < 0.9)) {
         if (sleepCore(room, idx, 0, true)) return false;
       }
-      const welfare = TOKEN_VALUE * (settings.welfareTokens ?? 1) + 0.1 * (settings.welfareStones ?? 2);
+      // The handout on offer right now: landmark mode pays welfare by day and
+      // begging by night; the classic game always has welfare.
+      const kind = isLandmark(room) && isNight(now) ? "beg" : "welfare";
+      const handoutTokens = kind === "beg"
+        ? (settings.begTokens ?? 1)
+        : (settings.welfareTokens ?? 1);
+      const handoutStones = kind === "beg" ? 0 : (settings.welfareStones ?? 2);
+      const welfare = TOKEN_VALUE * handoutTokens + 0.1 * handoutStones;
       if (!best || best.score < welfare) {
-        payWelfare(room, player);
-        ts.skipped = true;
-        return false;
+        if (payWelfare(room, player, kind)) {
+          ts.skipped = true;
+          return false;
+        }
       }
     }
     if (!best) return false;
@@ -2272,9 +2384,11 @@ export function createUberManiaGame({ io, rooms }) {
         if (completeRideCore(room, seat, truck)) emitState(roomId, room);
       });
 
-      // Welfare: skip the turn — no movement, no location used — for a token
-      // and some time stones. A clock change doesn't disqualify it.
-      socket.on("uber_mania_skip_turn", ({ roomId, hoodChoices } = {}) => {
+      // Welfare / begging: skip the turn — no movement, no location used — for
+      // a handout. A clock change doesn't disqualify it. In landmark mode
+      // welfare is the daytime offer and begging the night one, so payWelfare
+      // refuses the wrong half of the day.
+      socket.on("uber_mania_skip_turn", ({ roomId, kind, hoodChoices } = {}) => {
         const room = playerRoom(socket, roomId);
         const seat = room ? seatOf(room, socket) : -1;
         if (!room || room.uberMania.turn !== seat || room.uberMania.winner != null) return;
@@ -2282,7 +2396,7 @@ export function createUberManiaGame({ io, rooms }) {
         if (ts.truck != null || ts.acted) return; // nothing done yet
         const player = room.uberMania.players?.[seat];
         if (!player) return;
-        payWelfare(room, player);
+        if (!payWelfare(room, player, kind === "beg" ? "beg" : "welfare")) return;
         ts.skipped = true;
         endTurnCore(roomId, seat, cleanHoodChoices(hoodChoices));
       });
@@ -2332,14 +2446,16 @@ export function createUberManiaGame({ io, rooms }) {
         player.timeStones -= cost;
         ts.changedTime = true;
 
-        room.uberMania.time = (t + cost) % 24;
-        room.uberMania.elapsed = (room.uberMania.elapsed ?? 0) + cost; // the days tick by
+        // Sweeping past 6am ends a night, which bills every face-down card —
+        // so the undo carries the tallies to put back.
+        const prevPenalties = (room.uberMania.players ?? []).map((p) => p.cardPenalties ?? 0);
+        runClock(room, cost); // the days tick by
         for (const oct of room.uberMania.map.intersections) {
           if (oct.number === hour) {
             oct.color = oct.color === "green" ? "red" : "green";
           }
         }
-        ts.undo = { kind: "time", prevTime: t, hour, cost };
+        ts.undo = { kind: "time", prevTime: t, hour, cost, prevPenalties };
         emitState(roomId, room);
       });
 
@@ -2373,6 +2489,12 @@ export function createUberManiaGame({ io, rooms }) {
           room.uberMania.time = undo.prevTime;
           room.uberMania.elapsed = Math.max(0, (room.uberMania.elapsed ?? 0) - undo.cost);
           player.timeStones += undo.cost;
+          // A sweep that ended a night billed the face-down cards — un-bill it.
+          if (Array.isArray(undo.prevPenalties)) {
+            (room.uberMania.players ?? []).forEach((p, i) => {
+              if (undo.prevPenalties[i] != null) p.cardPenalties = undo.prevPenalties[i];
+            });
+          }
           for (const oct of room.uberMania.map.intersections) {
             if (oct.number === undo.hour) oct.color = oct.color === "green" ? "red" : "green";
           }

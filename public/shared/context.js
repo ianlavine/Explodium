@@ -35,7 +35,10 @@ export const app = {
   activeGameOptions: {},
   myPlayerIndex: null,
   isSoloGame: false,
-  isBotGame: false
+  isBotGame: false,
+  // Difficulty of the opponent in a bot game (null otherwise), so games can
+  // record which bot a result came against.
+  botLevel: null
 };
 
 export function setScreen(name) {
