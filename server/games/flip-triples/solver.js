@@ -17,7 +17,9 @@
 // identical in value to plain minimax at the same depth.
 //
 // Bitboards: boards up to 4x6/5x5 fit in 32-bit masks using a padded layout
-// (one ghost column prevents shift wraparound). A cell's 6 states
+// (one ghost column prevents shift wraparound); bigger boards (6x6) do not fit
+// and fall back to the generic scan path, which is correct but much slower —
+// expect several plies less depth per second there. A cell's 6 states
 // (red/blue/neutral x white/flipped) live across three parallel masks:
 // mRed, mBlue (neutral = neither), and mFlip. Move generation and triple
 // counting become a handful of shifts/ANDs over all cells at once. Exotic
@@ -35,7 +37,7 @@
 //     the phase ends when neither player can move.
 //   - Scoring: 3-in-a-row (4 orientations) counted over ALL pieces at the end.
 //     Purple and yellow match both shapes; a triple through a yellow counts
-//     -1 instead of +1. Tie-breaker on center-less boards (4x6):
+//     -1 instead of +1. Tie-breaker on center-less boards (4x6, 6x6):
 //     more of your own unflipped ("white") pieces wins. On odd boards (5x5)
 //     the center-cell occupant loses the tie.
 //
@@ -117,6 +119,9 @@ function getGeom(rows, cols) {
     [1, -1]
   ];
   const lines = [];
+  // Per line: the in-bounds cells just off each end, i.e. the cells that would
+  // stretch it into a 4-run. Exact Mode reads these to reject non-exact triples.
+  const lineExt = [];
   const linesThrough = Array.from({ length: cells }, () => []);
   for (let r = 0; r < rows; r += 1) {
     for (let c = 0; c < cols; c += 1) {
@@ -127,10 +132,23 @@ function getGeom(rows, cols) {
         const line = [r * cols + c, (r + dr) * cols + (c + dc), r2 * cols + c2];
         const id = lines.length;
         lines.push(line);
+        const ext = [];
+        const rb = r - dr;
+        const cb = c - dc;
+        if (rb >= 0 && rb < rows && cb >= 0 && cb < cols) ext.push(rb * cols + cb);
+        const ra = r + 3 * dr;
+        const ca = c + 3 * dc;
+        if (ra >= 0 && ra < rows && ca >= 0 && ca < cols) ext.push(ra * cols + ca);
+        lineExt.push(ext);
         line.forEach((cell) => linesThrough[cell].push(id));
       }
     }
   }
+  // In Exact Mode a line's score depends on its two neighbour cells as well as
+  // its own three, so the incremental update has to revisit every line a moved
+  // cell sits on OR extends.
+  const linesTouching = linesThrough.map((ids) => ids.slice());
+  lineExt.forEach((ext, id) => ext.forEach((cell) => linesTouching[cell].push(id)));
 
   // Per-cell 8-neighbour lists (Chebyshev distance 1), precomputed once for the
   // permanence / completion-space passes so those hot loops never allocate.
@@ -189,6 +207,14 @@ function getGeom(rows, cols) {
         linesThrough[cell].map((id) => lineMasksP[id] & ~(1 << padBit[cell]))
       )
     : [];
+  // Exact Mode companions: each line's extension cells as a padded mask, and the
+  // same masks indexed the way linesThroughOthersP is (per cell, per line).
+  const lineExtMasksP = fitsBitboard
+    ? lineExt.map((ext) => ext.reduce((mask, cell) => mask | (1 << padBit[cell]), 0))
+    : [];
+  const linesThroughExtP = fitsBitboard
+    ? Array.from({ length: cells }, (_, cell) => linesThrough[cell].map((id) => lineExtMasksP[id]))
+    : [];
 
   // Zobrist keys: per cell x (8 shapes x 2 flipped states), split in two
   // 32-bit halves, plus side-to-move keys.
@@ -215,7 +241,9 @@ function getGeom(rows, cols) {
     rowOf,
     colOf,
     lines,
+    lineExt,
     linesThrough,
+    linesTouching,
     neighbors,
     adjPairs,
     fitsBitboard,
@@ -224,7 +252,9 @@ function getGeom(rows, cols) {
     boardMaskP,
     dirsP,
     lineMasksP,
+    lineExtMasksP,
     linesThroughOthersP,
+    linesThroughExtP,
     zob1,
     zob2,
     sideKey1,
@@ -290,12 +320,15 @@ function computeMasks(state) {
   if (state.simple) {
     const lockedM = (state.phase === 1 ? mFlip : ~mFlip) & geom.boardMaskP;
     const masks = geom.lineMasksP;
+    // Exact Mode: a line only counts when neither neighbour cell continues the
+    // run (on the simple path "matches" just means "same color").
+    const extMasks = state.exactMode ? geom.lineExtMasksP : null;
     for (let i = 0; i < masks.length; i += 1) {
       const L = masks[i];
-      if ((L & mRed) === L) {
+      if ((L & mRed) === L && (!extMasks || (extMasks[i] & mRed) === 0)) {
         state.cntAllRed += 1;
         if ((L & lockedM) === L) state.cntLockedRed += 1;
-      } else if ((L & mBlue) === L) {
+      } else if ((L & mBlue) === L && (!extMasks || (extMasks[i] & mBlue) === 0)) {
         state.cntAllBlue += 1;
         if ((L & lockedM) === L) state.cntLockedBlue += 1;
       }
@@ -317,15 +350,18 @@ let affectedCount = 0;
 // masks/arrays. Called before and after the actual mutation.
 function adjustCellContributions(state, a, b, sign) {
   const geom = state.geom;
+  // Exact Mode widens a cell's blast radius to the lines it extends, not just
+  // the lines it sits on.
+  const touching = state.exactMode ? geom.linesTouching : geom.linesThrough;
   if (sign < 0) {
     lineStampGen += 1;
     affectedCount = 0;
-    const la = geom.linesThrough[a];
+    const la = touching[a];
     for (let i = 0; i < la.length; i += 1) {
       lineStamp[la[i]] = lineStampGen;
       affectedLines[affectedCount++] = la[i];
     }
-    const lb = geom.linesThrough[b];
+    const lb = touching[b];
     for (let i = 0; i < lb.length; i += 1) {
       if (lineStamp[lb[i]] !== lineStampGen) {
         lineStamp[lb[i]] = lineStampGen;
@@ -337,12 +373,14 @@ function adjustCellContributions(state, a, b, sign) {
   const mBlue = state.mBlue;
   const lockedM = (state.phase === 1 ? state.mFlip : ~state.mFlip) & geom.boardMaskP;
   const masks = geom.lineMasksP;
+  const extMasks = state.exactMode ? geom.lineExtMasksP : null;
   for (let i = 0; i < affectedCount; i += 1) {
-    const L = masks[affectedLines[i]];
-    if ((L & mRed) === L) {
+    const id = affectedLines[i];
+    const L = masks[id];
+    if ((L & mRed) === L && (!extMasks || (extMasks[id] & mRed) === 0)) {
       state.cntAllRed += sign;
       if ((L & lockedM) === L) state.cntLockedRed += sign;
-    } else if ((L & mBlue) === L) {
+    } else if ((L & mBlue) === L && (!extMasks || (extMasks[id] & mBlue) === 0)) {
       state.cntAllBlue += sign;
       if ((L & lockedM) === L) state.cntLockedBlue += sign;
     }
@@ -369,7 +407,8 @@ export function createState({
   staticNeutrals = false,
   protectedMiddle = false,
   carryDiff = 0,
-  noTiebreak = false // rules-variant testing: equal triples = plain tie
+  noTiebreak = false, // rules-variant testing: equal triples = plain tie
+  exactMode = false // Exact Mode: only runs of exactly three score
 }) {
   const geom = getGeom(rows, cols);
   const state = {
@@ -382,6 +421,7 @@ export function createState({
     blockedCenter: protectedMiddle && geom.centerIdx >= 0 ? geom.centerIdx : -1,
     carryDiff,
     noTiebreak: !!noTiebreak,
+    exactMode: !!exactMode,
     hasHopper: false,
     simple: false,
     mRed: 0,
@@ -410,7 +450,8 @@ export function cloneState(state) {
     staticNeutrals: state.staticNeutrals,
     protectedMiddle: state.blockedCenter >= 0,
     carryDiff: state.carryDiff,
-    noTiebreak: state.noTiebreak
+    noTiebreak: state.noTiebreak,
+    exactMode: state.exactMode
   });
 }
 
@@ -451,6 +492,7 @@ export function stateFromGame(gameState) {
     uniqueSwap: settings.uniqueSwap !== false,
     staticNeutrals: settings.staticNeutrals === true,
     protectedMiddle: settings.protectedMiddle === true,
+    exactMode: settings.exactMode === true,
     carryDiff
   });
 }
@@ -763,6 +805,45 @@ export function lineMatchesTarget(shapes, x, y, z, target) {
   return ringOnly && hasRing;
 }
 
+// Same test over a 4-cell window: does this whole run read as `target`? Used
+// only by Exact Mode, to detect that a triple is really part of something longer.
+function runMatchesTarget(shapes, w, x, y, z, target) {
+  const ring = ringCodeFor(target);
+  const sw = shapes[w];
+  const sx = shapes[x];
+  const sy = shapes[y];
+  const sz = shapes[z];
+  if (
+    isColorOrWild(sw, target) &&
+    isColorOrWild(sx, target) &&
+    isColorOrWild(sy, target) &&
+    isColorOrWild(sz, target)
+  ) {
+    return true;
+  }
+  const ringOnly =
+    (sw === NEUTRAL || sw === ring) &&
+    (sx === NEUTRAL || sx === ring) &&
+    (sy === NEUTRAL || sy === ring) &&
+    (sz === NEUTRAL || sz === ring);
+  const hasRing = sw === ring || sx === ring || sy === ring || sz === ring;
+  return ringOnly && hasRing;
+}
+
+// Exact Mode: a matching line scores only when the run is exactly three long.
+// If either neighbour cell continues the run, this line is part of a 4+ run and
+// is worth nothing (rather than the 2/3/4 triples a long run normally yields).
+export function lineIsExactRun(state, lineId, target) {
+  const ext = state.geom.lineExt[lineId];
+  if (ext.length === 0) return true;
+  const ln = state.geom.lines[lineId];
+  const shapes = state.shapes;
+  for (let k = 0; k < ext.length; k += 1) {
+    if (runMatchesTarget(shapes, ext[k], ln[0], ln[1], ln[2], target)) return false;
+  }
+  return true;
+}
+
 // A triple through a yellow wildcard counts -1 instead of +1.
 export function tripleValue(sx, sy, sz) {
   return sx === YELLOW || sy === YELLOW || sz === YELLOW ? -1 : 1;
@@ -771,10 +852,12 @@ export function tripleValue(sx, sy, sz) {
 export function countTriples(state, target) {
   const { lines } = state.geom;
   const shapes = state.shapes;
+  const exact = state.exactMode;
   let count = 0;
   for (let i = 0; i < lines.length; i += 1) {
     const [x, y, z] = lines[i];
     if (lineMatchesTarget(shapes, x, y, z, target)) {
+      if (exact && !lineIsExactRun(state, i, target)) continue;
       count += tripleValue(shapes[x], shapes[y], shapes[z]);
     }
   }
@@ -785,11 +868,13 @@ export function countTriples(state, target) {
 export function countLockedTriples(state, target) {
   const { lines } = state.geom;
   const shapes = state.shapes;
+  const exact = state.exactMode;
   let count = 0;
   for (let i = 0; i < lines.length; i += 1) {
     const [x, y, z] = lines[i];
     if (isActive(state, x) || isActive(state, y) || isActive(state, z)) continue;
     if (lineMatchesTarget(shapes, x, y, z, target)) {
+      if (exact && !lineIsExactRun(state, i, target)) continue;
       count += tripleValue(shapes[x], shapes[y], shapes[z]);
     }
   }
@@ -898,6 +983,7 @@ function permMaskForEval(state) {
 export function countPermanentTriples(state, target, perm = computePermanentMask(state)) {
   const lines = state.geom.lines;
   const shapes = state.shapes;
+  const exact = state.exactMode;
   let count = 0;
   for (let i = 0; i < lines.length; i += 1) {
     const ln = lines[i];
@@ -905,7 +991,56 @@ export function countPermanentTriples(state, target, perm = computePermanentMask
     const y = ln[1];
     const z = ln[2];
     if (!(perm[x] && perm[y] && perm[z])) continue;
-    if (lineMatchesTarget(shapes, x, y, z, target)) count += tripleValue(shapes[x], shapes[y], shapes[z]);
+    if (!lineMatchesTarget(shapes, x, y, z, target)) continue;
+    if (exact && !lineIsExactRun(state, i, target)) continue;
+    count += tripleValue(shapes[x], shapes[y], shapes[z]);
+  }
+  return count;
+}
+
+// Triples that are permanent AND cannot be spoiled — the only ones that are
+// truly banked in Exact Mode.
+//
+// Exact Mode makes a completed triple DESTRUCTIBLE: locking a matching piece
+// into either cell just off its end stretches it into a 4-run, which scores
+// nothing. Move generation on the simple path ignores whose turn it is, so the
+// OPPONENT can erase your triple this way even after all three of its cells are
+// locked. countPermanentTriples therefore over-counts here: permanence protects
+// the three cells of the line, not the two cells that can spoil it.
+//
+// An extension cell is neutralised only when it can never come to read as
+// `target`: off the board, or itself permanent while holding a non-matching
+// piece. (A permanent MATCHING neighbour means the line is already a 4-run, and
+// lineIsExactRun has rejected it before we get here.)
+//
+// Outside Exact Mode there is nothing to spoil, so this is exactly
+// countPermanentTriples.
+export function countSealedTriples(state, target, perm = computePermanentMask(state)) {
+  const { lines, lineExt } = state.geom;
+  const shapes = state.shapes;
+  const exact = state.exactMode;
+  let count = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const ln = lines[i];
+    const x = ln[0];
+    const y = ln[1];
+    const z = ln[2];
+    if (!(perm[x] && perm[y] && perm[z])) continue;
+    if (!lineMatchesTarget(shapes, x, y, z, target)) continue;
+    if (exact) {
+      if (!lineIsExactRun(state, i, target)) continue;
+      const ext = lineExt[i];
+      let sealed = true;
+      for (let k = 0; k < ext.length; k += 1) {
+        const e = ext[k];
+        if (!perm[e] || isColorOrWild(shapes[e], target)) {
+          sealed = false;
+          break;
+        }
+      }
+      if (!sealed) continue;
+    }
+    count += tripleValue(shapes[x], shapes[y], shapes[z]);
   }
   return count;
 }
@@ -928,6 +1063,7 @@ export function countCompletionSpaces(state, target, perm = computePermanentMask
   const phase1 = state.phase === 1;
   const flipped = state.flipped;
   const movable = (i) => (phase1 ? flipped[i] === 0 : flipped[i] === 1);
+  const exact = state.exactMode;
 
   let total = 0;
   for (let c = 0; c < cells; c += 1) {
@@ -945,13 +1081,28 @@ export function countCompletionSpaces(state, target, perm = computePermanentMask
     if (!hasFiller) continue;
     const through = linesThrough[c];
     for (let t = 0; t < through.length; t += 1) {
-      const ln = lines[through[t]];
+      const id = through[t];
+      const ln = lines[id];
       const x = ln[0];
       const y = ln[1];
       const z = ln[2];
       const a = x === c ? y : x;
       const b = z === c ? y : z; // the line's two cells other than c
-      if (perm[a] && perm[b] && isColorOrWild(shapes[a], target) && isColorOrWild(shapes[b], target)) total += 1;
+      if (!(perm[a] && perm[b] && isColorOrWild(shapes[a], target) && isColorOrWild(shapes[b], target))) continue;
+      // Exact Mode: filling c makes a 4-run, not a triple, if a neighbour cell
+      // already reads as the target — no points, so it is not a threat.
+      if (exact) {
+        const ext = geom.lineExt[id];
+        let extended = false;
+        for (let k = 0; k < ext.length; k += 1) {
+          if (isColorOrWild(shapes[ext[k]], target)) {
+            extended = true;
+            break;
+          }
+        }
+        if (extended) continue;
+      }
+      total += 1;
     }
   }
   return total;
@@ -1048,12 +1199,19 @@ export function weightedEval(state, side, w) {
   if (w.lockedTriples)
     v += w.lockedTriples * (countLockedTriples(state, RED) - countLockedTriples(state, BLUE) + state.carryDiff);
   if (w.softTriples) v += w.softTriples * (countTriples(state, RED) - countTriples(state, BLUE));
-  if (w.permanentTriples || w.completionSpaces || w.completionSpacesHot) {
+  if (w.permanentTriples || w.sealedTriples || w.completionSpaces || w.completionSpacesHot) {
     const perm = permMaskForEval(state);
     if (w.permanentTriples)
       v +=
         w.permanentTriples *
         (countPermanentTriples(state, RED, perm) - countPermanentTriples(state, BLUE, perm) + state.carryDiff);
+    // Exact Mode extra: credit only the triples the opponent cannot spoil by
+    // stretching them to four. Stacks with permanentTriples on purpose — pair a
+    // small permanent weight with a large sealed one to give partial credit for
+    // a triple you hold but could still lose. carryDiff is deliberately NOT
+    // added again here (permanentTriples already carries it).
+    if (w.sealedTriples)
+      v += w.sealedTriples * (countSealedTriples(state, RED, perm) - countSealedTriples(state, BLUE, perm));
     if (w.completionSpaces)
       v += w.completionSpaces * (countCompletionSpaces(state, RED, perm) - countCompletionSpaces(state, BLUE, perm));
     // Tempo-aware completion spaces: a threat is only worth face value to the
@@ -1256,7 +1414,7 @@ export function clearTT() {
 
 function ttPrepare(state) {
   const g = state.geom;
-  const ctx = `${g.rows}x${g.cols}|${state.phase}|${state.uniqueSwap}|${state.staticNeutrals}|${state.blockedCenter}|${state.carryDiff}|${state.noTiebreak}`;
+  const ctx = `${g.rows}x${g.cols}|${state.phase}|${state.uniqueSwap}|${state.staticNeutrals}|${state.blockedCenter}|${state.carryDiff}|${state.noTiebreak}|${state.exactMode}`;
   if (ctx !== ttContext) {
     ttMeta.fill(0);
     ttContext = ctx;
@@ -1339,11 +1497,17 @@ function scoreMovesSimple(state, side, buf, scores, off, count, ttMove, ply) {
     const s = state.shapes[a];
     let sc = history[m];
     if (s === RED || s === BLUE) {
-      const lockedS = (s === RED ? state.mRed : state.mBlue) & lockedM;
+      const colorM = s === RED ? state.mRed : state.mBlue;
+      const lockedS = colorM & lockedM;
       const others = g.linesThroughOthersP[b];
+      // Exact Mode: landing next to an existing run of that color makes a 4-run,
+      // which is worth nothing, so it is not a completion.
+      const exts = state.exactMode ? g.linesThroughExtP[b] : null;
       let completes = 0;
       for (let j = 0; j < others.length; j += 1) {
-        if ((others[j] & lockedS) === others[j]) completes += 1;
+        if ((others[j] & lockedS) !== others[j]) continue;
+        if (exts && (exts[j] & colorM) !== 0) continue;
+        completes += 1;
       }
       sc += s === ownShape ? 4096 * completes : -3072 * completes;
     }
@@ -1711,7 +1875,7 @@ export function chooseSolverMove(gameState, playerIndex, opts = {}) {
 // ---------------------------------------------------------------------------
 
 export function makeRandomDeal(
-  { rows = 6, cols = 4, playerPieces = 9, purple = 0, yellow = 0, hopper = 0, rings = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false, noTiebreak = false } = {},
+  { rows = 6, cols = 4, playerPieces = 9, purple = 0, yellow = 0, hopper = 0, rings = 0, uniqueSwap = true, staticNeutrals = false, protectedMiddle = false, noTiebreak = false, exactMode = false } = {},
   rand = Math.random
 ) {
   const cells = rows * cols;
@@ -1727,7 +1891,7 @@ export function makeRandomDeal(
     const j = Math.floor(rand() * (i + 1));
     [bag[i], bag[j]] = [bag[j], bag[i]];
   }
-  return createState({ shapes: bag, rows, cols, uniqueSwap, staticNeutrals, protectedMiddle, noTiebreak });
+  return createState({ shapes: bag, rows, cols, uniqueSwap, staticNeutrals, protectedMiddle, noTiebreak, exactMode });
 }
 
 export { mulberry32 };

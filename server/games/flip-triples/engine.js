@@ -42,7 +42,7 @@ let wasmCtx = "";
 
 function wasmPrepare(state) {
   const g = state.geom;
-  const ctx = `${g.rows}x${g.cols}|${state.phase}|${state.uniqueSwap}|${state.staticNeutrals}|${state.blockedCenter}|${state.carryDiff}|${state.noTiebreak}`;
+  const ctx = `${g.rows}x${g.cols}|${state.phase}|${state.uniqueSwap}|${state.staticNeutrals}|${state.blockedCenter}|${state.carryDiff}|${state.noTiebreak}|${state.exactMode}`;
   if (ctx !== wasmCtx) {
     const ok = wasm.init(
       g.rows,
@@ -63,8 +63,9 @@ function wasmPrepare(state) {
 // Same contract as flip-solver.js search(); `value` is red-perspective.
 export function search(state, player, opts = {}) {
   // The wasm core has the hand eval baked in, so a loaded value net forces
-  // the JS engine.
-  if (!wasm || !state.simple || opts.rootMoves || evalNetActive()) {
+  // the JS engine — as does Exact Mode, whose scoring rule the wasm bitboards
+  // do not implement.
+  if (!wasm || !state.simple || state.exactMode || opts.rootMoves || evalNetActive()) {
     return searchJs(state, player, opts);
   }
   if (!wasmPrepare(state)) return searchJs(state, player, opts);

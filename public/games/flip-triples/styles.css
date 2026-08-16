@@ -126,6 +126,16 @@
   gap: 10px;
 }
 
+/* Six columns need smaller cells to stay inside the viewport. */
+.board.flip-triples-board.flip-board-6x6 {
+  grid-template-columns: repeat(6, minmax(44px, 68px));
+  gap: 8px;
+}
+
+.board.flip-triples-board.flip-board-6x6 .flip-piece {
+  width: clamp(44px, 9vw, 68px);
+}
+
 .flip-piece {
   width: clamp(58px, 12vw, 86px);
   aspect-ratio: 1;
@@ -652,6 +662,47 @@
   gap: 10px;
 }
 
+/* Board size picker: same look as the option toggles, side by side. */
+.flip-board-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.flip-board-btn {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.flip-board-btn:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.flip-board-btn.active {
+  background: rgba(255, 196, 86, 0.16);
+  border-color: rgba(255, 196, 86, 0.45);
+  color: var(--text);
+}
+
+.flip-board-btn.active .flip-option-title {
+  color: var(--accent);
+}
+
+.flip-board-btn small {
+  color: inherit;
+  opacity: 0.85;
+  font-size: 12px;
+}
+
 .flip-option-toggle {
   display: grid;
   gap: 2px;
@@ -772,7 +823,13 @@
     grid-template-columns: repeat(4, minmax(40px, 1fr));
   }
 
-  .flip-piece {
+  .board.flip-triples-board.flip-board-6x6 {
+    grid-template-columns: repeat(6, minmax(28px, 1fr));
+    gap: 6px;
+  }
+
+  .flip-piece,
+  .board.flip-triples-board.flip-board-6x6 .flip-piece {
     width: 100%;
   }
 

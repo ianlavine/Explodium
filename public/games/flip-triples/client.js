@@ -19,11 +19,16 @@ let lastTransitionId = 0;
 let flipSetupDraft = null;
 let lastFlipTurn = null;
 
-const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2, label: "5×5" };
-const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null, label: "4×6" };
+// `defaultPieces` mirrors the server preset: scoring pieces per player on a
+// fresh deal, the rest neutral (6x6: 14 + 14 + 8 neutral = 36).
+const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2, label: "5×5", defaultPieces: 9 };
+const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null, label: "4×6", defaultPieces: 9 };
+const FLIP_BOARD_6X6 = { boardSize: "6x6", cols: 6, rows: 6, cells: 36, centerRow: null, centerCol: null, label: "6×6", defaultPieces: 14 };
 
 function flipBoardPreset(boardSize) {
-  return boardSize === "4x6" ? FLIP_BOARD_4X6 : FLIP_BOARD_5X5;
+  if (boardSize === "6x6") return FLIP_BOARD_6X6;
+  if (boardSize === "5x5") return FLIP_BOARD_5X5;
+  return FLIP_BOARD_4X6;
 }
 
 function isActive() {
@@ -32,25 +37,28 @@ function isActive() {
 
 function defaultFlipSetupDraft() {
   return {
+    boardSize: "4x6",
     purple: false,
     yellow: false,
     rings: false,
-    doubleMove: false
+    doubleMove: false,
+    exactMode: true
   };
 }
 
-// The setup screen only exposes a few toggles; everything else is fixed to the
-// standard 4x6 basic game (9 scoring pieces each, unique swap on). Purple
-// replaces a scoring piece per player; yellow only replaces a neutral.
+// The setup screen only exposes the board size and a few toggles; everything
+// else is fixed to the basic game (unique swap on). Purple replaces a scoring
+// piece per player; yellow only replaces a neutral.
 function flipDraftToOptions(draft) {
   const purple = draft.purple ? 1 : 0;
   const yellow = draft.yellow ? 1 : 0;
   const rings = draft.rings ? 1 : 0; // one red + one blue ring
+  const preset = flipBoardPreset(draft.boardSize);
   return {
-    boardSize: "4x6",
+    boardSize: preset.boardSize,
     // Rings replace a scoring-piece pair (one red + one blue), so the neutral
     // count is unchanged; purple likewise takes a scoring slot.
-    playerPieces: 9 - purple - rings,
+    playerPieces: preset.defaultPieces - purple - rings,
     purple,
     yellow,
     hopper: 0,
@@ -60,7 +68,8 @@ function flipDraftToOptions(draft) {
     uniqueSwap: true,
     staticNeutrals: false,
     protectedMiddle: false,
-    doubleMove: draft.doubleMove === true
+    doubleMove: draft.doubleMove === true,
+    exactMode: draft.exactMode === true
   };
 }
 
@@ -205,6 +214,7 @@ function renderFlipTriplesBoard() {
   const preset = flipBoardPreset(flipTriplesState.settings?.boardSize);
   els.gameBoard.style.setProperty("--flip-cols", String(preset.cols));
   els.gameBoard.classList.toggle("flip-board-4x6", preset.boardSize === "4x6");
+  els.gameBoard.classList.toggle("flip-board-6x6", preset.boardSize === "6x6");
 
   flipTriplesState.board.forEach((row, rowIndex) => {
     row.forEach((piece, colIndex) => {
@@ -533,7 +543,13 @@ function flipOptionsFromSave(record) {
   );
   if (!wellFormed) throw new Error("Starting board is malformed.");
   const boardSize =
-    rows === 6 && cols === 4 ? "4x6" : rows === 5 && cols === 5 ? "5x5" : null;
+    rows === 6 && cols === 4
+      ? "4x6"
+      : rows === 5 && cols === 5
+      ? "5x5"
+      : rows === 6 && cols === 6
+      ? "6x6"
+      : null;
   if (!boardSize) throw new Error(`Unsupported board size (${rows}×${cols}).`);
 
   const options = { ...(record.settings ?? {}), boardSize, startShapes: shapes };
@@ -625,27 +641,47 @@ function renderFlipSetup() {
   if (!flipSetupDraft) {
     flipSetupDraft = flipTriplesState?.settings
       ? {
+          boardSize: flipBoardPreset(flipTriplesState.settings.boardSize).boardSize,
           purple: (flipTriplesState.settings.purple ?? 0) > 0,
           yellow: (flipTriplesState.settings.yellow ?? 0) > 0,
           rings: (flipTriplesState.settings.rings ?? 0) > 0,
-          doubleMove: flipTriplesState.settings.doubleMove === true
+          doubleMove: flipTriplesState.settings.doubleMove === true,
+          exactMode: flipTriplesState.settings.exactMode === true
         }
       : defaultFlipSetupDraft();
   }
   flipSetup.classList.remove("hidden");
 
   const draft = flipSetupDraft;
+  const preset = flipBoardPreset(draft.boardSize);
+  const base = preset.defaultPieces;
+  const boardChoices = [FLIP_BOARD_4X6, FLIP_BOARD_6X6]
+    .map(
+      (option) => `
+        <button type="button" class="flip-board-btn${
+          option.boardSize === preset.boardSize ? " active" : ""
+        }" data-board="${option.boardSize}">
+          <span class="flip-option-title">${option.label}</span>
+          <small>${option.defaultPieces} each + ${
+        option.cells - option.defaultPieces * 2
+      } neutral</small>
+        </button>`
+    )
+    .join("");
   flipSetup.innerHTML = `
     <div class="flip-setup-card">
       <h3>Game setup</h3>
+      <div class="flip-board-choices" role="group" aria-label="Board size">
+        ${boardChoices}
+      </div>
       <div class="flip-option-toggles" role="group" aria-label="Optional pieces">
         <button type="button" class="flip-option-toggle${draft.purple ? " active" : ""}" data-toggle="purple">
           <span class="flip-option-title">Purple</span>
-          <small>8 scoring pieces each; one neutral becomes a purple wildcard</small>
+          <small>${base - 1} scoring pieces each; one neutral becomes a purple wildcard</small>
         </button>
         <button type="button" class="flip-option-toggle${draft.yellow ? " active" : ""}" data-toggle="yellow">
           <span class="flip-option-title">Yellow</span>
-          <small>9 scoring pieces each; one neutral becomes a yellow wildcard that costs a point in any triple</small>
+          <small>${base} scoring pieces each; one neutral becomes a yellow wildcard that costs a point in any triple</small>
         </button>
         <button type="button" class="flip-option-toggle${draft.rings ? " active" : ""}" data-toggle="rings">
           <span class="flip-option-title">Ring pieces</span>
@@ -654,6 +690,10 @@ function renderFlipSetup() {
         <button type="button" class="flip-option-toggle${draft.doubleMove ? " active" : ""}" data-toggle="doubleMove">
           <span class="flip-option-title">Double move</span>
           <small>Each player gets one Double: take two moves in a row, once per game</small>
+        </button>
+        <button type="button" class="flip-option-toggle${draft.exactMode ? " active" : ""}" data-toggle="exactMode">
+          <span class="flip-option-title">Exact mode</span>
+          <small>Only runs of exactly three score. Four, five or six in a row are no longer multiple triples — they are worth nothing at all</small>
         </button>
       </div>
       <button type="button" class="primary-btn flip-start-btn">Start game</button>
@@ -857,10 +897,23 @@ flipSetup.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element) || !flipSetupDraft) return;
 
+  const boardBtn = target.closest(".flip-board-btn[data-board]");
+  if (boardBtn) {
+    flipSetupDraft.boardSize = flipBoardPreset(boardBtn.dataset.board).boardSize;
+    renderFlipSetup();
+    return;
+  }
+
   const optionToggle = target.closest(".flip-option-toggle[data-toggle]");
   if (optionToggle) {
     const key = optionToggle.dataset.toggle;
-    if (key === "purple" || key === "yellow" || key === "rings" || key === "doubleMove") {
+    if (
+      key === "purple" ||
+      key === "yellow" ||
+      key === "rings" ||
+      key === "doubleMove" ||
+      key === "exactMode"
+    ) {
       flipSetupDraft[key] = !flipSetupDraft[key];
       renderFlipSetup();
     }

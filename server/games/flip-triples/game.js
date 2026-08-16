@@ -1,12 +1,14 @@
-// Flip Triples: swap-and-flip triple-making game on a 5x5 or 4x6 board,
+// Flip Triples: swap-and-flip triple-making game on a 5x5, 4x6 or 6x6 board,
 // with an optional AI opponent backed by the solver in ./solver.js (via the
 // engine facade and a worker thread, see bot-worker.js).
 import { Worker } from "worker_threads";
 import { shuffle, clampInt } from "../../lib/util.js";
 
-const FLIP_TRIPLES_DEFAULT_PLAYER_PIECES = 9;
-const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2 };
-const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null };
+// `defaultPieces` is the per-player scoring-piece count for a fresh deal; the
+// rest of the cells become neutrals (6x6: 14 + 14 + 8 neutral = 36).
+const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRow: 2, centerCol: 2, defaultPieces: 9 };
+const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null, defaultPieces: 9 };
+const FLIP_BOARD_6X6 = { boardSize: "6x6", cols: 6, rows: 6, cells: 36, centerRow: null, centerCol: null, defaultPieces: 14 };
 const FLIP_SCORING_SHAPES = ["red-x", "blue-o", "purple"];
 // Ring pieces count with neutrals toward a triple for their color's player.
 const FLIP_RING_FOR_SHAPE = { "red-x": "red-ring", "blue-o": "blue-ring" };
@@ -32,7 +34,9 @@ const FLIP_BOT_LEVELS = {
 const FLIP_BOT_DEFAULT_LEVEL = 3;
 
 function flipBoardPreset(boardSize) {
-  return boardSize === "4x6" ? FLIP_BOARD_4X6 : FLIP_BOARD_5X5;
+  if (boardSize === "6x6") return FLIP_BOARD_6X6;
+  if (boardSize === "5x5") return FLIP_BOARD_5X5;
+  return FLIP_BOARD_4X6;
 }
 
 function flipBoardDimsFromBoard(board) {
@@ -42,14 +46,15 @@ function flipBoardDimsFromBoard(board) {
 }
 
 function normalizeFlipSettings(options = {}) {
-  const boardSize = options.boardSize === "5x5" ? "5x5" : "4x6";
+  const boardSize =
+    options.boardSize === "5x5" ? "5x5" : options.boardSize === "6x6" ? "6x6" : "4x6";
   const preset = flipBoardPreset(boardSize);
   const maxPlayerPieces = Math.floor(preset.cells / 2);
   let playerPieces = clampInt(
     options.playerPieces,
     0,
     maxPlayerPieces,
-    FLIP_TRIPLES_DEFAULT_PLAYER_PIECES
+    preset.defaultPieces
   );
   let purple = clampInt(options.purple, 0, preset.cells, 0);
   let yellow = clampInt(options.yellow, 0, preset.cells, 0);
@@ -75,8 +80,11 @@ function normalizeFlipSettings(options = {}) {
     : "none";
   const uniqueSwap = options.uniqueSwap !== false;
   const staticNeutrals = options.staticNeutrals === true;
-  const protectedMiddle = boardSize === "4x6" ? false : options.protectedMiddle === true;
+  // Only odd boards have a single center cell to protect.
+  const protectedMiddle = preset.centerRow == null ? false : options.protectedMiddle === true;
   const doubleMove = options.doubleMove === true;
+  // Exact Mode is the default rule set; pass exactMode: false for classic scoring.
+  const exactMode = options.exactMode !== false;
 
   return {
     boardSize,
@@ -93,7 +101,8 @@ function normalizeFlipSettings(options = {}) {
     uniqueSwap,
     staticNeutrals,
     protectedMiddle,
-    doubleMove
+    doubleMove,
+    exactMode
   };
 }
 
@@ -276,6 +285,24 @@ function flipLineMatchesShape(cells, board, shape) {
   return ringOnly && hasRing;
 }
 
+// Exact Mode: a triple only scores when the run is exactly three long. A 3-cell
+// line whose run continues into a 4th matching cell on either side is part of a
+// longer run and scores nothing at all — so four/five/six in a row are worth 0
+// instead of 2/3/4. Rings and wildcards extend a run the same way they form one.
+function flipLineIsExactRun(cells, board, shape) {
+  const [r0, c0] = cells[0];
+  const dr = cells[1][0] - r0;
+  const dc = cells[1][1] - c0;
+  const rows = board.length;
+  const cols = board[0]?.length ?? 0;
+  const inBounds = ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols;
+  const before = [r0 - dr, c0 - dc];
+  const after = [r0 + dr * 3, c0 + dc * 3];
+  if (inBounds(before) && flipLineMatchesShape([before, ...cells], board, shape)) return false;
+  if (inBounds(after) && flipLineMatchesShape([...cells, after], board, shape)) return false;
+  return true;
+}
+
 // Seats able to perform a swap of (first -> flips, second -> slides). A ring can
 // only be flipped (led first) by the seat holding its color; it can be the
 // sliding (second) piece for either seat.
@@ -345,7 +372,7 @@ function playerHasFlipMove(state, playerIndex) {
   return flipMoveExists(state.board, state.phase, [playerIndex], state.settings ?? {}, state.seatColors);
 }
 
-function getFlipTriples(board, shape) {
+function getFlipTriples(board, shape, exactMode = false) {
   const directions = [
     [0, 1],
     [1, 0],
@@ -362,7 +389,9 @@ function getFlipTriples(board, shape) {
           ([r, c]) => r >= 0 && r < rows && c >= 0 && c < cols
         );
         if (!inBounds) return;
-        if (flipLineMatchesShape(cells, board, shape)) triples.push(cells);
+        if (!flipLineMatchesShape(cells, board, shape)) return;
+        if (exactMode && !flipLineIsExactRun(cells, board, shape)) return;
+        triples.push(cells);
       });
     }
   }
@@ -370,19 +399,20 @@ function getFlipTriples(board, shape) {
 }
 
 // Net triple score: a triple through a yellow piece counts -1 instead of +1.
-function countFlipTriples(board, shape) {
+function countFlipTriples(board, shape, exactMode = false) {
   let score = 0;
-  getFlipTriples(board, shape).forEach((triple) => {
+  getFlipTriples(board, shape, exactMode).forEach((triple) => {
     const hasYellow = triple.some(([row, col]) => board[row][col].shape === "yellow");
     score += hasYellow ? -1 : 1;
   });
   return score;
 }
 
-function getFlipTriplesScores(board) {
+function getFlipTriplesScores(board, settings = {}) {
+  const exactMode = settings.exactMode === true;
   return {
-    red: countFlipTriples(board, "red-x"),
-    blue: countFlipTriples(board, "blue-o")
+    red: countFlipTriples(board, "red-x", exactMode),
+    blue: countFlipTriples(board, "blue-o", exactMode)
   };
 }
 
@@ -406,9 +436,9 @@ function applyFlipSwapTransition(board) {
   });
 }
 
-function countFlipTriplesOpportunityBonus(board, shape) {
+function countFlipTriplesOpportunityBonus(board, shape, exactMode = false) {
   const usedOpportunityIds = new Set();
-  getFlipTriples(board, shape).forEach((triple) => {
+  getFlipTriples(board, shape, exactMode).forEach((triple) => {
     triple.forEach(([row, col]) => {
       const piece = board[row][col];
       if (piece.opportunity) usedOpportunityIds.add(piece.id);
@@ -434,8 +464,9 @@ function countFlipRemainingWhitePieces(board, shape) {
   return count;
 }
 
-// Tie-breaker: 5×5 uses the center cell (occupant loses). 4×6 uses remaining
-// unflipped player pieces — more white X's or O's wins; equal counts stay tied.
+// Tie-breaker: 5×5 uses the center cell (occupant loses). The center-less
+// boards (4×6, 6×6) use remaining unflipped player pieces — more white X's or
+// O's wins; equal counts stay tied.
 function computeFlipWinner(state) {
   const { red, blue } = state.scores;
   if (red > blue) return "red";
@@ -471,7 +502,8 @@ function flipColorHasScoringMove(state, color) {
   const seat = seatColors ? seatColors.indexOf(color) : -1;
   if (seat < 0) return false;
   const shape = color === "red" ? "red-x" : "blue-o";
-  const before = countFlipTriples(board, shape);
+  const exactMode = settings.exactMode === true;
+  const before = countFlipTriples(board, shape, exactMode);
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const first = board[row][col];
@@ -489,7 +521,7 @@ function flipColorHasScoringMove(state, color) {
           const savedFrom = board[row][col];
           board[r2][c2] = { ...first, flipped: phase === 1 };
           board[row][col] = second;
-          const after = countFlipTriples(board, shape);
+          const after = countFlipTriples(board, shape, exactMode);
           board[r2][c2] = savedTo;
           board[row][col] = savedFrom;
           if (after > before) return true;
@@ -518,11 +550,12 @@ export function createFlipTriplesGame({ io, rooms }) {
   function finalizeFlipTriples(room) {
     const state = room.flipTriples;
     if (state.phase === 2) {
-      state.phaseScores.phase2 = getFlipTriplesScores(state.board);
+      state.phaseScores.phase2 = getFlipTriplesScores(state.board, state.settings);
       if (state.settings.extendedRule === "ring") {
+        const exactMode = state.settings.exactMode === true;
         state.phaseScores.bonus = {
-          red: countFlipTriplesOpportunityBonus(state.board, "red-x"),
-          blue: countFlipTriplesOpportunityBonus(state.board, "blue-o")
+          red: countFlipTriplesOpportunityBonus(state.board, "red-x", exactMode),
+          blue: countFlipTriplesOpportunityBonus(state.board, "blue-o", exactMode)
         };
       }
     }
@@ -535,7 +568,7 @@ export function createFlipTriplesGame({ io, rooms }) {
   function advanceFlipPhaseOrEnd(room) {
     const state = room.flipTriples;
     if (state.phase === 1) {
-      state.phaseScores.phase1 = getFlipTriplesScores(state.board);
+      state.phaseScores.phase1 = getFlipTriplesScores(state.board, state.settings);
       refreshFlipTriplesTotals(state);
       if (state.settings.mode === "basic") {
         finalizeFlipTriples(room);

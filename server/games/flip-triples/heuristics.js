@@ -10,6 +10,10 @@
 //   lockedTriples     3-in-a-rows whose cells are all locked (banked)   (+carry)
 //   softTriples       any current 3-in-a-row, even if a piece can leave
 //   permanentTriples  3-in-a-rows whose cells are all permanent (⊇ locked) (+carry)
+//   sealedTriples     Exact Mode: permanent triples that ALSO cannot be spoiled —
+//                     neither cell just off the line's ends can ever match, so no
+//                     one can stretch it into a worthless 4-run. Outside Exact
+//                     Mode it is identical to permanentTriples.
 //   completionSpaces  one-move threats to LOCK a permanent triple
 //   completionSpacesHot  completionSpaces, but tempo-aware: the mover's threats
 //                     count full, the idle side's are discounted (blockable)
@@ -58,6 +62,29 @@ export const HEURISTICS = {
     permanentTriples: 2000,
     completionSpaces: 250,
     whitePieces: 10
+  },
+
+  // ---- Exact Mode candidates -------------------------------------------
+  // In Exact Mode a completed triple can be DESTROYED: either player may lock a
+  // matching piece just off its end, stretching it to a worthless 4-run. So
+  // "permanent" no longer means "banked", and frozen over-values triples it can
+  // still lose. These two price that in.
+
+  // Strict: only triples nothing can spoil count as material.
+  sealed: {
+    sealedTriples: 2000,
+    completionSpaces: 250,
+    whitePieces: 10
+  },
+
+  // Hedged: a spoilable triple is still worth something (800), a safe one is
+  // worth the full 2000 (800 permanent + 1200 sealed, since the terms stack).
+  // Keeps a dense gradient early, when almost nothing is sealed yet.
+  hedged: {
+    permanentTriples: 800,
+    sealedTriples: 1200,
+    completionSpaces: 250,
+    whitePieces: 10
   }
 
   // ---- add your own below, then pit it with --a <name> --b <name> ----
@@ -74,6 +101,7 @@ export const FEATURE_KEYS = [
   "lockedTriples",
   "softTriples",
   "permanentTriples",
+  "sealedTriples",
   "completionSpaces",
   "completionSpacesHot",
   "whitePieces",
