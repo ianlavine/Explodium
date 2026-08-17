@@ -139,6 +139,10 @@
 .flip-piece {
   width: clamp(58px, 12vw, 86px);
   aspect-ratio: 1;
+  /* Size reference for the glyphs inside: their font-size is a share of the
+     cell's own width (cqw), so a symbol can never outgrow its disc the way a
+     viewport-clamped font-size did on the narrower boards. */
+  container-type: inline-size;
   border-radius: 999px;
   border: 2px solid rgba(17, 21, 28, 0.86);
   background: #f7f8fb;
@@ -204,13 +208,15 @@
   display: block;
 }
 
+/* Absolutely positioned so the glyph's line box never contributes to the
+   button's height — an in-flow × used to stretch the disc into an oval. */
 .flip-symbol.red-x {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
   color: #df2424;
-  font-size: clamp(54px, 11vw, 86px);
+  font-size: 100cqw;
   font-weight: 700;
   line-height: 1;
 }
@@ -234,7 +240,7 @@
   top: 50%;
   transform: translate(-50%, -50%);
   color: #9b4dff;
-  font-size: clamp(64px, 13vw, 104px);
+  font-size: 121cqw;
   font-weight: 700;
   line-height: 1;
   z-index: 1;
@@ -262,14 +268,14 @@
   top: 50%;
   transform: translate(-50%, -50%);
   color: #11151c;
-  font-size: clamp(24px, 5vw, 38px);
+  font-size: 44cqw;
   font-weight: 700;
   line-height: 1;
 }
 
 .flip-symbol.hopper {
   color: #11151c;
-  font-size: clamp(30px, 6vw, 48px);
+  font-size: 56cqw;
   font-weight: 700;
   line-height: 1;
 }

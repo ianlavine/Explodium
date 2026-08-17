@@ -35,9 +35,50 @@ function isActive() {
   return app.currentGame?.id === "flip-triples";
 }
 
+// 6x6 is dealt either 14 pieces each (8 neutral) or 13 each (10 neutral); the
+// other boards have a single fixed piece count.
+const FLIP_SIX_PIECE_CHOICES = [14, 13];
+
+function flipSixPieces(draft) {
+  return FLIP_SIX_PIECE_CHOICES.includes(draft?.sixPieces) ? draft.sixPieces : 14;
+}
+
+// Scoring pieces per player before purple/rings take their slots.
+function flipBasePieces(draft) {
+  const preset = flipBoardPreset(draft?.boardSize);
+  return preset.boardSize === "6x6" ? flipSixPieces(draft) : preset.defaultPieces;
+}
+
+// Purple takes the place of one scoring piece per player. On 4x6 that is a
+// single wildcard replacing one X (the spare slot becomes a neutral); on 6x6
+// it is a pair, one purple for the X and one for the O, so the neutral count
+// stays put.
+function flipPurpleCount(draft) {
+  if (!draft?.purple) return 0;
+  return flipBoardPreset(draft.boardSize).boardSize === "6x6" ? 2 : 1;
+}
+
+// Reopen the setup card (a rematch) on the settings just played. `sixPieces` is
+// the deal before purple/rings claimed their slots, i.e. the inverse of
+// flipDraftToOptions.
+function flipDraftFromSettings(settings) {
+  const purple = (settings.purple ?? 0) > 0;
+  const rings = settings.rings ?? 0;
+  return {
+    boardSize: flipBoardPreset(settings.boardSize).boardSize,
+    sixPieces: (settings.playerPieces ?? 0) + (purple ? 1 : 0) + (rings > 0 ? 1 : 0),
+    purple,
+    yellow: (settings.yellow ?? 0) > 0,
+    rings: rings > 0,
+    doubleMove: settings.doubleMove === true,
+    exactMode: settings.exactMode === true
+  };
+}
+
 function defaultFlipSetupDraft() {
   return {
     boardSize: "4x6",
+    sixPieces: 14,
     purple: false,
     yellow: false,
     rings: false,
@@ -46,19 +87,19 @@ function defaultFlipSetupDraft() {
   };
 }
 
-// The setup screen only exposes the board size and a few toggles; everything
-// else is fixed to the basic game (unique swap on). Purple replaces a scoring
-// piece per player; yellow only replaces a neutral.
+// The setup screen only exposes the board size, its piece count and a few
+// toggles; everything else is fixed to the basic game (unique swap on). Purple
+// replaces a scoring piece per player; yellow only replaces a neutral.
 function flipDraftToOptions(draft) {
-  const purple = draft.purple ? 1 : 0;
+  const purple = flipPurpleCount(draft);
   const yellow = draft.yellow ? 1 : 0;
   const rings = draft.rings ? 1 : 0; // one red + one blue ring
   const preset = flipBoardPreset(draft.boardSize);
   return {
     boardSize: preset.boardSize,
     // Rings replace a scoring-piece pair (one red + one blue), so the neutral
-    // count is unchanged; purple likewise takes a scoring slot.
-    playerPieces: preset.defaultPieces - purple - rings,
+    // count is unchanged; purple likewise takes one scoring slot per player.
+    playerPieces: flipBasePieces(draft) - (draft.purple ? 1 : 0) - rings,
     purple,
     yellow,
     hopper: 0,
@@ -640,21 +681,15 @@ function renderFlipSetup() {
   flipPhase2Banner.classList.add("hidden");
   if (!flipSetupDraft) {
     flipSetupDraft = flipTriplesState?.settings
-      ? {
-          boardSize: flipBoardPreset(flipTriplesState.settings.boardSize).boardSize,
-          purple: (flipTriplesState.settings.purple ?? 0) > 0,
-          yellow: (flipTriplesState.settings.yellow ?? 0) > 0,
-          rings: (flipTriplesState.settings.rings ?? 0) > 0,
-          doubleMove: flipTriplesState.settings.doubleMove === true,
-          exactMode: flipTriplesState.settings.exactMode === true
-        }
+      ? flipDraftFromSettings(flipTriplesState.settings)
       : defaultFlipSetupDraft();
   }
   flipSetup.classList.remove("hidden");
 
   const draft = flipSetupDraft;
   const preset = flipBoardPreset(draft.boardSize);
-  const base = preset.defaultPieces;
+  const is6x6 = preset.boardSize === "6x6";
+  const base = flipBasePieces(draft);
   const boardChoices = [FLIP_BOARD_4X6, FLIP_BOARD_6X6]
     .map(
       (option) => `
@@ -662,22 +697,45 @@ function renderFlipSetup() {
           option.boardSize === preset.boardSize ? " active" : ""
         }" data-board="${option.boardSize}">
           <span class="flip-option-title">${option.label}</span>
-          <small>${option.defaultPieces} each + ${
-        option.cells - option.defaultPieces * 2
-      } neutral</small>
+          <small>${
+            option.boardSize === "6x6"
+              ? `${FLIP_SIX_PIECE_CHOICES.join(" or ")} each`
+              : `${option.defaultPieces} each + ${option.cells - option.defaultPieces * 2} neutral`
+          }</small>
         </button>`
     )
     .join("");
+  // 6x6 alone offers a choice of deal, so its piece-count row only appears
+  // once that board is picked.
+  const sixChoices = is6x6
+    ? `
+      <div class="flip-board-choices" role="group" aria-label="Pieces per player">
+        ${FLIP_SIX_PIECE_CHOICES.map(
+          (count) => `
+          <button type="button" class="flip-board-btn${
+            count === base ? " active" : ""
+          }" data-six-pieces="${count}">
+            <span class="flip-option-title">${count} each</span>
+            <small>${FLIP_BOARD_6X6.cells - count * 2} neutral</small>
+          </button>`
+        ).join("")}
+      </div>`
+    : "";
   flipSetup.innerHTML = `
     <div class="flip-setup-card">
       <h3>Game setup</h3>
       <div class="flip-board-choices" role="group" aria-label="Board size">
         ${boardChoices}
       </div>
+      ${sixChoices}
       <div class="flip-option-toggles" role="group" aria-label="Optional pieces">
         <button type="button" class="flip-option-toggle${draft.purple ? " active" : ""}" data-toggle="purple">
           <span class="flip-option-title">Purple</span>
-          <small>${base - 1} scoring pieces each; one neutral becomes a purple wildcard</small>
+          <small>${base - 1} scoring pieces each; ${
+            is6x6
+              ? "one X and one O become purple wildcards"
+              : "one neutral becomes a purple wildcard"
+          }</small>
         </button>
         <button type="button" class="flip-option-toggle${draft.yellow ? " active" : ""}" data-toggle="yellow">
           <span class="flip-option-title">Yellow</span>
@@ -901,6 +959,16 @@ flipSetup.addEventListener("click", (event) => {
   if (boardBtn) {
     flipSetupDraft.boardSize = flipBoardPreset(boardBtn.dataset.board).boardSize;
     renderFlipSetup();
+    return;
+  }
+
+  const sixBtn = target.closest(".flip-board-btn[data-six-pieces]");
+  if (sixBtn) {
+    const count = Number(sixBtn.dataset.sixPieces);
+    if (FLIP_SIX_PIECE_CHOICES.includes(count)) {
+      flipSetupDraft.sixPieces = count;
+      renderFlipSetup();
+    }
     return;
   }
 
