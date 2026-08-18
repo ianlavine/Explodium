@@ -1,0 +1,560 @@
+/* Downstream — the grid takes the left of the screen, the scores, your tiles
+   and the log sit in a fixed column on the right. Cell size is measured from
+   the viewport in client.js and published as --ds-cell, which everything drawn
+   on a square scales from. */
+
+/* The shell is a centred 1200px card by default; here the board wants the
+   whole window. Scoped to body.ds-mode so no other game is affected. */
+body.ds-mode .shell {
+  max-width: none;
+  padding: 14px 20px 16px;
+}
+
+body.ds-mode .game-header {
+  margin-bottom: 6px;
+}
+
+body.ds-mode .play-area {
+  align-items: flex-start;
+  padding-bottom: 8px;
+}
+
+.board.ds-host {
+  display: block;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+}
+
+.ds-board {
+  position: relative;
+  padding: 10px;
+  border-radius: 16px;
+  background: radial-gradient(circle at 30% 10%, #1d2a33 0%, #121820 70%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.5);
+}
+
+/* Every cell is absolutely placed from the metrics in client.js, so one code
+   path draws both board shapes. */
+.ds-grid {
+  position: relative;
+}
+
+/* --- cells ------------------------------------------------------------------ */
+
+.ds-cell {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: calc(var(--ds-cell, 46px) * 0.17);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(var(--ds-cell, 46px) * 0.44);
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ds-cell.ds-open {
+  cursor: pointer;
+}
+
+.ds-cell.ds-open:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.ds-cell.ds-blocked {
+  background: rgba(255, 255, 255, 0.015);
+  border-style: dashed;
+}
+
+.ds-filled {
+  border-color: transparent;
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.28);
+}
+
+/* A 0 is the sea: ring it so the finish lines stand out across the board. */
+.ds-filled.ds-zero .ds-num::after {
+  content: "";
+  position: absolute;
+  inset: 11%;
+  border-radius: 50%;
+  border: 2px dashed rgba(255, 255, 255, 0.5);
+}
+
+/* Ghost of the selected tile under the cursor. */
+.ds-cell.ds-preview {
+  background: rgba(53, 200, 216, 0.16);
+  box-shadow: inset 0 0 0 2px rgba(53, 200, 216, 0.65);
+}
+
+.ds-cell.ds-preview::before {
+  content: attr(data-preview);
+  position: absolute;
+  color: rgba(53, 200, 216, 0.85);
+  font-size: calc(var(--ds-cell, 46px) * 0.44);
+  font-weight: 700;
+}
+
+/* A square the running token could go to — the player picks one. */
+.ds-cell.ds-choice {
+  cursor: pointer;
+  animation: ds-pulse 1.05s ease-in-out infinite;
+  z-index: 2;
+}
+
+@keyframes ds-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(120, 220, 255, 0.85), 0 0 14px rgba(120, 220, 255, 0.5); }
+  50% { box-shadow: 0 0 0 4px rgba(120, 220, 255, 1), 0 0 26px rgba(120, 220, 255, 0.8); }
+}
+
+/* Hexes are pointy-topped. clip-path takes the border and box-shadow with it,
+   so the outline and the highlight glow are done with drop-shadow instead —
+   that one follows the clipped silhouette. */
+.ds-cell-hex {
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  border: none;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ds-cell-hex.ds-blocked {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ds-cell-hex.ds-preview {
+  box-shadow: none;
+  background: rgba(53, 200, 216, 0.3);
+}
+
+.ds-cell-hex.ds-choice {
+  animation: ds-pulse-hex 1.05s ease-in-out infinite;
+}
+
+@keyframes ds-pulse-hex {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(120, 220, 255, 0.9)) brightness(1.35); }
+  50% { filter: drop-shadow(0 0 10px rgba(120, 220, 255, 1)) brightness(1.8); }
+}
+
+/* --- player colours --------------------------------------------------------- */
+
+.ds-p0 { --seat: #35c8d8; }
+.ds-p1 { --seat: #f0a83a; }
+.ds-p2 { --seat: #e2657f; }
+.ds-p3 { --seat: #86cf5a; }
+
+.ds-filled.ds-p0, .ds-filled.ds-p1, .ds-filled.ds-p2, .ds-filled.ds-p3 {
+  background: color-mix(in srgb, var(--seat) 26%, #10161d);
+  color: color-mix(in srgb, var(--seat) 72%, white);
+}
+
+/* --- water tokens ----------------------------------------------------------- */
+
+.ds-tokens {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  pointer-events: none;
+}
+
+/* Only clickable while the fork on offer is "which token takes the tile". */
+.ds-tokens.ds-tokens-live {
+  pointer-events: auto;
+}
+
+.ds-token {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50% 50% 50% 12%;
+  background: radial-gradient(circle at 34% 28%, #9fe9ff 0%, #34a6e8 45%, #1a5fb4 100%);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45), inset 0 -4px 8px rgba(0, 0, 0, 0.25);
+  transform-origin: center;
+  /* One glide per square; keep in step with HOP_MS in client.js. */
+  transition: transform 0.34s cubic-bezier(0.34, 1.15, 0.64, 1);
+  z-index: 3;
+}
+
+/* The number the token is standing on — the tile underneath is hidden by it. */
+.ds-token-value {
+  font-size: calc(var(--ds-cell, 46px) * 0.4);
+  font-weight: 700;
+  color: #06263d;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.ds-token-id {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  font-size: calc(var(--ds-cell, 46px) * 0.2);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Still dry: no number of its own until a 6 lands beside it. */
+.ds-token-dry {
+  background: radial-gradient(circle at 34% 28%, #cfeeff 0%, #7fb8d8 50%, #45789c 100%);
+}
+
+.ds-token-dead {
+  background: radial-gradient(circle at 34% 28%, #8e9aa6 0%, #55606b 55%, #333c45 100%);
+  border-radius: 14%;
+  opacity: 0.85;
+}
+
+.ds-token-done {
+  background: radial-gradient(circle at 34% 28%, #fff3c4 0%, #ffcf5c 50%, #e0972a 100%);
+  border-radius: 50%;
+  opacity: 0.9;
+}
+
+.ds-token-pick {
+  cursor: pointer;
+  animation: ds-token-pulse 1s ease-in-out infinite;
+}
+
+@keyframes ds-token-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(120, 220, 255, 0.9), 0 0 16px rgba(120, 220, 255, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(120, 220, 255, 1), 0 0 30px rgba(120, 220, 255, 0.9); }
+}
+
+/* --- the right-hand column -------------------------------------------------- */
+
+/* The shared .hand is already pinned to the right edge; this makes it a full
+   column and keeps it clear of the fixed Leave Game button. */
+.hand.ds-panel-host {
+  top: 92px;
+  right: 20px;
+  width: 310px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.ds-scores {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ds-score {
+  display: grid;
+  grid-template-columns: 14px 1fr auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid transparent;
+}
+
+.ds-score-turn {
+  border-color: color-mix(in srgb, var(--seat) 70%, transparent);
+  background: color-mix(in srgb, var(--seat) 12%, rgba(255, 255, 255, 0.04));
+}
+
+.ds-chip {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--seat);
+}
+
+.ds-score-name {
+  font-weight: 600;
+}
+
+.ds-score-lead .ds-score-name::after {
+  content: " ♛";
+  color: var(--accent-2);
+}
+
+.ds-score-tiles {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ds-score-tiles::after {
+  content: " tiles";
+}
+
+.ds-score-pts {
+  min-width: 34px;
+  text-align: right;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--seat);
+}
+
+.ds-delta {
+  font-size: 13px;
+  font-weight: 700;
+  animation: ds-float 0.9s ease-out;
+}
+
+.ds-delta.up { color: #7fe0a0; }
+.ds-delta.down { color: var(--danger); }
+
+@keyframes ds-float {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.ds-hint {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 14px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.ds-hint-act {
+  color: var(--text);
+  background: rgba(53, 200, 216, 0.12);
+  border: 1px solid rgba(53, 200, 216, 0.35);
+}
+
+.ds-hint-big {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--accent-2);
+}
+
+/* Offered only when a token has nothing but sideways moves left. */
+.ds-stop {
+  margin: 0;
+  align-self: stretch;
+  border-color: rgba(120, 220, 255, 0.5);
+  color: #bfeeff;
+}
+
+/* --- your tiles ------------------------------------------------------------- */
+
+.ds-rack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.ds-rack-label {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.ds-rack-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Five across at the default hand size; a wider hand wraps to a second row. */
+.ds-tile {
+  flex: 1 0 calc(20% - 7px);
+  min-width: 42px;
+  height: 68px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--seat) 26%, #10161d);
+  color: color-mix(in srgb, var(--seat) 78%, white);
+  font-family: inherit;
+  font-size: 28px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.ds-tile:hover {
+  transform: translateY(-4px);
+}
+
+.ds-tile-sel {
+  transform: translateY(-6px);
+  border-color: var(--seat);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.45), 0 0 0 2px var(--seat);
+}
+
+.ds-tile-off {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ds-tile-off:hover {
+  transform: none;
+}
+
+.ds-rack-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ds-again {
+  margin: 0;
+  padding: 7px 14px;
+}
+
+/* --- scoring options -------------------------------------------------------- */
+
+.ds-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.ds-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ds-setting-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.ds-setting-head b {
+  font-size: 18px;
+  color: var(--accent-2);
+}
+
+.ds-setting-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: rgba(169, 176, 189, 0.6);
+}
+
+.ds-setting-input {
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  accent-color: #35c8d8;
+  cursor: pointer;
+}
+
+.ds-setting-choice {
+  display: flex;
+  gap: 6px;
+}
+
+.ds-setting-opt {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ds-setting-opt.ds-opt-on {
+  border-color: #35c8d8;
+  background: rgba(53, 200, 216, 0.18);
+  color: var(--text);
+}
+
+.ds-setting-hint {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: rgba(169, 176, 189, 0.75);
+}
+
+.ds-setting-hint em {
+  color: var(--accent-2);
+  font-style: normal;
+}
+
+.ds-restart {
+  margin: 2px 0 0;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+/* --- rules and log ---------------------------------------------------------- */
+
+.ds-rules-btn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+.ds-rules {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.ds-rules p {
+  margin: 0 0 8px;
+}
+
+.ds-rules b {
+  color: var(--text);
+}
+
+.ds-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.ds-log-line {
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ds-log-line:first-child {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}

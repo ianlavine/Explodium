@@ -331,7 +331,10 @@ function pruneGrid(rng, walls, vLines, hLines, borders, target) {
 // Rasterization: clearance field + block regions
 // ---------------------------------------------------------------------------
 
-function collectSegments(streets) {
+// Every straight piece of every street, as [x1,y1,x2,y2]. Exported because a
+// parking space is only routable while it sits ON one of these — anything that
+// moves a space has to move it along a segment.
+export function collectSegments(streets) {
   const segs = [];
   for (const street of streets) {
     const pts = streetToPolyline(street);
@@ -411,6 +414,41 @@ function findRegions(clearance, gw, gh) {
   }
 
   return regions;
+}
+
+// A block's cells, decomposed into as few axis-aligned rectangles as a greedy
+// pass manages — a plain rectangular block comes out as ONE, and even the
+// irregular merged ones only take a handful. The cells are the space BETWEEN
+// the streets (that's what a positive clearance means), so the rectangles tile
+// the block exactly, right up to the kerb, without ever covering a road.
+// Returned in pixels so a client can draw them knowing nothing about the grid.
+// (Uber Mania's forced mode paints these to show neighbourhoods; anything that
+// doesn't want them simply ignores the field.)
+function blockRects(cells, gw) {
+  const open = new Set(cells);
+  const rects = [];
+  for (const idx of [...cells].sort((a, b) => a - b)) { // row-major
+    if (!open.has(idx)) continue;
+    const gx = idx % gw;
+    // Widen along the row, then deepen while the whole width stays open.
+    let w = 1;
+    while (gx + w < gw && open.has(idx + w)) w += 1;
+    let h = 1;
+    for (;;) {
+      const base = idx + h * gw;
+      let full = true;
+      for (let k = 0; k < w; k += 1) {
+        if (!open.has(base + k)) { full = false; break; }
+      }
+      if (!full) break;
+      h += 1;
+    }
+    for (let r = 0; r < h; r += 1) {
+      for (let k = 0; k < w; k += 1) open.delete(idx + r * gw + k);
+    }
+    rects.push([gx * GRID, ((idx / gw) | 0) * GRID, w * GRID, h * GRID]);
+  }
+  return rects;
 }
 
 // The little pocket outside a rounded corner's arc is not a city block.
@@ -1237,7 +1275,12 @@ function generateSimpleOnce(rng, seed, cfg) {
 
   const outBlocks = blocks
     .filter((b) => b.buildings.length)
-    .map((b, i) => ({ id: `block-${i}`, area: Math.round(b.areaPx), buildings: b.buildings }));
+    .map((b, i) => ({
+      id: `block-${i}`,
+      area: Math.round(b.areaPx),
+      rects: blockRects(b.cells, gw),
+      buildings: b.buildings
+    }));
 
   return {
     seed,
@@ -1366,7 +1409,12 @@ function generateOnce(rng, seed, cfg) {
 
   const outBlocks = blocks
     .filter((b) => b.buildings.length)
-    .map((b, i) => ({ id: `block-${i}`, area: Math.round(b.areaPx), buildings: b.buildings }));
+    .map((b, i) => ({
+      id: `block-${i}`,
+      area: Math.round(b.areaPx),
+      rects: blockRects(b.cells, gw),
+      buildings: b.buildings
+    }));
 
   return {
     seed,

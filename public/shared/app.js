@@ -1,6 +1,6 @@
 // Lobby shell: home screen, matchmaking, and dispatch of socket events to the
 // per-game client modules in ../games/<game-id>/client.js. Each module exposes:
-//   id, name, hidden?, hasBots? - home screen metadata
+//   id, name, hidden?, hasBots?, soloOnly? - home screen metadata
 //   handleState(payload, resetGameUi) -> bool - render a state_update it owns
 //   handleTurn?(turn) -> bool  - intercept turn_update (Flip Triples phases)
 //   clearState?()              - drop cached state when another game takes over
@@ -11,10 +11,13 @@ import { explodium } from "../games/explodium/client.js";
 import { toyBattle } from "../games/toy-battle/client.js";
 import { flipTriples } from "../games/flip-triples/client.js";
 import { truckMania } from "../games/truck-mania/client.js";
+import { landmarkMania } from "../games/landmark-mania/client.js";
 import { uberMania } from "../games/uber-mania/client.js";
 import { lino } from "../games/lino/client.js";
+import { downstream } from "../games/downstream/client.js";
+import { only3 } from "../games/only-3/client.js";
 
-const games = [explodium, toyBattle, flipTriples, truckMania, uberMania, lino];
+const games = [explodium, toyBattle, flipTriples, truckMania, uberMania, landmarkMania, lino, downstream, only3];
 
 let soloPickerGame = null;
 
@@ -48,8 +51,12 @@ socket.on("match_found", ({ roomId: newRoomId, turn, gameId, playerIndex }) => {
   }, 600);
 });
 
+// Games that render their own turn text (Flip Triples' phases, Only 3's
+// side-to-move) claim the update by returning true from handleTurn.
 socket.on("turn_update", ({ turn }) => {
-  if (flipTriples.handleTurn(turn)) return;
+  for (const game of games) {
+    if (game.handleTurn?.(turn)) return;
+  }
   updateTurn(turn);
 });
 
@@ -62,8 +69,14 @@ socket.on("state_update", (payload) => {
     ? truckMania
     : payload.uberMania
     ? uberMania
+    : payload.landmarkMania
+    ? landmarkMania
     : payload.lino
     ? lino
+    : payload.downstream
+    ? downstream
+    : payload.only3
+    ? only3
     : explodium;
   games.forEach((game) => {
     if (game !== handler) game.clearState?.();
@@ -219,6 +232,12 @@ els.gameList.addEventListener("click", (event) => {
   if (!selected) return;
   if (selected.openSetup) {
     selected.openSetup({ mode: "queue", onReady: (options) => startQueue(selected, options) });
+    return;
+  }
+  // Games seated with AI opponents (Downstream) have no two-player queue —
+  // the card just starts a table.
+  if (selected.soloOnly) {
+    startSoloGame(selected);
     return;
   }
   startQueue(selected);

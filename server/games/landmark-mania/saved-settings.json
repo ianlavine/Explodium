@@ -4,6 +4,9 @@
     "name": "atempoo 3",
     "settings": {
       "landmarkMode": false,
+      "starMode": false,
+      "simpleMode": false,
+      "forcedMode": false,
       "rideMode": "ride-2",
       "upgradeMode": "spawn",
       "timedPeriods": 0,
@@ -15,7 +18,9 @@
         "destress": 6,
         "upgrade": 6,
         "discovery": 0,
-        "landmark": 21
+        "star": 0,
+        "landmark": 21,
+        "required": 0
       },
       "timeStoneReward": 6,
       "tokenReward": 3,
@@ -35,9 +40,28 @@
       "finePoints": 2,
       "cardPenalty": 1,
       "shortPenalty": 1,
+      "startingRating": 2,
+      "ratingMax": 7,
+      "hoodSpread": [
+        0,
+        0,
+        0,
+        1,
+        3,
+        6
+      ],
+      "starMostBonus": 6,
+      "starFineBonus": 6,
+      "simpleStartStars": 1,
+      "simpleFineSwing": 3,
+      "forcedCardPoints": 1,
+      "forcedMissPenalty": 1,
+      "forcedFineSwing": 1,
+      "forcedCards": 2,
       "welfareTokens": 1,
       "welfareStones": 2,
       "begTokens": 1,
+      "begStones": 0,
       "blankLights": {
         "green": 5,
         "red": 1
@@ -49,6 +73,9 @@
     "name": "broken?",
     "settings": {
       "landmarkMode": false,
+      "starMode": false,
+      "simpleMode": false,
+      "forcedMode": false,
       "rideMode": "duplicate",
       "upgradeMode": "spawn",
       "timedPeriods": 0,
@@ -60,7 +87,9 @@
         "destress": 11,
         "upgrade": 6,
         "discovery": 0,
-        "landmark": 30
+        "star": 0,
+        "landmark": 30,
+        "required": 0
       },
       "timeStoneReward": 6,
       "tokenReward": 3,
@@ -80,9 +109,28 @@
       "finePoints": 2,
       "cardPenalty": 1,
       "shortPenalty": 1,
+      "startingRating": 2,
+      "ratingMax": 7,
+      "hoodSpread": [
+        0,
+        0,
+        0,
+        1,
+        3,
+        6
+      ],
+      "starMostBonus": 6,
+      "starFineBonus": 6,
+      "simpleStartStars": 1,
+      "simpleFineSwing": 3,
+      "forcedCardPoints": 1,
+      "forcedMissPenalty": 1,
+      "forcedFineSwing": 1,
+      "forcedCards": 2,
       "welfareTokens": 1,
       "welfareStones": 2,
       "begTokens": 1,
+      "begStones": 0,
       "blankLights": {
         "green": 5,
         "red": 1
@@ -94,6 +142,9 @@
     "name": "prepared",
     "settings": {
       "landmarkMode": false,
+      "starMode": false,
+      "simpleMode": false,
+      "forcedMode": false,
       "rideMode": "duplicate",
       "upgradeMode": "spawn",
       "timedPeriods": 2,
@@ -105,7 +156,9 @@
         "destress": 10,
         "upgrade": 6,
         "discovery": 0,
-        "landmark": 30
+        "star": 0,
+        "landmark": 30,
+        "required": 0
       },
       "timeStoneReward": 6,
       "tokenReward": 3,
@@ -125,9 +178,28 @@
       "finePoints": 2,
       "cardPenalty": 1,
       "shortPenalty": 1,
+      "startingRating": 2,
+      "ratingMax": 7,
+      "hoodSpread": [
+        0,
+        0,
+        0,
+        1,
+        3,
+        6
+      ],
+      "starMostBonus": 6,
+      "starFineBonus": 6,
+      "simpleStartStars": 1,
+      "simpleFineSwing": 3,
+      "forcedCardPoints": 1,
+      "forcedMissPenalty": 1,
+      "forcedFineSwing": 1,
+      "forcedCards": 2,
       "welfareTokens": 1,
       "welfareStones": 2,
       "begTokens": 1,
+      "begStones": 0,
       "blankLights": {
         "green": 5,
         "red": 1
@@ -139,6 +211,9 @@
     "name": "back to ride2",
     "settings": {
       "landmarkMode": false,
+      "starMode": false,
+      "simpleMode": false,
+      "forcedMode": false,
       "rideMode": "ride-2",
       "upgradeMode": "spawn",
       "timedPeriods": 2,
@@ -150,7 +225,9 @@
         "destress": 5,
         "upgrade": 6,
         "discovery": 0,
-        "landmark": 25
+        "star": 0,
+        "landmark": 25,
+        "required": 0
       },
       "timeStoneReward": 6,
       "tokenReward": 3,
@@ -170,9 +247,28 @@
       "finePoints": 2,
       "cardPenalty": 1,
       "shortPenalty": 1,
+      "startingRating": 2,
+      "ratingMax": 7,
+      "hoodSpread": [
+        0,
+        0,
+        0,
+        1,
+        3,
+        6
+      ],
+      "starMostBonus": 6,
+      "starFineBonus": 6,
+      "simpleStartStars": 1,
+      "simpleFineSwing": 3,
+      "forcedCardPoints": 1,
+      "forcedMissPenalty": 1,
+      "forcedFineSwing": 1,
+      "forcedCards": 2,
       "welfareTokens": 1,
       "welfareStones": 2,
       "begTokens": 1,
+      "begStones": 0,
       "blankLights": {
         "green": 5,
         "red": 1
@@ -184,6 +280,9 @@
     "name": "ride2 schedule",
     "settings": {
       "landmarkMode": false,
+      "starMode": false,
+      "simpleMode": false,
+      "forcedMode": false,
       "rideMode": "ride-2",
       "upgradeMode": "scheduled",
       "timedPeriods": 2,
@@ -195,7 +294,9 @@
         "destress": 5,
         "upgrade": 6,
         "discovery": 0,
-        "landmark": 25
+        "star": 0,
+        "landmark": 25,
+        "required": 0
       },
       "timeStoneReward": 6,
       "tokenReward": 3,
@@ -215,9 +316,28 @@
       "finePoints": 2,
       "cardPenalty": 1,
       "shortPenalty": 1,
+      "startingRating": 2,
+      "ratingMax": 7,
+      "hoodSpread": [
+        0,
+        0,
+        0,
+        1,
+        3,
+        6
+      ],
+      "starMostBonus": 6,
+      "starFineBonus": 6,
+      "simpleStartStars": 1,
+      "simpleFineSwing": 3,
+      "forcedCardPoints": 1,
+      "forcedMissPenalty": 1,
+      "forcedFineSwing": 1,
+      "forcedCards": 2,
       "welfareTokens": 1,
       "welfareStones": 2,
       "begTokens": 1,
+      "begStones": 0,
       "blankLights": {
         "green": 5,
         "red": 1

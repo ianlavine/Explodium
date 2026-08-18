@@ -1,11 +1,26 @@
-// Uber Mania — the second "Traffic Time" game. Shares Truck Mania's board
-// language (and its tm- styles for the map, clock, routes and dice): the same
-// generated streets and stop signs, the same clock + time stones, a die banked
-// per red light crossed. What's new: no packages — the buildings are locations
-// of four types grouped into tinted neighbourhoods, each with two circles a
-// player can claim with a token for the location's reward; ride cards from
-// uber pickups; and the stress bar beside the clock that the end-of-turn dice
-// roll against (fails cost tokens).
+// Uber Mania — the Traffic Time game about picking up passengers.
+//
+// The map, clock, routes, cars and dice all reuse Truck Mania's tm- styles and
+// its board language: generated streets, numbered stop signs, a die banked per
+// red light crossed. Everything with a ub- class is this game's own — the six
+// district zones, the passenger board, the two tile piles, the errand corners
+// and the star rating column.
+//
+// The rules, in one breath: six districts, one per player color, and the one
+// matching your car is home. Take a passenger tile (a whole turn) and it lands
+// on the lowest free number of your passenger board — 2, 3, 4, 5, with a bare 6
+// that nothing covers. Drive them there to finish the ride. At the end of a
+// turn every red light you ran throws a die, and a die is only safe if its face
+// is still SHOWING on your board, so a full car is a dangerous car; each miss
+// is half a star. Six errands wait, one in every district, each collectable
+// only during that district's own section of the day.
+//
+// STATIC MODE is the same city with the dice taken out. The board becomes a
+// four-deep QUEUE — deliver the far-left fare for a star, or reach over people
+// and pay half a star a head — a red light is a flat whole star, there are three
+// piles gated by your rating instead of two, and passengers come in three kinds
+// (chill pays stones, tip pays points at the end, rush forgives one red). No
+// errands, no home district. `mode` in the settings decides which one is live.
 import { socket, els, app } from "../../shared/context.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -13,151 +28,87 @@ const GREEN = "#3d9a5f";
 const RED = "#cf4a3c";
 const OCT_RADIUS = 13;
 const CAR_SCALE = 1.35;
-const CAR_SPEED = 200; // px per second
+const CAR_SPEED = 200; // px per second — keep in sync with the server
 
-const LOC_LABELS = {
-  timestone: "Time stones", token: "Tokens", destress: "Destress",
-  upgrade: "Upgrade spot", discovery: "Discovery", landmark: "Landmark"
-};
-// The payout symbol shown inside a location's empty token circles.
-const SLOT_SYMBOLS = { timestone: "⬟", token: "💰", destress: "🍵", discovery: "🔭" };
+// The passenger board. Squares over 2–5, a bare 6 that no tile can cover.
+// (Server: BOARD_NUMBERS / FREE_NUMBER — keep in sync.)
+const BOARD_NUMBERS = [2, 3, 4, 5];
+const FREE_NUMBER = 6;
+const MAX_PASSENGERS = BOARD_NUMBERS.length;
+const RATING_MAX = 5;
+// One seat per district — a player's color IS their home. (Server: MAX_SEATS.)
+const MAX_SEATS = 6;
 
-const isDuplicateMode = () => settingsState?.rideMode === "duplicate";
-// Landmark mode: 50 locations, seven scoring colors, no neighbourhoods and no
-// destress locations. Cards are picked up at discovery locations rather than
-// dealt, and the four upgrade locations each hold a stack behind a named
-// window. (Keep the numbers here in sync with the server.)
-const isLandmarkMode = () => settingsState?.landmarkMode === true;
-// Landmark mode's four upgrade windows. (Server: LANDMARK_WINDOWS.)
-const LANDMARK_WINDOWS = [
-  { name: "Morning", label: "8–11am", from: 8, to: 11 },
-  { name: "Afternoon", label: "1–4pm", from: 13, to: 16 },
-  { name: "Evening", label: "7–10pm", from: 19, to: 22 },
-  { name: "Night", label: "2–5am", from: 2, to: 5 }
-];
-const landmarkWindowOpen = (i, t) => {
-  const w = LANDMARK_WINDOWS[i];
-  return !w || (t >= w.from && t <= w.to);
+// A tile's symbol: what its back promises. Dice mode has two kinds, static mode
+// three. (Server: TILE_BONUSES / STATIC_TYPES — keep in sync.)
+// 🪙 is a SILVER coin at this size and reads as a grey blob on a colored tile;
+// the money bag is the one that still says "money" at 30px.
+const BONUS_ICON = { stones: "⬟", star: "⭐", chill: "⬟", tip: "💰", rush: "😡" };
+const BONUS_TEXT = {
+  stones: "4 time stones the moment you take it",
+  star: "a whole star when you finish the ride",
+  chill: "6 time stones the moment you take them",
+  tip: "worth your final rating in points, once delivered",
+  rush: "one red light free on the turn you drop them off"
 };
-// How many landmark cards a player sees at once — the rest wait face down,
-// and every night that ends with cards still buried costs a point apiece.
-const visibleCardCap = () => 1 + (hasUpgrade("extraRide") ? 1 : 0);
+const BONUS_NAME = { chill: "Chill", tip: "Tip", rush: "Rush" };
 
-// The upgrade types the roaming upgrade spawns as (ids match the server).
-// The supply is a depleting deck: two copies of each of these, plus one
-// neighbourhood upgrade per hood.
-const UPGRADE_META = {
-  uturn: { icon: "↩️", name: "U-turn", desc: "Your car can U-turn" },
-  rightOnRed: { icon: "↪️", name: "Right on red", desc: "Right turns at red lights don't bank a die" },
-  nearbyParking: { icon: "🅿️", name: "Nearby parking", desc: "Use any location in the block you parked at" },
-  timeLord: { icon: "🧙", name: "Time lord", desc: "Change the time as often as you like each turn" },
-  superCalm: { icon: "😌", name: "Super calm", desc: "Sleeping drops your marker all the way to 1–2" },
-  extraCash: { icon: "💵", name: "Extra cash", desc: "One extra token whenever you collect tokens" },
-  extraTime: { icon: "⏳", name: "Extra time", desc: "Two extra stones whenever you collect time stones" },
-  extraRide: { icon: "🚕", name: "Extra ride", desc: "Hold an extra ride card" },
-  timeAgnostic: { icon: "🌗", name: "Time agnostic", desc: "Timed locations open for you at any hour" },
-  undercut: { icon: "⤵️", name: "Undercut", desc: "Full locations still take your token — it slips beneath the ones on top (no slot-unlock credit, reward as normal)" }
-};
-const myUpgrades = () => myPlayer()?.upgrades ?? [];
-const hasUpgrade = (type) => myUpgrades().includes(type);
-// How many upgrades I may hold right now (2 base; visits unlock 3 and 4).
-const myUpgradeCap = () => Math.max(2, Math.min(4, myPlayer()?.upgradeCap ?? 2));
+// The queue modes' board: four seats, and three slots that want 0, 2 and 4
+// stars before they'll deal. (Server: STATIC_SLOTS / STATIC_PILE_RATING.)
+const STATIC_SLOTS = 4;
+const PRIORITY_STAR = 0.5; // only the fallback now — the table sets this
+const SKIP_STAR_STEP = 0.5;
+const RED_STAR_COST = 1;
 
-// Meta for any upgrade type — the fixed catalog above, or a neighbourhood
-// upgrade ("hood:<id>"): end a turn parked in that hood and choose a reward.
-const HOOD_REWARD_META = {
-  token: { icon: "💰", text: "1 token" },
-  destress: { icon: "🍵", text: "1 destress step" },
-  stones: { icon: "⬟", text: "2 time stones" }
+// The three sections of the day. (Server: sectionOf — keep in sync.)
+const SECTION_META = {
+  morning: { name: "Morning", label: "1–8am", icon: "🌅" },
+  work: { name: "Work", label: "9am–4pm", icon: "🏢" },
+  evening: { name: "Evening", label: "5pm–midnight", icon: "🌆" }
 };
-function upgradeMeta(type) {
-  if (UPGRADE_META[type]) return UPGRADE_META[type];
-  const m = /^hood:(\d+)$/.exec(type ?? "");
-  if (m) {
-    const hood = hoodsState.find((h) => h.id === Number(m[1]));
-    return {
-      icon: "🏘️",
-      color: hood?.color,
-      name: `${hood?.name ?? "Neighbourhood"} local`,
-      desc: "End your turn in this color's neighbourhood and choose: 1 token, 1 destress step, or 2 time stones"
-    };
-  }
-  return { icon: "⬛", name: type ?? "Upgrade", desc: "" };
-}
-// The hood id a "hood:<id>" upgrade points at, or null.
-const hoodIdOf = (type) => {
-  const m = /^hood:(\d+)$/.exec(type ?? "");
-  return m ? Number(m[1]) : null;
+const sectionOf = (t) => (t >= 1 && t <= 8 ? "morning" : t >= 9 && t <= 16 ? "work" : "evening");
+
+// What gets stamped on a WAITING-mode errand token. These are read at about
+// 14px on top of a colored disc, so they have to be single high-contrast
+// shapes — SECTION_META's landscapes turn to mush at that size.
+const SECTION_TOKEN = { morning: "☀️", work: "💼", evening: "🌙" };
+
+// The three rulesets, in the order the Mode button walks through them.
+// (Server: MODES — keep in sync.)
+const MODES = ["dice", "static", "waiting"];
+const MODE_NAME = { dice: "Dice", static: "Static", waiting: "Waiting" };
+const MODE_BLURB = {
+  dice: "Dice: passengers sit on numbered squares, and every red light you run throws a die against the numbers still showing.",
+  static: "Static: no dice. Four passengers in a queue — deliver the left-hand one for a star, or pay half a star per head you reach over. Every red is a whole star.",
+  waiting: "Waiting: you cannot pass a red at all — you stop and sit on it, and drive through on a later turn. A rushing fare buys you one red, but only on the way to them. Dropping somebody off ends the drive. Errands are back — one in every district — and the set pays 2, 5, 8, 11, 15, 20."
 };
 
-// Timed locations (the timedPeriods setting). 3 — Morning, Afternoon, Night
-// (morning 6am–noon, afternoon 1pm–8pm, night 9pm–5am). 2 — Day, Night (day
-// 7am–6pm, night 7pm–6am, and a third of locations unrestricted). A timed
-// location wears its badge top right and only opens while the clock sits
-// inside its period. (Keep these in sync with the server.)
-const PERIOD_SYMBOLS = { morning: "🌅", afternoon: "☀️", night: "🌙", day: "☀️" };
-const periodOf = (t) => (t >= 6 && t <= 12 ? "morning" : t >= 13 && t <= 20 ? "afternoon" : "night");
-const dayNightOf = (t) => (t >= 7 && t <= 18 ? "day" : "night");
-// Is this location open right now under the room's timed scheme?
-const locOpen = (b, t) =>
-  !b.period || ((Number(settingsState?.timedPeriods) === 2 ? dayNightOf(t) : periodOf(t)) === b.period);
+// The two slot layouts waiting mode can deal. (Server: SLOT_RULES.)
+const SLOT_RULES = ["two-four", "three"];
+const SLOT_NAME = { "two-four": "2/4★", three: "3★" };
+const SLOT_BLURB = {
+  "two-four": "Three slots, at nothing, two stars and four stars. Take one and the ones above it slide down, so emptying the cheap slot is what feeds the dear ones.\n\nClick for the 3★ layout.",
+  three: "Two slots: one always open, one that wants three stars. Nothing slides — whichever you take is refilled where it stands and the other is left exactly as it was.\n\nClick for the 2/4★ layout."
+};
 
-// Scheduled upgrade mode: six 4-hour windows over the day; each upgrade
-// location only opens during its own (b.window). (Keep in sync with the
-// server's windowOf.)
-const UPGRADE_WINDOW_LABELS = ["1–4am", "5–8am", "9am–12pm", "1–4pm", "5–8pm", "9pm–12am"];
-const upgradeWindowOf = (t) => Math.floor(((t + 23) % 24) / 4);
-const isScheduledUpgrades = () => settingsState?.upgradeMode === "scheduled";
-// Landmark mode: each upgrade location holds a face-up stack — b.upgrade is
-// the top card, b.stackLeft how many wait beneath it.
-const isStackUpgrades = () => settingsState?.upgradeMode === "stack";
-// The upgrade waiting at this location right now, or null — scheduled and
-// stack modes read the building's own top card, spawn mode the roaming one.
-const upgradeTypeAt = (b) =>
-  isScheduledUpgrades() || isStackUpgrades()
-    ? (b.upgrade ?? null)
-    : (upgradeAtState === b.bid ? upgradeTypeState : null);
-// Is this upgrade location outside its window right now?
-const upgradeWindowClosed = (b) => {
-  if (b.window == null || hasUpgrade("timeAgnostic")) return false;
-  if (isStackUpgrades()) return !landmarkWindowOpen(b.window, timeState);
-  return isScheduledUpgrades() && upgradeWindowOf(timeState) !== b.window;
-};
-// The window label a location wears on the board. Landmark mode's windows are
-// named, and the name is short enough for a small lot — the hours ride along
-// in the tooltip (windowTitleFor).
-const windowLabelFor = (b) => (isStackUpgrades()
-  ? (LANDMARK_WINDOWS[b.window]?.name ?? "")
-  : UPGRADE_WINDOW_LABELS[b.window] ?? "");
-// The window spelled out, for tooltips and the turn line.
-const windowTitleFor = (b) => {
-  if (!isStackUpgrades()) return UPGRADE_WINDOW_LABELS[b.window] ?? "";
-  const w = LANDMARK_WINDOWS[b.window];
-  return w ? `${w.name} (${w.label})` : "";
-};
+// Half stars want one decimal, whole ones none.
+const num = (v) => (Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
 
 // Is this hex color dark enough that text on it should go light?
 function isDarkColor(hex) {
   const n = parseInt(String(hex).slice(1), 16);
   if (!Number.isFinite(n)) return false;
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  return 0.299 * r + 0.587 * g + 0.114 * b < 140;
+  return 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) < 140;
 }
 
 // A darker shade of a hex color, for location outlines.
 function darken(hex, f = 0.62) {
-  const n = parseInt(hex.slice(1), 16);
+  const n = parseInt(String(hex).slice(1), 16);
   if (!Number.isFinite(n)) return hex;
-  const r = Math.round(((n >> 16) & 255) * f);
-  const g = Math.round(((n >> 8) & 255) * f);
-  const b = Math.round((n & 255) * f);
-  return `rgb(${r}, ${g}, ${b})`;
+  return `rgb(${Math.round(((n >> 16) & 255) * f)}, ${Math.round(((n >> 8) & 255) * f)}, ${Math.round((n & 255) * f)})`;
 }
 
-// A lighter tint of a hex color (mixed toward white), for location fills —
-// the full-strength color stays on the border.
+// A lighter tint of a hex color (mixed toward white), for location fills.
 function lighten(hex, f = 0.6) {
   const n = parseInt(String(hex).slice(1), 16);
   if (!Number.isFinite(n)) return hex;
@@ -165,16 +116,23 @@ function lighten(hex, f = 0.6) {
   return `rgb(${mix((n >> 16) & 255)}, ${mix((n >> 8) & 255)}, ${mix(n & 255)})`;
 }
 
+// THE district look, in one place. A location's lot is a wash of its district's
+// color inside a strong border of it, and a passenger tile is painted the same
+// way — a tile back has to read as the same color as the streets it sends you
+// to, so both go through here rather than each picking their own shade.
+const lotFill = (hex) => lighten(hex, 0.5);
+const lotEdge = (hex) => darken(hex, 0.78);
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 let mapState = null;
-let hoodsState = [];
+let districtsState = [];
 let hourState = null;
 let octEls = [];
-let handEl = null;
 let dayNightEl = null;
+let handEl = null;
 let hoveredHour = null;
 let flipping = false;
 
@@ -184,6 +142,7 @@ const carPos = {}; // id -> { x, y, angle }
 const carSpots = {}; // id -> last spot index rendered
 const carAnim = {}; // id -> rAF handle
 const pendingRoutes = {}; // id -> { spot, path, endAngle } awaiting server echo
+const carUndoPose = {}; // id -> where the car stood before its current drive
 let previewState = null; // { truckId, spot, routes } awaiting the player's pick
 let graphCache = null;
 
@@ -192,50 +151,52 @@ let diceAnimating = false;
 let deferredDrives = [];
 let clockQueue = [];
 
-let timeState = 0;
-let nightState = true;
-let elapsedState = 0; // hours the clock has moved — the day counter
+let timeState = 1;
+let sectionState = "morning";
+let elapsedState = 0;
 let turnWhose = 0;
 let turnActed = false;
+// Multi-move: the last drive ended on a drop-off or an errand, so the turn is
+// still open — this driver may pull away again.
+let turnCarryOn = false;
 let turnChangedTime = false;
-let turnDestressed = false;
-let turnKeptGoing = false;
+let turnDrew = false;
 let turnUndo = null;
 let turnTruck = null;
 let dicePoolState = 0;
-let moveMode = "build";
+// How the player picks a route: "build" walks it stop light by stop light,
+// "auto" offers the cheapest one or two routes to a clicked parking spot. Local
+// to this browser; an off-board car always builds its way in.
+let moveMode = localStorage.getItem("ubMoveMode") === "auto" ? "auto" : "build";
 let builder = null;
 let lastTurnSeen = null;
 let speedMult = 1;
-let controlsMin = localStorage.getItem("umControlsMin") === "1";
-// Visual-only building size: 1 draws the lots wall to wall as generated,
-// lower shrinks each one around its center so more open ground shows. Local
-// to this client — sliding it mid-game touches nothing but pixels.
-let buildingScale = (() => {
-  const v = Number(localStorage.getItem("umBuildingScale"));
-  return v >= 0.55 && v <= 1 ? v : 1;
-})();
 
 let playersState = [];
+let pilesState = [];
+let modeState = "waiting";
+let slotsState = MAX_PASSENGERS;
+let deckLeftState = null; // waiting: tiles left in the shared deck
+let preTimeState = true; // table rule: the clock must be set BEFORE you act
+let multiMoveState = false; // table rule: drop-offs and errands don't end the drive
+// Slot layout: "two-four" = three slots at 0/2/4 stars that slide down when one
+// is taken; "three" = two slots at 0 and 3 that don't slide, each refilled where
+// it stands.
+let slotRuleState = "two-four";
+let priorityStarState = PRIORITY_STAR; // what the front of the queue pays
+let startStarsState = 2;               // what everyone opens on
+let lastTollState = null; // static: the red-light bill for the turn just ended
+let lastTollSeq = -1;
 let lastRollState = null;
-let winnerState = null;
-let aiMoveState = null; // { truckId, path, endAngle } — an AI's drive to animate
-let maxAiState = 3; // free AI seats — bounds the AI-count picker
-let upgradeAtState = null; // bid of the upgrade location holding the roaming upgrade
-let upgradeTypeState = null; // which upgrade type is sitting there
-let upgradeDeckCountState = 0; // upgrades left in the depleting supply deck
-let upgradeChampionsState = []; // seats that filled all four slots, in order
-let colorClaimsState = {}; // landmark mode: colorId -> seats that claimed it, in order
-let funRollState = null; // { seq, player, face } — the no-dice consolation roll
+let funRollState = null;
 let lastFunSeq = -1;
-let resultsState = null; // end-game scoring breakdown, once the days run out
-let resultsDismissed = false; // the player closed the chart overlay
+let winnerState = null;
+let resultsState = null;
+let resultsDismissed = false;
 let settingsState = null;
-let tuneDraft = null; // working copy while the tuning panel is open
-let tuneName = ""; // the name the next save will carry
-let savedTunings = []; // [{ id, name }] from the server
-let canSaveTunings = true;
-let tuningsRequested = false;
+let aiMoveState = null; // { truckId, path, endAngle } — an AI's drive to animate
+let snapCarState = null; // { truckId, spot, facing } — a car to put back, no drive
+let maxAiState = 5;
 
 function isActive() {
   return app.currentGame?.id === "uber-mania";
@@ -266,7 +227,145 @@ function activeTruckId() {
 }
 
 function isOffBoard(car) {
-  return !!car && car.spot == null;
+  return !!car && car.spot == null && car.light == null;
+}
+
+// Where a car is standing, and the key that says whether it has MOVED. Waiting
+// mode gives a car two kinds of place — a kerb or a stop light it's waiting at
+// — so everything that used to compare `spot` compares this instead.
+function carPlace(t) {
+  if (!t || !mapState) return null;
+  if (t.spot != null) {
+    const s = mapState.spots?.[t.spot];
+    return s ? { key: `s${t.spot}`, kind: "spot", x: s.x, y: s.y, angle: s.angle } : null;
+  }
+  if (t.light != null) {
+    const o = mapState.intersections?.[t.light];
+    if (!o) return null;
+    const a = ((t.facing ?? 0) * Math.PI) / 180;
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+    const w = mapState.width ?? 960;
+    const h = mapState.height ?? 720;
+    // The car queues up behind the sign ALONG ITS OWN HEADING, and nowhere
+    // else: the across-the-street coordinate is the street's, so it is never
+    // touched. (Nudging it was what slid a car waiting on a border street off
+    // its own road and into the gardens beside it.)
+    const inset = (v, hi) => v >= CAR_NOSE && v <= hi - CAR_NOSE;
+    const onBoard = (d) =>
+      (Math.abs(dx) < 0.01 || inset(o.x - dx * d, w)) &&
+      (Math.abs(dy) < 0.01 || inset(o.y - dy * d, h));
+    // At an EDGE light there is no road behind to queue on — the car drove in
+    // from outside the board — so it takes the same distance PAST the sign
+    // instead. Either way it sits on its own street with the number readable.
+    const back = LIGHT_NOSE();
+    const d = onBoard(back) ? back : -back;
+    const slide = (v, dir, hi) =>
+      (Math.abs(dir) < 0.01 ? v : Math.max(CAR_NOSE, Math.min(hi - CAR_NOSE, v)));
+    return {
+      key: `l${t.light}`, kind: "light", light: t.light,
+      x: slide(o.x - dx * d, dx, w),
+      y: slide(o.y - dy * d, dy, h),
+      angle: t.facing ?? 0, cx: o.x, cy: o.y
+    };
+  }
+  return null;
+}
+
+// Cut `back` px off the end of a path — a car stopping at a light stops with
+// its nose there, not its middle.
+function trimPathEnd(path, back) {
+  if (!Array.isArray(path) || path.length < 2 || back <= 0) return path;
+  const out = path.map((p) => p.slice());
+  let left = back;
+  while (out.length >= 2 && left > 0) {
+    const a = out[out.length - 2];
+    const b = out[out.length - 1];
+    const seg = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (seg > left) {
+      const f = (seg - left) / seg;
+      out[out.length - 1] = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+      return out;
+    }
+    left -= seg;
+    out.pop();
+  }
+  return out.length >= 2 ? out : path;
+}
+
+// The right rail. Everything that isn't the map or the tray lives in it, in a
+// fixed order, so each panel can redraw on its own without the others moving:
+// settings, the driver chips, the rating column beside the clock, the dice.
+function ensureRail() {
+  let rail = els.gameBoard.querySelector(".ub-rail");
+  if (!rail) {
+    rail = document.createElement("div");
+    rail.className = "ub-rail";
+    ["controls", "scores", "meters", "dice", "tray"].forEach((slot) => {
+      const el = document.createElement("div");
+      el.className = `ub-rail-slot ub-rail-${slot}`;
+      rail.appendChild(el);
+    });
+    els.gameBoard.appendChild(rail);
+  }
+  return rail;
+}
+
+const railSlot = (name) => ensureRail().querySelector(`.ub-rail-${name}`);
+
+function districtOf(id) {
+  return districtsState.find((d) => d.id === id) ?? null;
+}
+
+const isStatic = () => modeState === "static";
+const isWaiting = () => modeState === "waiting";
+// Static + waiting share the four-deep queue, the three kinds and the scoring.
+const queueMode = () => modeState !== "dice";
+// Dice + waiting share the errands.
+const hasErrands = () => modeState !== "static";
+// What a finished set of errands pays in waiting mode, indexed by how many you
+// collected — the whole six is 20. (Server: ERRAND_LADDER.)
+const ERRAND_LADDER = [0, 2, 5, 8, 11, 15, 20];
+const errandLadder = (n) =>
+  ERRAND_LADDER[Math.max(0, Math.min(ERRAND_LADDER.length - 1, n))];
+const maxPassengers = () => slotsState || (queueMode() ? STATIC_SLOTS : MAX_PASSENGERS);
+
+// Waiting mode parks cars ON the stop signs, so they have to be big enough to
+// hold one. (The route graph doesn't care — this is purely how big it's drawn.)
+const octRadius = () => (isWaiting() ? 19 : OCT_RADIUS);
+// Roughly how far the car's nose reaches ahead of the point it's drawn at.
+const CAR_NOSE = 20;
+// How far behind the octagon's CENTRE a waiting car sits, measured BACK ALONG
+// the heading it arrived on. The number needs about 9px of clear radius and the
+// car's nose reaches CAR_NOSE ahead of its anchor, so anything past ~28 keeps
+// the sign readable; sitting further back than it needs to only risks the car
+// reaching behind a corner it just turned.
+const LIGHT_NOSE = () => octRadius() + 14;
+
+// Static mode: what delivering the fare in this slot does to your rating —
+// a whole star for the one at the front, half a star off per head behind it.
+function slotStarDelta(slot) {
+  return slot === 0 ? priorityStarState : -slot * SKIP_STAR_STEP;
+}
+
+const starDeltaText = (d) => (d >= 0 ? `+${num(d)}★` : `−${num(-d)}★`);
+
+const nextMode = () => MODES[(MODES.indexOf(modeState) + 1) % MODES.length];
+const nextSlotRule = () => SLOT_RULES[(SLOT_RULES.indexOf(slotRuleState) + 1) % SLOT_RULES.length];
+const slotLabel = () => `Slots: ${SLOT_NAME[slotRuleState] ?? "2/4★"}`;
+// Delivering the front of the queue: half a star, or a whole one.
+const nextTopFare = () => (priorityStarState === 1 ? 0.5 : 1);
+const topFareLabel = () => `Top fare: ${priorityStarState === 1 ? "1★" : "½★"}`;
+const TOP_FARE_BLURB = () =>
+  `Delivering the fare at the FRONT of your queue is worth ${priorityStarState === 1 ? "a whole star" : "half a star"}. Reaching over anybody still costs half a star a head either way.\n\nClick for ${nextTopFare() === 1 ? "a whole star" : "half a star"}.`;
+
+// The numbers still visible on a player's board (server sends them, but the
+// tray recomputes locally so a hover preview can be honest).
+function showingFor(player) {
+  const covered = new Set((player?.passengers ?? []).map((t) => BOARD_NUMBERS[t.slot]));
+  const out = BOARD_NUMBERS.filter((n) => !covered.has(n));
+  out.push(FREE_NUMBER);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +452,11 @@ function findIntersections(streets) {
   streets.forEach((street, si) => {
     const pts = streetToPolyline(street);
     for (let p = 0; p < pts.length - 1; p += 1) {
-      segs.push({ si, seg: [pts[p][0], pts[p][1], pts[p + 1][0], pts[p + 1][1]], dir: dirBucket(pts[p + 1][0] - pts[p][0], pts[p + 1][1] - pts[p][1]) });
+      segs.push({
+        si,
+        seg: [pts[p][0], pts[p][1], pts[p + 1][0], pts[p + 1][1]],
+        dir: dirBucket(pts[p + 1][0] - pts[p][0], pts[p + 1][1] - pts[p][1])
+      });
     }
   });
 
@@ -381,20 +484,9 @@ function findIntersections(streets) {
 // Building geometry
 // ---------------------------------------------------------------------------
 
-// A rect building as drawn under the building-size slider: scaled around its
-// center. (Polygon buildings — the classic generator's triangles — skip the
-// slider and draw as-is.)
-function drawnRect(b) {
-  const s = buildingScale;
-  const w = b.w * s;
-  const h = b.h * s;
-  return { x: b.x + (b.w - w) / 2, y: b.y + (b.h - h) / 2, w, h };
-}
-
 function buildingCorners(b) {
   if (b.points) return b.points.map((p) => p.slice());
-  const r = drawnRect(b);
-  return [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
+  return [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]];
 }
 
 function buildingCentroid(b) {
@@ -423,39 +515,78 @@ function buildingBBox(b) {
   return { minX, minY, maxX, maxY };
 }
 
+function buildingByBid(bid) {
+  for (const block of mapState?.blocks ?? []) {
+    for (const b of block.buildings ?? []) {
+      if (b.bid === bid) return b;
+    }
+  }
+  return null;
+}
+
+// The ground between the streets, painted by district. The map carries each
+// block pre-cut into rectangles that tile it exactly and stop at the kerb, so
+// this can never paint over a road — it's what makes the six districts read as
+// places rather than as a scatter of colored lots.
+function renderDistrictBlocks(svgArg = null) {
+  const svg = svgArg ?? els.gameBoard.querySelector(".tm-map");
+  svg?.querySelector(".ub-district-blocks")?.remove();
+  if (!svg || !mapState) return;
+  const blocksLayer = svg.querySelector(".tm-blocks");
+  const layer = svgEl("g", { class: "ub-district-blocks" });
+  svg.insertBefore(layer, blocksLayer ?? null);
+  for (const block of mapState.blocks ?? []) {
+    if (!Array.isArray(block.rects) || !block.rects.length) continue;
+    const tally = new Map();
+    for (const b of block.buildings ?? []) {
+      if (b.role !== "loc" || b.district == null) continue;
+      tally.set(b.district, (tally.get(b.district) ?? 0) + 1);
+    }
+    if (!tally.size) continue;
+    let district = null;
+    let best = 0;
+    for (const [id, n] of tally) {
+      if (n > best) {
+        best = n;
+        district = id;
+      }
+    }
+    const color = districtOf(district)?.color;
+    if (!color) continue;
+    for (const [x, y, w, h] of block.rects) {
+      svgEl("rect", { x, y, width: w, height: h, fill: color, class: "ub-district-block" }, layer);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Buildings. Locations wear their neighbourhood's color with a darker outline
-// of the same. Token-circle locations show their name and two circles carrying
-// the payout symbol; uber pickups show one big landmark emoji.
+// Buildings. Every location wears its district's color: a light wash inside,
+// the full color on the border. Its name runs across the top, its picture sits
+// big underneath, and the errand corners tuck into the bottom right.
 // ---------------------------------------------------------------------------
 
 function appendBuilding(parent, building) {
-  const cls = ["tm-building", "um-building"];
-  if (building.role === "loc") cls.push("um-loc", `um-loc-${building.locType}`);
-  const g = svgEl("g", { class: cls.join(" "), "data-bldg": building.bid }, parent);
-  // Locations: a light tint of the neighbourhood color inside, the full color
-  // on the border (via a CSS variable, so the highlight states can still win).
   const isLoc = building.role === "loc";
-  const fillColor = isLoc ? lighten(building.color) : building.color;
-  if (isLoc) g.style.setProperty("--um-stroke", building.color);
+  const cls = ["tm-building", "ub-building"];
+  if (isLoc) cls.push("ub-loc");
+  const g = svgEl("g", { class: cls.join(" "), "data-bldg": building.bid }, parent);
+
+  const base = isLoc ? (districtOf(building.district)?.color ?? building.color) : building.color;
+  const fill = isLoc ? lotFill(base) : base;
+  const edge = isLoc ? lotEdge(base) : base;
+  if (isLoc) g.style.setProperty("--ub-stroke", edge);
 
   (building.connectors ?? []).forEach((c) => {
-    const [x1, y1] = connectorStart(building, c);
     svgEl("line", {
-      x1, y1, x2: c.x2, y2: c.y2,
-      stroke: building.color,
-      "stroke-width": 2
+      x1: c.x1, y1: c.y1, x2: c.x2, y2: c.y2, stroke: edge, "stroke-width": 2
     }, g);
   });
 
   if (building.points) {
-    svgEl("polygon", { points: polygonToString(building.points), fill: fillColor }, g);
+    svgEl("polygon", { points: polygonToString(building.points), fill }, g);
   } else {
-    const dr = drawnRect(building);
     const rect = svgEl("rect", {
-      x: dr.x, y: dr.y, width: dr.w, height: dr.h,
-      rx: 3,
-      fill: fillColor
+      x: building.x, y: building.y, width: building.w, height: building.h, rx: 3, fill
     }, g);
     if (building.rotation) {
       rect.setAttribute(
@@ -473,371 +604,113 @@ function appendBuilding(parent, building) {
       cx: c.x2 + (dx / len) * 2.5,
       cy: c.y2 + (dy / len) * 2.5,
       r: 3.5,
-      fill: building.color,
+      fill: edge,
       class: "tm-connector-dot"
     }, g);
   });
 
-  if (building.role === "loc" && building.locType === "landmark") {
-    // A landmark: one big emoji, no circles, no board name.
-    const [cx, cy] = buildingCentroid(building);
-    const icon = svgEl("text", { x: cx, y: cy + 1, class: "um-loc-emoji" }, g);
-    icon.textContent = building.emoji ?? "🚕";
-  } else if (building.role === "loc" && building.locType === "upgrade" && Array.isArray(building.slots)) {
-    // Landmark mode's upgrade location: the stack's face-up top card sits in
-    // a square up top (with its window name above it and a depth badge on the
-    // corner), and a row of small circles along the bottom — one per player,
-    // so everyone gets exactly one pull from each of the four.
-    const [cx, cy] = buildingCentroid(building);
-    const bb = buildingBBox(building);
-    const side = Math.max(12, Math.min(
-      (bb.maxX - bb.minX) - 10,
-      (bb.maxY - bb.minY) * 0.46
-    ));
-    const sqY = bb.minY + (bb.maxY - bb.minY) * 0.34;
-    if (building.window != null) {
-      const label = svgEl("text", { x: cx, y: bb.minY + 8, class: "um-upgrade-window" }, g);
-      label.textContent = windowLabelFor(building);
-      // The hours live in the tooltip — the lot has no room for them.
-      svgEl("title", {}, g).textContent =
-        `${windowTitleFor(building)} — one upgrade per player, costs a token`;
-    }
-    svgEl("rect", {
-      x: cx - side / 2, y: sqY - side / 2, width: side, height: side, rx: 3,
-      class: "um-upgrade-sq"
-    }, g);
-    const icon = svgEl("text", { x: cx, y: sqY + side * 0.06, class: "um-upgrade-icon" }, g);
-    icon.style.fontSize = `${Math.max(9, Math.round(side * 0.5))}px`;
-    // How many cards still wait under the face-up one.
-    svgEl("text", {
-      x: cx + side / 2 + 5, y: sqY - side / 2 + 5, class: "um-upgrade-depth"
-    }, g);
-    // The per-player circles, along the bottom.
-    const slots = svgEl("g", { class: "um-loc-slots" }, g);
-    const geom = slotGeometry(building);
-    (building.slots ?? []).forEach((owner, i) => {
-      const [x, y] = geom.centers[i] ?? [cx, cy];
-      const c = svgEl("circle", { cx: x, cy: y, r: geom.r, class: "um-slot" }, slots);
-      // No payout symbol here — the circle is just "this seat has pulled".
-      svgEl("text", { x, y: y + 0.5, class: "um-slot-sym" }, slots);
-      if (owner != null) {
-        c.style.fill = playersState[owner]?.color ?? "#888";
-        c.classList.add("um-slot-taken");
-      }
-    });
-    svgEl("g", { class: "um-loc-under" }, g);
-  } else if (building.role === "loc" && building.locType === "upgrade") {
-    // Upgrade spot: no name, no imagery — just the upgrade square, big
-    // enough to fill most of the lot. Solid black while an upgrade sits
-    // here, a faint outline while dead. Scheduled mode wears its 4-hour
-    // window along the square's top edge. (Duplicate mode leaves room for
-    // the identifying corner emoji.)
-    const [cx, cy] = buildingCentroid(building);
-    const bb = buildingBBox(building);
-    const side = Math.max(
-      14,
-      Math.min(bb.maxX - bb.minX, bb.maxY - bb.minY) - (isDuplicateMode() ? 26 : 12)
-    );
-    svgEl("rect", {
-      x: cx - side / 2, y: cy - side / 2, width: side, height: side, rx: 3,
-      class: "um-upgrade-sq"
-    }, g);
-    // The waiting upgrade's icon, filled in by refreshLocations — sized to
-    // the square.
-    const icon = svgEl("text", { x: cx, y: cy + side * 0.06, class: "um-upgrade-icon" }, g);
-    icon.style.fontSize = `${Math.max(10, Math.round(side * 0.4))}px`;
-    if (building.window != null) {
-      const label = svgEl("text", { x: cx, y: cy - side / 2 + 7.5, class: "um-upgrade-window" }, g);
-      label.textContent = windowLabelFor(building);
-    }
-    appendLocEmoji(g, building);
-  } else if (building.role === "loc") {
-    const [cx, cy] = buildingCentroid(building);
-    const dup = isDuplicateMode();
-    if (dup) {
-      // Duplicate mode keeps the name up top — ride cards point at the
-      // location by name and emoji.
-      const name = svgEl("text", { x: cx, y: cy - 12, class: "um-loc-name" }, g);
-      name.textContent = building.name ?? "";
-      if (isDarkColor(fillColor)) name.style.fill = "rgba(247, 244, 238, 0.95)";
-    }
-    // Ride-2 / ride-pickup: no name, no imagery — just the two big token
-    // circles carrying the payout symbol, replaced by the claimer's color
-    // once taken. (Duplicate mode: its compact single circle under the name.)
-    const slots = svgEl("g", { class: "um-loc-slots" }, g);
-    const slotArr = building.slots ?? [null, null];
-    const single = slotArr.length === 1;
-    const geom = slotGeometry(building);
-    slotArr.forEach((owner, i) => {
-      const [x, y] = geom.centers[i] ?? [cx, cy];
-      const c = svgEl("circle", {
-        cx: x, cy: y, r: geom.r,
-        class: dup ? (single ? "um-slot um-slot-big" : "um-slot") : "um-slot um-slot-xl"
-      }, slots);
-      const sym = svgEl("text", {
-        x, y: y + 0.5,
-        class: dup && single ? "um-slot-sym um-slot-sym-big" : "um-slot-sym"
-      }, slots);
-      if (!dup) sym.style.fontSize = `${geom.sym}px`;
-      sym.textContent = SLOT_SYMBOLS[building.locType] ?? "";
-      if (owner != null) {
-        c.style.fill = playersState[owner]?.color ?? "#888";
-        c.classList.add("um-slot-taken");
-        sym.style.display = "none";
-      }
-    });
-    if (building.period) {
-      // Timed locations: the visiting-period badge, top right.
-      const bb = buildingBBox(building);
-      const badge = svgEl("text", { x: bb.maxX - 10, y: bb.minY + 10, class: "um-loc-period" }, g);
-      badge.textContent = PERIOD_SYMBOLS[building.period] ?? "";
-    }
-    // Undercut tokens land here as small dots beneath the circles
-    // (refreshLocations fills it in).
-    svgEl("g", { class: "um-loc-under" }, g);
-    appendLocEmoji(g, building);
-  }
+  if (!isLoc) return;
+
+  const [cx] = buildingCentroid(building);
+  const bb = buildingBBox(building);
+  const w = bb.maxX - bb.minX;
+  const h = bb.maxY - bb.minY;
+
+  // The title takes as much of the lot as its own length allows, so a "Bank"
+  // reads big and an "Elementary School" still fits on one line.
+  const label = building.name ?? "";
+  const nameSize = Math.max(6.5, Math.min(12, (w - 7) / Math.max(3, label.length * 0.56)));
+  const name = svgEl("text", { x: cx, y: bb.minY + nameSize + 2, class: "ub-loc-name" }, g);
+  name.style.fontSize = `${r1(nameSize)}px`;
+  name.textContent = label;
+  if (isDarkColor(fill)) name.style.fill = "rgba(247, 244, 238, 0.95)";
+
+  const top = bb.minY + nameSize + 5;
+  const icon = svgEl("text", { x: cx, y: (top + bb.maxY) / 2, class: "ub-loc-emoji" }, g);
+  icon.style.fontSize = `${Math.max(16, Math.min(46, w * 0.62, (bb.maxY - top) * 0.84))}px`;
+  icon.textContent = building.emoji ?? "📍";
+
+  // The errand tokens are state, so refreshLocations fills them in.
+  svgEl("g", { class: "ub-loc-errands" }, g);
+  svgEl("title", {}, g);
 }
 
-// Token-circle layout, shared by the initial draw and refreshLocations.
-// Duplicate mode keeps its compact circle(s) under the location name; the
-// other ride modes fill the lot with big centered circles and nothing else.
-function slotGeometry(b) {
-  const [cx, cy] = buildingCentroid(b);
-  const count = (b.slots ?? [null, null]).length;
-  if (b.locType === "upgrade") {
-    // Landmark mode's upgrade location: a row of small circles hugging the
-    // bottom edge, under the stack square — one per seat at the table.
-    const bb = buildingBBox(b);
-    const r = Math.max(3.5, Math.min(6, (bb.maxX - bb.minX - 8) / (2.4 * count)));
-    const y = bb.maxY - r - 4;
-    return {
-      r,
-      sym: Math.max(6, Math.round(r * 1.05)),
-      underY: y + r + 4,
-      centers: Array.from({ length: count }, (_, i) =>
-        [cx + (i - (count - 1) / 2) * (2 * r + 3), y])
-    };
-  }
-  if (isDuplicateMode()) {
-    return {
-      r: 10,
-      sym: count === 1 ? 12 : 11,
-      underY: cy + (count === 1 ? 21 : 20),
-      centers: count === 1 ? [[cx, cy + 6]] : [[cx - 11, cy + 6], [cx + 11, cy + 6]]
-    };
-  }
+// Where the errand tokens sit: a row hugging the bottom-right corner. They're
+// drawn last, so a big one lies over the picture the way a wooden disc lies on
+// a board — which is the point of them being this size.
+function errandGeometry(b, count) {
   const bb = buildingBBox(b);
-  const r = Math.max(6, Math.min(
-    15,
-    (bb.maxX - bb.minX - 8) / (2.2 * count),
-    (bb.maxY - bb.minY - 8) / 2.6
-  ));
+  const r = Math.max(4, Math.min(13,
+    (bb.maxX - bb.minX - 6) / (2.15 * Math.max(1, count)),
+    (bb.maxY - bb.minY) * 0.3));
+  const y = bb.maxY - r - 3;
+  const right = bb.maxX - r - 3;
   return {
     r,
-    sym: Math.max(9, Math.round(r * 1.05)),
-    underY: cy + r + 5.5,
-    centers: Array.from({ length: count }, (_, i) => [cx + (i - (count - 1) / 2) * (2 * r + 3), cy])
+    centers: Array.from({ length: count }, (_, i) => [right - (count - 1 - i) * (2 * r + 2), y])
   };
 }
 
-// A connector's building end, once the rect is drawn scaled: the edge retreats
-// toward the center, so the driveway grows inward to still reach it. The
-// street end never moves — parking spots are game state.
-function connectorStart(b, c) {
-  if (buildingScale >= 1 || b.points || !b.w) return [c.x1, c.y1];
-  const dx = c.x2 - c.x1;
-  const dy = c.y2 - c.y1;
-  const len = Math.hypot(dx, dy) || 1;
-  const ext = ((1 - buildingScale) / 2) * (Math.abs(dx) > Math.abs(dy) ? b.w : b.h);
-  return [c.x1 - (dx / len) * ext, c.y1 - (dy / len) * ext];
-}
-
-// Duplicate mode gives every location its own emoji (the ride cards point by
-// picture) — worn big in the building's top-left corner: it's the location's
-// identity on the board, so it reads before the circle does.
-function appendLocEmoji(g, building) {
-  if (!building.emoji || building.locType === "landmark") return;
-  const bb = buildingBBox(building);
-  const t = svgEl("text", { x: bb.minX + 13, y: bb.minY + 12, class: "um-loc-emoji-corner" }, g);
-  t.textContent = building.emoji;
-}
-
-// Redraw the whole buildings layer at the current building-size dial —
-// geometry only, every bit of game state re-applies via refreshLocations.
-function applyBuildingScale() {
-  const layer = els.gameBoard.querySelector(".tm-map .tm-blocks");
-  if (!layer || !mapState) return;
-  layer.innerHTML = "";
-  (mapState.blocks ?? []).forEach((block) => {
-    (block.buildings ?? []).forEach((building) => appendBuilding(layer, building));
-  });
-  refreshLocations();
-}
-
-// Redraw just the token circles + placeable glow (state changes, same map).
+// Redraw the state that sits on top of the buildings: just the errand tokens
+// and the hover text.
+//
+// Deliberately NOT here: any hint about where you're supposed to be driving.
+// A fare tile names its district and its address, and finding that address on
+// the board is the player's job — same as it would be across a table. So no
+// glow on a fare's destination, no pin marking which square of your board it
+// rides on, and no pulse on an errand whose district happens to be open.
 function refreshLocations() {
   const svg = els.gameBoard.querySelector(".tm-map");
   if (!svg || !mapState) return;
-  const canSet = new Set(placeableBids());
+  const me = myIndex();
+  const now = sectionState;
+
   (mapState.blocks ?? []).forEach((bl) => (bl.buildings ?? []).forEach((b) => {
     if (b.role !== "loc") return;
     const g = svg.querySelector(`.tm-building[data-bldg="${b.bid}"]`);
     if (!g) return;
-    const slotsG = g.querySelector(".um-loc-slots");
-    if (slotsG) {
-      const circles = slotsG.querySelectorAll(".um-slot");
-      const syms = slotsG.querySelectorAll(".um-slot-sym");
-      (b.slots ?? []).forEach((owner, i) => {
-        const c = circles[i];
-        if (!c) return;
-        if (owner != null) {
-          c.style.fill = playersState[owner]?.color ?? "#888";
-          c.classList.add("um-slot-taken");
-          if (syms[i]) syms[i].style.display = "none";
-        } else {
-          c.style.removeProperty("fill");
-          c.classList.remove("um-slot-taken");
-          if (syms[i]) syms[i].style.removeProperty("display");
-        }
-      });
-    }
-    // Undercut tokens: small dots beneath the circles, in claimer colors.
-    const underG = g.querySelector(".um-loc-under");
-    if (underG) {
-      underG.innerHTML = "";
-      const under = b.under ?? [];
-      if (under.length) {
-        const [ucx] = buildingCentroid(b);
-        const { underY } = slotGeometry(b);
-        under.forEach((seat, k) => {
-          svgEl("circle", {
-            cx: ucx + (k - (under.length - 1) / 2) * 9,
-            cy: underY,
-            r: 3.2,
-            class: "um-under-dot",
-            fill: playersState[seat]?.color ?? "#888"
-          }, underG);
+    const district = districtOf(b.district);
+
+    // The errand tokens: one disc per player who still owes a chore here, in
+    // their own color. Nothing distinguishes an open one from a shut one —
+    // knowing whether you can collect it right now means reading the clock.
+    const errG = g.querySelector(".ub-loc-errands");
+    if (errG) {
+      errG.innerHTML = "";
+      const seats = b.errands ?? [];
+      if (seats.length) {
+        const geom = errandGeometry(b, seats.length);
+        seats.forEach((seat, i) => {
+          const [x, y] = geom.centers[i];
+          const c = svgEl("circle", {
+            cx: r1(x), cy: r1(y), r: r1(geom.r), class: "ub-errand"
+          }, errG);
+          c.style.fill = playersState[seat]?.color ?? "#888";
+          if (seat === me) c.classList.add("ub-errand-mine");
+          // Waiting mode stamps each disc with WHEN it can be run — the whole
+          // errand rule is the hour, so the token has to say it.
+          if (isWaiting() && district) {
+            const mark = svgEl("text", {
+              x: r1(x), y: r1(y + geom.r * 0.36), class: "ub-errand-mark"
+            }, errG);
+            mark.style.fontSize = `${r1(geom.r * 1.15)}px`;
+            mark.textContent = SECTION_TOKEN[district.section] ?? "";
+          }
         });
       }
     }
-    g.classList.toggle("um-loc-can", canSet.has(b.bid));
-    g.classList.toggle("um-loc-complete", completableBid() === b.bid);
-    let offtime = !locOpen(b, timeState);
-    if (b.locType === "upgrade") {
-      const type = upgradeTypeAt(b);
-      g.classList.toggle("um-upgrade-active", type != null);
-      const meta = type != null ? upgradeMeta(type) : null;
-      const icon = g.querySelector(".um-upgrade-icon");
-      if (icon) icon.textContent = meta?.icon ?? "";
-      // A hood upgrade paints the square its neighbourhood's color.
-      const sq = g.querySelector(".um-upgrade-sq");
-      if (sq) {
-        if (meta?.color) sq.style.fill = meta.color;
-        else sq.style.removeProperty("fill");
+
+    const t = g.querySelector("title");
+    if (t) {
+      const bits = [`${b.name} — ${district?.name ?? "district"}`];
+      if (district) {
+        const meta = SECTION_META[district.section];
+        bits.push(`${meta.icon} ${meta.name} district (${meta.label})${district.section === now ? " — open now" : ""}`);
       }
-      // Landmark mode: how many cards still wait under the face-up one.
-      const depth = g.querySelector(".um-upgrade-depth");
-      if (depth) depth.textContent = (b.stackLeft ?? 0) > 0 ? `+${b.stackLeft}` : "";
-      // A still-waiting upgrade reads muted outside its window.
-      if (type != null && upgradeWindowClosed(b)) offtime = true;
+      if ((b.errands ?? []).includes(me)) bits.push("One of your errands is here");
+      t.textContent = bits.join("\n");
     }
-    g.classList.toggle("um-loc-offtime", offtime);
   }));
-  renderRideHighlights();
-}
-
-// Could the player use this particular location (rules only — parking is the
-// caller's problem)?
-function canUseLoc(b) {
-  if (!b || b.role !== "loc") return false;
-  if (b.locType === "landmark") {
-    // Ride-pickup mode: free and unlimited — always usable. Otherwise these
-    // are pure destinations (arriving completes matching cards itself).
-    return (settingsState?.rideMode ?? "ride-2") === "ride-pickup";
-  }
-  if (b.locType === "upgrade" && isStackUpgrades()) {
-    // Landmark mode: a token buys the stack's top card, once per player,
-    // and only inside the location's window.
-    if (!Array.isArray(b.slots)) return false;
-    if (upgradeTypeAt(b) == null || upgradeWindowClosed(b)) return false;
-    if (b.slots.includes(myIndex()) || !b.slots.includes(null)) return false;
-    return (myPlayer()?.tokens ?? 0) >= 1;
-  }
-  if (b.locType === "upgrade") {
-    // Free to grab — but only where an upgrade actually sits (scheduled
-    // mode: the location's own, inside its 4-hour window; spawn mode: the
-    // roaming one), and only with a free slot on my player board.
-    return upgradeTypeAt(b) != null && !upgradeWindowClosed(b) &&
-      myUpgrades().length < myUpgradeCap();
-  }
-  if (!Array.isArray(b.slots)) return false;
-  if (b.locType === "destress" && turnKeptGoing) return false; // no calming after rushing
-  if (!hasUpgrade("timeAgnostic") && !locOpen(b, timeState)) return false; // closed this period
-  // One token per player per location — on top or beneath.
-  if (b.slots.includes(myIndex()) || (b.under ?? []).includes(myIndex())) return false;
-  // Full circles still take an undercut token (it slips in beneath).
-  if (!b.slots.includes(null) && !hasUpgrade("undercut")) return false;
-  if ((myPlayer()?.tokens ?? 0) < 1) return false;
-  return true;
-}
-
-// Every location the player could use right now: normally just the parked
-// building — with the nearby-parking upgrade, any location in its block.
-function placeableBids() {
-  if (!isMyTurn() || turnActed || winnerState != null || diceAnimating) return [];
-  const car = myCar();
-  if (!car || car.spot == null || carAnim[car.id] != null) return [];
-  const spot = mapState?.spots?.[car.spot];
-  if (!spot) return [];
-  const b0 = buildingByBid(spot.building);
-  if (!b0) return [];
-  let cands = [b0];
-  if (hasUpgrade("nearbyParking")) {
-    const block = (mapState.blocks ?? [])
-      .find((bl) => (bl.buildings ?? []).some((x) => x.bid === b0.bid));
-    if (block?.buildings?.length) cands = block.buildings;
-  }
-  return cands.filter(canUseLoc).map((b) => b.bid);
-}
-
-function placeableBid() {
-  return placeableBids()[0] ?? null;
-}
-
-// Duplicate mode: the location the player could complete a ride at right now
-// (or null) — parked there with a matching face-up card, turn not yet acted.
-function completableBid() {
-  if (!isDuplicateMode()) return null;
-  if (!isMyTurn() || turnActed || winnerState != null || diceAnimating) return null;
-  const car = myCar();
-  if (!car || car.spot == null || carAnim[car.id] != null) return null;
-  const spot = mapState?.spots?.[car.spot];
-  if (!spot) return null;
-  const b = buildingByBid(spot.building);
-  if (!b || b.role !== "loc") return null;
-  const match = (myPlayer()?.rides ?? []).some((r) => r.loc === b.bid && !r.faceDown);
-  return match ? b.bid : null;
-}
-
-function buildingByBid(bid) {
-  for (const block of mapState?.blocks ?? []) {
-    for (const b of block.buildings ?? []) {
-      if (b.bid === bid) return b;
-    }
-  }
-  return null;
-}
-
-// Light up the destinations of my open ride cards.
-function renderRideHighlights() {
-  const svg = els.gameBoard.querySelector(".tm-map");
-  if (!svg) return;
-  svg.querySelectorAll(".um-ride-lit").forEach((el) => el.classList.remove("um-ride-lit"));
-  (myPlayer()?.rides ?? []).forEach((r) => {
-    if (r.faceDown) return; // hidden until the turn ends
-    svg.querySelector(`.tm-building[data-bldg="${r.loc}"]`)?.classList.add("um-ride-lit");
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -861,7 +734,7 @@ function renderOctagons(parent) {
     const zoom = svgEl("g", { class: "tm-oct-zoom" }, g);
     const flip = svgEl("g", { class: "tm-oct-flip" }, zoom);
     const shape = svgEl("polygon", {
-      points: octagonPoints(OCT_RADIUS),
+      points: octagonPoints(octRadius()),
       fill: oct.color === "green" ? GREEN : RED
     }, flip);
     if (oct.number != null) {
@@ -907,7 +780,7 @@ function refreshOctagonsHard() {
 }
 
 // ---------------------------------------------------------------------------
-// The clock (+ stress bar beside it)
+// The clock
 // ---------------------------------------------------------------------------
 
 let handDeg = 0;
@@ -965,9 +838,20 @@ function hourCost(hour) {
   return (hour - cur + 12) % 12;
 }
 
+function canChangeTime() {
+  // One clock change a turn — but waiting mode lets you spend it on a turn you
+  // took a passenger, where the other two make you choose. PRE-TIME, when the
+  // table has it on, demands it happen before anything else the turn does.
+  // (Server: clockAllowed — keep in sync.)
+  return isMyTurn() && winnerState == null && !turnChangedTime &&
+    (isWaiting() || !turnDrew) && !(preTimeState && turnActed) && !diceAnimating;
+}
+
 function renderClock() {
+  const slot = railSlot("meters");
+  slot.querySelector(".tm-clock")?.remove();
   const wrap = document.createElement("div");
-  wrap.className = "tm-clock";
+  wrap.className = "tm-clock ub-clock";
 
   dayNightEl = document.createElement("div");
   dayNightEl.className = "tm-clock-daynight";
@@ -990,8 +874,8 @@ function renderClock() {
     const y = 100 - Math.cos(a) * 72;
     const hit = svgEl("g", { class: "tm-clock-hour", "data-hour": h }, svg);
     svgEl("circle", { cx: x, cy: y, r: 15, class: "tm-clock-hit" }, hit);
-    const num = svgEl("text", { x, y, class: "tm-clock-num" }, hit);
-    num.textContent = String(h);
+    const n = svgEl("text", { x, y, class: "tm-clock-num" }, hit);
+    n.textContent = String(h);
     hit.addEventListener("mouseenter", () => {
       hoveredHour = h;
       showCost(h);
@@ -1011,96 +895,161 @@ function renderClock() {
   wrap.appendChild(svg);
   wrap.addEventListener("click", (event) => {
     const hourElement = event.target.closest("[data-hour]");
-    if (!hourElement || !app.roomId || !isActive() || !isMyTurn() || diceAnimating) return;
-    if (turnChangedTime && !hasUpgrade("timeLord")) return; // once per turn (time lords excepted)
+    if (!hourElement || !app.roomId || !canChangeTime()) return;
     const hour = Number(hourElement.dataset.hour);
     const cost = hourCost(hour);
     if (!cost || cost > (myPlayer()?.timeStones ?? 0)) return;
     socket.emit("uber_mania_set_hour", { roomId: app.roomId, hour });
   });
 
-  els.gameBoard.appendChild(wrap);
+  slot.appendChild(wrap);
   setHand();
   updateDayNight();
-  renderStressBar();
+  renderRatingBar();
 }
 
 function updateDayNight() {
   if (!dayNightEl) return;
   const face = hourState ?? 12;
   dayNightEl.innerHTML = "";
-  const icon = document.createElement("span");
-  icon.className = "tm-daynight-icon";
-  icon.textContent = nightState ? "🌙" : "☀️";
+
+  // No sun/moon: nothing in this game turns on whether it's dark out, and a
+  // second time-of-day symbol beside the SECTION tag only reads as a rule.
   const label = document.createElement("span");
   label.className = "tm-daynight-label";
   label.textContent = `${face} ${timeState < 12 ? "AM" : "PM"}`;
-  dayNightEl.append(icon, label);
-  // The day counter: the game ends after the settings' days have run out.
+  dayNightEl.append(label);
+
+  // Which section of the day is running: it's what every errand waits on.
+  const sec = SECTION_META[sectionState] ?? SECTION_META.morning;
+  const sectionTag = document.createElement("span");
+  sectionTag.className = `ub-section-tag ub-section-${sectionState}`;
+  sectionTag.textContent = `${sec.icon} ${sec.name}`;
+  sectionTag.title = `${sec.name} — ${sec.label}. Only ${sec.name.toLowerCase()} districts hand over their errands now.`;
+  dayNightEl.appendChild(sectionTag);
+
   const totalDays = settingsState?.days ?? 3;
   const day = Math.min(totalDays, Math.floor(elapsedState / 24) + 1);
   const dayTag = document.createElement("span");
-  dayTag.className = "um-day-tag";
+  dayTag.className = "ub-day-tag";
   dayTag.textContent = `Day ${day}/${totalDays}`;
   const hoursLeft = totalDays * 24 - elapsedState;
   dayTag.title = winnerState != null
     ? "The days are over"
     : `${Math.max(0, hoursLeft)}h left — the game is scored once they run out`;
-  if (hoursLeft <= 12 && winnerState == null) dayTag.classList.add("um-day-late");
+  if (hoursLeft <= 12 && winnerState == null) dayTag.classList.add("ub-day-late");
   dayNightEl.appendChild(dayTag);
+
   if (dicePoolState > 0) {
     const pool = document.createElement("span");
     pool.className = "tm-pool-tag";
     pool.textContent = `🎲 ×${dicePoolState}`;
-    pool.title = "Stress dice — rolled when the turn ends";
+    pool.title = "One die per red light run — thrown when the turn ends";
     dayNightEl.appendChild(pool);
   }
-  dayNightEl.classList.toggle("tm-night", nightState);
+  // No night styling either: recolouring the bar after dark is the same
+  // misleading hint as the moon was, since nothing in the game turns on it.
 }
 
-// The stress bar: 1 at the top, 6 at the bottom, every player's marker in a
-// gap between two numbers. A die at or under the number ABOVE your marker is
-// safe; destress moves the marker one gap down (more safe numbers).
-function renderStressBar() {
-  els.gameBoard.querySelector(".um-stress")?.remove();
-  if (!playersState.length) return;
-  const wrap = document.createElement("div");
-  wrap.className = "um-stress";
-  const title = document.createElement("div");
-  title.className = "um-stress-title";
-  title.textContent = "STRESS";
-  wrap.appendChild(title);
-  const bar = document.createElement("div");
-  bar.className = "um-stress-bar";
-  for (let n = 1; n <= 6; n += 1) {
-    const cell = document.createElement("div");
-    cell.className = "um-stress-num";
-    cell.style.top = `${((n - 1) / 5) * 100}%`;
-    cell.textContent = String(n);
-    bar.appendChild(cell);
+// The five points of a star, as an SVG polygon centred on (cx, cy).
+function starPoints(cx, cy, r) {
+  const pts = [];
+  for (let i = 0; i < 10; i += 1) {
+    const rad = i % 2 === 0 ? r : r * 0.42;
+    const a = (-90 + i * 36) * (Math.PI / 180);
+    pts.push(`${r1(cx + rad * Math.cos(a))},${r1(cy + rad * Math.sin(a))}`);
   }
-  playersState.forEach((p, i) => {
-    // A super-calm rest can push the marker one step PAST the end of the bar,
-    // where no die can fine you at all — it parks on the rail below the 6.
-    const s = Math.max(1, Math.min(6, p.stress ?? 3));
-    const immune = s >= 6;
-    const marker = document.createElement("span");
-    marker.className = immune ? "um-stress-marker um-stress-immune" : "um-stress-marker";
-    if (i === myIndex()) marker.classList.add("um-stress-mine");
-    marker.style.background = p.color;
-    marker.style.top = `${Math.min(100, ((s - 0.5) / 5) * 100)}%`;
-    marker.style.left = `${5 + i * 12}px`;
-    marker.title = immune
-      ? `${seatName(i)} — every roll is safe`
-      : `${seatName(i)} — safe rolls: 1–${s}`;
-    bar.appendChild(marker);
+  return pts.join(" ");
+}
+
+// The rating column beside the clock: five stars filled from the bottom up to
+// MY rating, with a waist line through each one (that's the half), and every
+// driver's marker pinned at their own. Each full star is a point at every
+// day's end, so this is the running score everyone can read.
+function renderRatingBar() {
+  const slot = railSlot("meters");
+  slot.querySelector(".ub-rating")?.remove();
+  if (!playersState.length) return;
+  const max = Math.max(1, settingsState?.ratingMax ?? RATING_MAX);
+  const wrap = document.createElement("div");
+  wrap.className = "ub-rating";
+  const title = document.createElement("div");
+  title.className = "ub-rail-title";
+  title.textContent = "RATING";
+  wrap.appendChild(title);
+
+  const cell = 22;
+  const W = 30;
+  const H = cell * max;
+  const svg = svgEl("svg", {
+    class: "ub-rating-stars",
+    viewBox: `0 0 ${W + 30} ${H + 2}`,
+    width: W + 30,
+    height: H + 2
   });
-  wrap.appendChild(bar);
-  els.gameBoard.appendChild(wrap);
+  const defs = svgEl("defs", {}, svg);
+  const grad = svgEl("linearGradient", { id: "ub-star-half", x1: "0", y1: "1", x2: "0", y2: "0" }, defs);
+  svgEl("stop", { offset: "0%", "stop-color": "#f0d68a" }, grad);
+  svgEl("stop", { offset: "50%", "stop-color": "#f0d68a" }, grad);
+  svgEl("stop", { offset: "50%", "stop-color": "transparent" }, grad);
+  svgEl("stop", { offset: "100%", "stop-color": "transparent" }, grad);
+
+  const mine = Math.max(0, Math.min(max, myPlayer()?.rating ?? 0));
+  const cx = W / 2 + 1;
+
+  // Static mode: mark where the second and third piles start dealing, so the
+  // rating column doubles as the thing telling you what you can draw.
+  if (queueMode()) {
+    pilesState.forEach((pile) => {
+      if (!pile.need) return;
+      const y = 1 + H - pile.need * cell;
+      const gate = svgEl("line", {
+        x1: 1, y1: r1(y), x2: W + 1, y2: r1(y), class: "ub-rating-gate"
+      }, svg);
+      if (mine >= pile.need) gate.classList.add("ub-rating-gate-open");
+      svgEl("title", {}, gate).textContent =
+        `A pile opens at ${num(pile.need)} stars`;
+    });
+  }
+
+  for (let k = 1; k <= max; k += 1) {
+    const cy = 1 + H - (k - 0.5) * cell;
+    const full = mine >= k;
+    const half = !full && mine >= k - 0.5;
+    const star = svgEl("polygon", { points: starPoints(cx, cy, cell * 0.46), class: "ub-star" }, svg);
+    if (full) star.style.fill = "#f0d68a";
+    else if (half) star.style.fill = "url(#ub-star-half)";
+    svgEl("line", {
+      x1: cx - cell * 0.5, y1: r1(cy), x2: cx + cell * 0.5, y2: r1(cy), class: "ub-star-waist"
+    }, svg);
+  }
+
+  playersState.forEach((p, i) => {
+    const r = Math.max(0, Math.min(max, p.rating ?? 0));
+    const y = 1 + H - r * cell;
+    const g = svgEl("g", { class: "ub-rating-pin" }, svg);
+    svgEl("line", {
+      x1: cx - cell * 0.55, y1: r1(y), x2: W + 6 + i * 4, y2: r1(y),
+      class: "ub-rating-pin-line", stroke: p.color
+    }, g);
+    const dot = svgEl("circle", {
+      cx: W + 6 + i * 4, cy: r1(y), r: i === myIndex() ? 4 : 3,
+      class: i === myIndex() ? "ub-rating-dot ub-rating-dot-mine" : "ub-rating-dot"
+    }, g);
+    dot.style.fill = p.color;
+    // Waiting mode pays no wage at a day's end, so don't promise one: there a
+    // rating is worth the tips it multiplies and the slots it opens.
+    svgEl("title", {}, g).textContent = isWaiting()
+      ? `${seatName(i)} — ${num(r)} star${r === 1 ? "" : "s"}: every tip they've delivered is worth ${Math.floor(r)} at the end`
+      : `${seatName(i)} — ${num(r)} star${r === 1 ? "" : "s"}, worth ${Math.floor(r)} a day`;
+  });
+
+  wrap.appendChild(svg);
+  slot.insertBefore(wrap, slot.firstChild);
 }
 
 // ---------------------------------------------------------------------------
-// Street graph + routing (same rules as Truck Mania: no U-turns)
+// Street graph + routing (same rules as the other Traffic Time games)
 // ---------------------------------------------------------------------------
 
 function buildStreetGraph(streets, spots) {
@@ -1253,57 +1202,9 @@ function polyDir(pts, fromEnd = false) {
 
 const UTURN_COS = -0.966;
 
-// Screen y points down, so a positive heading change is clockwise — a right
-// turn. Between ~25° and ~155° reads as a genuine right turn (not straight,
-// not a U-turn).
-function isRightTurn(inAngle, outAngle) {
-  let turn = outAngle - inAngle;
-  while (turn > 180) turn -= 360;
-  while (turn < -180) turn += 360;
-  return turn > 25 && turn < 155;
-}
-
-// Reds along a route path, forgiving right turns (the right-on-red upgrade):
-// same red selection as findRoutes' arcReds — every red light on the path,
-// except ones hugging the start or destination.
-function routeRedsRightOnRed(path, ax, ay, bx, by) {
-  if (!path || path.length < 2) return 0;
-  const REACH = OCT_RADIUS;
-  const cum = cumLengths(path);
-  let n = 0;
-  for (const o of mapState?.intersections ?? []) {
-    if (o.color !== "red") continue;
-    if (Math.hypot(o.x - ax, o.y - ay) < REACH || Math.hypot(o.x - bx, o.y - by) < REACH) continue;
-    // Closest approach of the path to this light.
-    let bestD = Infinity;
-    let bestS = 0;
-    for (let i = 0; i < path.length - 1; i += 1) {
-      const dx = path[i + 1][0] - path[i][0];
-      const dy = path[i + 1][1] - path[i][1];
-      const lenSq = dx * dx + dy * dy;
-      let t = lenSq ? ((o.x - path[i][0]) * dx + (o.y - path[i][1]) * dy) / lenSq : 0;
-      t = Math.max(0, Math.min(1, t));
-      const px = path[i][0] + t * dx;
-      const py = path[i][1] + t * dy;
-      const d = Math.hypot(o.x - px, o.y - py);
-      if (d < bestD) {
-        bestD = d;
-        bestS = cum[i] + Math.sqrt(lenSq) * t;
-      }
-    }
-    if (bestD >= REACH) continue; // not on the path
-    const inA = sampleAlong(path, cum, Math.max(0, bestS - 16)).angle;
-    const outA = sampleAlong(path, cum, Math.min(cum[cum.length - 1], bestS + 16)).angle;
-    if (!isRightTurn(inA, outA)) n += 1;
-  }
-  return n;
-}
-
 // Up to two candidate routes (arriving in either facing); each is
 // { path, reds, endAngle, endDir }. Lexicographic cost: reds, then distance.
-// `canUturn` (the U-turn upgrade) opens reversing out of the spot and
-// about-turns at junctions.
-function findRoutes(graph, ax, ay, headingDeg, bx, by, canUturn = false) {
+function findRoutes(graph, ax, ay, headingDeg, bx, by) {
   const start = nearestNode(graph, ax, ay);
   const goal = nearestNode(graph, bx, by);
   if (start < 0 || goal < 0 || start === goal) return [];
@@ -1336,10 +1237,8 @@ function findRoutes(graph, ax, ay, headingDeg, bx, by, canUturn = false) {
   const hx = Math.cos((headingDeg * Math.PI) / 180);
   const hy = Math.sin((headingDeg * Math.PI) / 180);
   (graph.adj[start] ?? []).forEach((e, k) => {
-    if (!canUturn) {
-      const [dx, dy] = polyDir(e.pts);
-      if (dx * hx + dy * hy <= 0) return; // no reversing out of the spot
-    }
+    const [dx, dy] = polyDir(e.pts);
+    if (dx * hx + dy * hy <= 0) return; // no reversing out of the spot
     states.set(`${start}:${k}`, {
       e, key: `${start}:${k}`, reds: arcReds(e), dist: e.w, prevKey: null, done: false
     });
@@ -1355,10 +1254,8 @@ function findRoutes(graph, ax, ay, headingDeg, bx, by, canUturn = false) {
     const v = cur.e.to;
     const inDir = polyDir(cur.e.pts, true);
     (graph.adj[v] ?? []).forEach((e2, k2) => {
-      if (!canUturn) {
-        const outDir = polyDir(e2.pts);
-        if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
-      }
+      const outDir = polyDir(e2.pts);
+      if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
       const key2 = `${v}:${k2}`;
       const old = states.get(key2);
       const cand = {
@@ -1416,20 +1313,15 @@ function carTransform(id) {
 
 // A little side-view sedan, drawn facing right (mirrored via the transform).
 function makeCarShape(parent, bodyColor) {
-  const g = svgEl("g", { class: "um-car" }, parent);
+  const g = svgEl("g", { class: "ub-car" }, parent);
   const dark = "rgba(18,22,28,0.9)";
-  // Body: long hood and windshield on the right — the nose points at +x, the
-  // direction the movement transform rotates toward.
   svgEl("path", {
     d: "M14 4 L14 -2 Q13 -4 10 -4 L6 -4 L2 -9 L-7 -9 L-11 -4 Q-14 -4 -14 -1 L-14 4 Z",
-    fill: bodyColor, stroke: dark, "stroke-width": 1.5, class: "um-car-body"
+    fill: bodyColor, stroke: dark, "stroke-width": 1.5, class: "ub-car-body"
   }, g);
-  // Windows.
   svgEl("path", { d: "M1 -8 L4.5 -4 L-1 -4 L-1 -8 Z", fill: "#bfe0f0", stroke: dark, "stroke-width": 0.7 }, g);
   svgEl("path", { d: "M-3 -8 L-6.5 -8 L-9.5 -4 L-3 -4 Z", fill: "#bfe0f0", stroke: dark, "stroke-width": 0.7 }, g);
-  // Headlight.
   svgEl("circle", { cx: 13.4, cy: 1, r: 1.2, fill: "#f5d76e" }, g);
-  // Wheels.
   for (const cx of [-8, 8]) {
     svgEl("circle", { cx, cy: 5, r: 3.6, fill: "#1c2027", stroke: "#000", "stroke-width": 0.6 }, g);
     svgEl("circle", { cx, cy: 5, r: 1.6, fill: "#5b6472" }, g);
@@ -1441,7 +1333,7 @@ function addCarEl(layer, t) {
   const color = playersState[t.player]?.color ?? "#f4c542";
   const g = makeCarShape(layer, color);
   g.setAttribute("data-truck", t.id);
-  if (isOffBoard(t)) g.style.display = "none"; // waiting in the garage up top
+  if (isOffBoard(t)) g.style.display = "none"; // waiting in the garage
   carEls[t.id] = g;
 }
 
@@ -1460,77 +1352,116 @@ function syncCars(cars) {
     });
   }
   carsState.forEach((t) => {
-    if (t.spot == null) {
+    const place = carPlace(t);
+    if (!place) {
+      if (snapCarState?.truckId === t.id && carAnim[t.id]) {
+        cancelAnimationFrame(carAnim[t.id]);
+        carAnim[t.id] = null;
+      }
       if (carEls[t.id]) carEls[t.id].style.display = "none";
       delete carSpots[t.id];
       delete carPos[t.id];
       delete pendingRoutes[t.id];
       return;
     }
-    const spot = mapState.spots?.[t.spot];
-    if (!spot || !carEls[t.id]) return;
+    if (!carEls[t.id]) return;
     carEls[t.id].style.display = "";
+    // A car stopping at a light stops NOSE-first, so its drive ends short — and
+    // lands exactly where carPlace says it stands, clamp and all.
+    const dress = (p) => {
+      if (place.kind !== "light") return p;
+      const cut = trimPathEnd(p, LIGHT_NOSE()).map((q) => q.slice());
+      cut[cut.length - 1] = [place.x, place.y];
+      return cut;
+    };
+    // An undone drive: the car was never there, so it doesn't drive back — it
+    // is simply where it was, facing the way it was.
+    if (snapCarState?.truckId === t.id && placeKeyOf(snapCarState) === place.key) {
+      if (carAnim[t.id]) {
+        cancelAnimationFrame(carAnim[t.id]);
+        carAnim[t.id] = null;
+      }
+      deferredDrives = deferredDrives.filter((d) => d.id !== t.id);
+      delete pendingRoutes[t.id];
+      carSpots[t.id] = place.key;
+      const was = carUndoPose[t.id];
+      carPos[t.id] = was?.key === place.key
+        ? { x: was.x, y: was.y, angle: was.angle }
+        : { x: place.x, y: place.y, angle: snapCarState.facing ?? place.angle };
+      delete carUndoPose[t.id];
+      carTransform(t.id);
+      if (previewState?.truckId === t.id) clearPreview();
+      return;
+    }
     const prev = carSpots[t.id];
     if (prev == null) {
-      // First placement: a fresh render (snap) or the drive in from off-board
-      // (the human's approved entry route, or the AI's server-computed one).
-      carSpots[t.id] = t.spot;
+      carSpots[t.id] = place.key;
       const pending = pendingRoutes[t.id];
       let entry = null;
-      if (pending?.spot === t.spot) entry = pending;
+      if (pending?.key === place.key) entry = pending;
       else if (aiMoveState && aiMoveState.truckId === t.id) entry = aiMoveState;
       delete pendingRoutes[t.id];
       if (entry?.path?.length >= 2) {
-        const p0 = entry.path[0];
-        const [dx, dy] = polyDir(entry.path);
+        carUndoPose[t.id] = { key: null };
+        const path = dress(entry.path);
+        const p0 = path[0];
+        const [dx, dy] = polyDir(path);
         carPos[t.id] = { x: p0[0], y: p0[1], angle: (Math.atan2(dy, dx) * 180) / Math.PI };
         carTransform(t.id);
-        startDrive(t.id, entry.path, entry.endAngle);
+        startDrive(t.id, path, entry.endAngle);
         return;
       }
-      carPos[t.id] = { x: spot.x, y: spot.y, angle: spot.angle };
+      carPos[t.id] = { x: place.x, y: place.y, angle: place.angle };
       carTransform(t.id);
-    } else if (prev !== t.spot) {
-      carSpots[t.id] = t.spot;
+    } else if (prev !== place.key) {
+      const here = carPos[t.id];
+      carUndoPose[t.id] = here
+        ? { key: prev, x: here.x, y: here.y, angle: here.angle }
+        : { key: prev };
+      carSpots[t.id] = place.key;
       if (previewState?.truckId === t.id) clearPreview();
       const pending = pendingRoutes[t.id];
       delete pendingRoutes[t.id];
       let path;
       let endAngle;
-      if (pending?.spot === t.spot) {
-        path = pending.path;
+      if (pending?.key === place.key) {
+        path = dress(pending.path);
         endAngle = pending.endAngle;
       } else if (aiMoveState && aiMoveState.truckId === t.id) {
-        path = aiMoveState.path;
+        path = dress(aiMoveState.path);
         endAngle = aiMoveState.endAngle;
       } else {
-        const from = carPos[t.id] || { x: spot.x, y: spot.y };
-        path = findPath(getGraph(), from.x, from.y, spot.x, spot.y);
-        endAngle = lastPathAngle(path, spot.angle);
+        const from = carPos[t.id] || { x: place.x, y: place.y };
+        path = findPath(getGraph(), from.x, from.y, place.x, place.y);
+        endAngle = lastPathAngle(path, place.angle);
       }
       startDrive(t.id, path, endAngle);
     }
   });
 }
 
+const placeKeyOf = (o) =>
+  (o?.light != null ? `l${o.light}` : o?.spot != null ? `s${o.spot}` : null);
+
 function startDrive(id, path, endAngle) {
   if (diceAnimating || flipping) {
     deferredDrives.push({ id, path, endAngle });
     return;
   }
-  driveCar(id, path, endAngle, () => onCarArrive(id));
+  driveCar(id, path, endAngle, () => onCarArrive());
 }
 
 function runDeferredDrives() {
   const list = deferredDrives;
   deferredDrives = [];
-  list.forEach((d) => driveCar(d.id, d.path, d.endAngle, () => onCarArrive(d.id)));
+  list.forEach((d) => driveCar(d.id, d.path, d.endAngle, () => onCarArrive()));
 }
 
 function onCarArrive() {
   updateTurnControls();
   refreshBuilder();
-  refreshLocations(); // the parked-at location may now glow placeable
+  refreshLocations();
+  setTurnStatus();
 }
 
 function lastPathAngle(path, fallback = 0) {
@@ -1600,7 +1531,7 @@ function anyCarAnimating() {
 }
 
 // ---------------------------------------------------------------------------
-// Route preview (auto mode)
+// Route preview
 // ---------------------------------------------------------------------------
 
 const CHEVRON_SPACING = 30;
@@ -1658,8 +1589,8 @@ function offsetPath(pts, off) {
   return pts.map((p, i) => {
     const a = normals[Math.max(0, i - 1)];
     const b = normals[Math.min(normals.length - 1, i)];
-    let nx = a[0] + b[0];
-    let ny = a[1] + b[1];
+    const nx = a[0] + b[0];
+    const ny = a[1] + b[1];
     const nl = Math.hypot(nx, ny) || 1;
     return [p[0] + (nx / nl) * off, p[1] + (ny / nl) * off];
   });
@@ -1722,11 +1653,9 @@ function drawRedBadge(layer, pts, reds, routeIdx) {
 
 function setRouteHover(layer, idx, on) {
   layer.querySelectorAll(`[data-route-line="${idx}"], .tm-route-stem`).forEach((el) =>
-    el.classList.toggle("tm-route-hover", on)
-  );
+    el.classList.toggle("tm-route-hover", on));
   layer.querySelectorAll(`[data-route-badge="${idx}"]`).forEach((el) =>
-    el.classList.toggle("tm-route-badge-hover", on)
-  );
+    el.classList.toggle("tm-route-badge-hover", on));
 }
 
 function wireRouteHover(layer) {
@@ -1790,7 +1719,9 @@ function commitRoute(routeIdx) {
     clearPreview();
     return;
   }
-  pendingRoutes[car.id] = { spot: previewState.spot, path: route.path, endAngle: route.endAngle };
+  pendingRoutes[car.id] = {
+    key: `s${previewState.spot}`, path: route.path, endAngle: route.endAngle
+  };
   const spot = previewState.spot;
   const reds = route.reds;
   clearPreview();
@@ -1805,17 +1736,10 @@ function previewTo(spotIndex) {
     clearPreview();
     return;
   }
-  const routes = findRoutes(getGraph(), pos.x, pos.y, pos.angle, dest.x, dest.y, hasUpgrade("uturn"));
+  const routes = findRoutes(getGraph(), pos.x, pos.y, pos.angle, dest.x, dest.y);
   if (!routes.length) {
     clearPreview();
-    window.alert("No route: the car can't reach that spot without a U-turn.");
     return;
-  }
-  if (hasUpgrade("rightOnRed")) {
-    // Right on red: recount each route's dies, forgiving right turns.
-    routes.forEach((r) => {
-      r.reds = routeRedsRightOnRed(r.path, pos.x, pos.y, dest.x, dest.y);
-    });
   }
   previewState = { truckId: car.id, spot: spotIndex, routes };
   renderRoutePreview();
@@ -1825,7 +1749,15 @@ function previewTo(spotIndex) {
 // Build mode: hand-build a route one stop light at a time.
 // ---------------------------------------------------------------------------
 
-function manualChoices(px, py, headingDeg, canUturn = false, firstLeg = true) {
+// `leave` says how the first edge out of the starting point is judged:
+//   "driveway" — forward only, you can't reverse out of a parking space
+//   "junction" — anything but a U-turn, you're sitting in an intersection
+//   "either"   — both ways along the street, you're pulling out of a space
+// The third exists because a parked car is DRAWN at its space's own angle, not
+// at the heading it arrived on: with "driveway" that made every space on a
+// street leavable in one direction only, whichever way the map happened to
+// have drawn that street, and every space behind you stayed unclickable.
+function manualChoices(px, py, headingDeg, leave = "driveway") {
   const graph = getGraph();
   const res = { octs: [], spots: [] };
   const start = nearestNode(graph, px, py);
@@ -1833,10 +1765,7 @@ function manualChoices(px, py, headingDeg, canUturn = false, firstLeg = true) {
 
   const octs = mapState.intersections ?? [];
   const spots = mapState.spots ?? [];
-  // Each octagon gates at its single NEAREST node only. Matching every node
-  // within reach used to swallow whole corridors: a parking spot's node a
-  // pixel past a light read as "arrived at that light" and stopped the
-  // expansion, leaving the next light down the street unclickable.
+  // Each octagon gates at its single NEAREST node only.
   const octAtNode = graph.nodePts.map(() => -1);
   octs.forEach((o, i) => {
     let best = -1;
@@ -1861,13 +1790,9 @@ function manualChoices(px, py, headingDeg, canUturn = false, firstLeg = true) {
   const hx = Math.cos((headingDeg * Math.PI) / 180);
   const hy = Math.sin((headingDeg * Math.PI) / 180);
   (graph.adj[start] ?? []).forEach((e, k) => {
-    if (!canUturn) {
-      const [dx, dy] = polyDir(e.pts);
-      const dot = dx * hx + dy * hy;
-      // First leg: can't reverse out of the spot. Later legs start at a
-      // junction, where turning left/right is fine — only U-turns are barred.
-      if (firstLeg ? dot <= 0 : dot < UTURN_COS) return;
-    }
+    const [dx, dy] = polyDir(e.pts);
+    const dot = dx * hx + dy * hy;
+    if (leave === "driveway" ? dot <= 0 : leave === "junction" && dot < UTURN_COS) return;
     states.set(`${start}:${k}`, { e, key: `${start}:${k}`, dist: e.w, prevKey: null, done: false });
   });
 
@@ -1890,10 +1815,8 @@ function manualChoices(px, py, headingDeg, canUturn = false, firstLeg = true) {
     if (si !== -1 && !spotBest.has(si)) spotBest.set(si, cur);
     const inDir = polyDir(cur.e.pts, true);
     (graph.adj[v] ?? []).forEach((e2, k2) => {
-      if (!canUturn) {
-        const outDir = polyDir(e2.pts);
-        if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
-      }
+      const outDir = polyDir(e2.pts);
+      if (inDir[0] * outDir[0] + inDir[1] * outDir[1] < UTURN_COS) return;
       const key2 = `${v}:${k2}`;
       const old = states.get(key2);
       const cand = { e: e2, key: key2, dist: cur.dist + e2.w, prevKey: cur.key, done: false };
@@ -1921,6 +1844,11 @@ function manualChoices(px, py, headingDeg, canUturn = false, firstLeg = true) {
 function builderHead() {
   const w = builder.waypoints[builder.waypoints.length - 1];
   if (!w) {
+    // A car waiting at a light routes from the OCTAGON, not from where its body
+    // is parked behind it — otherwise the search starts at the wrong node.
+    const car = carsState.find((t) => t.id === builder.truckId);
+    const place = carPlace(car);
+    if (place?.kind === "light") return { x: place.cx, y: place.cy, angle: place.angle };
     const p = carPos[builder.truckId];
     return { x: p.x, y: p.y, angle: p.angle };
   }
@@ -1969,14 +1897,97 @@ function entryChoices() {
 function computeBuilderChoices() {
   if (builder.entry && builder.waypoints.length === 0) return entryChoices();
   const head = builderHead();
-  const firstLeg = !builder.entry && builder.waypoints.length === 0;
-  const c = manualChoices(head.x, head.y, head.angle, hasUpgrade("uturn"), firstLeg);
+  // "First leg" is the can't-reverse-out-of-a-driveway rule, so it belongs to
+  // KERBS only — and in waiting mode a kerb can be a stop on the way, so it
+  // applies again every time the route calls somewhere. A car waiting AT A
+  // LIGHT is sitting in a junction, where the ordinary rule applies instead:
+  // straight, left or right, but no U-turn. Treating it as a driveway is what
+  // made a car pulling away from a red able to go one way only.
   const car = carsState.find((t) => t.id === builder.truckId);
+  const standing = builder.waypoints.length === 0 && !builder.entry;
+  let leave = "junction";
+  if (standing && car?.light == null) {
+    // Parked at a kerb. Waiting mode lets you pull out either way — see
+    // manualChoices — while the other modes keep the no-reversing rule.
+    leave = isWaiting() ? "either" : "driveway";
+  }
+  const c = manualChoices(head.x, head.y, head.angle, leave);
+  const called = new Set(builder.waypoints.filter((w) => w.kind === "spot").map((w) => w.index));
   c.spots = c.spots.filter(({ index }) => {
     if (car && car.spot != null && index === car.spot) return false;
+    if (called.has(index)) return false; // already called there this trip
     return !carsState.some((t) => t.id !== builder.truckId && t.spot === index);
   });
+  // Stop lights are NOT exclusive: a red holds up everyone who meets it, and
+  // whether somebody else is already sat there is no business of yours. (Kerbs
+  // still are — two cars can't take one parking space.)
   return c;
+}
+
+// Every rushing fare still sitting in the car. Each one buys the right to sail
+// through one red — but only ON THE WAY TO THEM, which is enforced by builderCanGo.
+function rushAboard() {
+  return (myPlayer()?.passengers ?? []).filter((t) => !t.done && t.bonus === "rush");
+}
+
+// Reds this route actually goes THROUGH. Whether a red was CROSSED isn't a
+// decision to be made at the light — it's just where the route ends up. Every
+// red the route carries on past was crossed; a red at the very END is one the
+// car is sitting on, and sitting on it is free. So clicking a red with a
+// rushing fare aboard commits to nothing: press Go and you waited there, keep
+// clicking and you ran it.
+function builderRedsCrossed() {
+  if (!builder) return 0;
+  const last = builder.waypoints.length - 1;
+  return builder.waypoints.filter((w, i) =>
+    i !== last && w.kind === "oct" && mapState.intersections[w.index]?.color === "red").length;
+}
+
+// Is this the end of the drive? A kerb where somebody got out or an errand was
+// run, or a red with no rushing fare left to wave you through it.
+function builderStopsAt(w) {
+  if (!w) return false;
+  if (w.kind === "spot") return spotStops(w.index);
+  return mapState?.intersections?.[w.index]?.color === "red" &&
+    rushAboard().length <= builderRedsCrossed();
+}
+
+// Does stopping at this kerb let somebody out? A drop-off ends the drive.
+function spotDelivers(index) {
+  const bid = mapState?.spots?.[index]?.building;
+  if (bid == null) return false;
+  return (myPlayer()?.passengers ?? []).some((t) => !t.done && t.loc === bid);
+}
+
+// Would stopping here collect one of YOUR errands? Only during that district's
+// own section of the day — the rest of the time the token just sits there.
+function spotRunsErrand(index) {
+  const bid = mapState?.spots?.[index]?.building;
+  if (bid == null) return false;
+  const b = buildingByBid(bid);
+  if (!b || !(b.errands ?? []).includes(myIndex())) return false;
+  return districtOf(b.district)?.section === sectionState;
+}
+
+// The three things that end a drive: somebody got out, you ran an errand, or a
+// red stopped you. Pulling in anywhere else is just a pause — drive on. Under
+// multi-move only the red is left: you can unload the whole car in one trip.
+const spotStops = (index) =>
+  !multiMoveState && (spotDelivers(index) || spotRunsErrand(index));
+
+// GO is offered the moment there's anywhere to go — in waiting mode you stop
+// where you like. The one catch is the rush rule: a route that ran a red is
+// only legal if it finishes at a rushing passenger's address. The other modes
+// need the car to have picked a kerb.
+function builderCanGo() {
+  if (!builder) return false;
+  if (!isWaiting()) return builder.done;
+  if (!builder.waypoints.length) return false;
+  if (builderRedsCrossed() === 0) return true;
+  const last = builder.waypoints[builder.waypoints.length - 1];
+  if (last.kind !== "spot") return false;
+  const bid = mapState?.spots?.[last.index]?.building;
+  return rushAboard().some((t) => t.loc === bid);
 }
 
 function builderFullPath() {
@@ -1988,29 +1999,9 @@ function builderFullPath() {
 }
 
 function builderReds() {
-  const ror = hasUpgrade("rightOnRed");
   let n = 0;
-  builder.waypoints.forEach((w, i) => {
-    if (w.kind !== "oct" || mapState.intersections[w.index]?.color !== "red") return;
-    if (ror) {
-      // Right on red is free — readable once the leg OUT of the light is
-      // built (until then the red counts, and the tally drops on the turn).
-      const next = builder.waypoints[i + 1];
-      if (next?.path?.length >= 2) {
-        const p = next.path;
-        let outA = w.endAngle;
-        for (let k = 1; k < p.length; k += 1) {
-          const dx = p[k][0] - p[0][0];
-          const dy = p[k][1] - p[0][1];
-          if (Math.hypot(dx, dy) > 2) {
-            outA = (Math.atan2(dy, dx) * 180) / Math.PI;
-            break;
-          }
-        }
-        if (isRightTurn(w.endAngle, outA)) return;
-      }
-    }
-    n += 1;
+  builder.waypoints.forEach((w) => {
+    if (w.kind === "oct" && mapState.intersections[w.index]?.color === "red") n += 1;
   });
   return n;
 }
@@ -2018,25 +2009,42 @@ function builderReds() {
 function builderAddOct(index) {
   const choice = builder.choices.octs.find((c) => c.index === index);
   if (!choice) return;
-  builder.waypoints.push({ kind: "oct", index, path: choice.path, endAngle: choice.endAngle });
-  builder.choices = computeBuilderChoices();
+  const wp = { kind: "oct", index, path: choice.path, endAngle: choice.endAngle };
+  builder.waypoints.push(wp);
+  // Waiting mode: a red is a wall, unless there's a rushing fare aboard to wave
+  // you through. With one, the route stays open AND Go stays on offer — you
+  // choose by what you do next, not by answering a question here.
+  builder.done = isWaiting() && builderStopsAt(wp);
+  builder.choices = builder.done ? { octs: [], spots: [] } : computeBuilderChoices();
   renderBuild();
 }
 
 function builderAddSpot(index) {
   const choice = builder.choices.spots.find((c) => c.index === index);
   if (!choice) return;
+  // Whether this stop lets somebody out has to be read BEFORE the waypoint is
+  // pushed, or nothing has changed yet anyway — but read it first for clarity.
+  const stops = spotStops(index);
   builder.waypoints.push({ kind: "spot", index, path: choice.path, endAngle: choice.endAngle });
-  builder.done = true;
-  builder.choices = { octs: [], spots: [] };
+  // In waiting mode, pulling in somewhere that isn't a drop-off or an errand is
+  // just a pause — the car drives on.
+  if (isWaiting() && !stops) {
+    builder.choices = computeBuilderChoices();
+  } else {
+    builder.done = true;
+    builder.choices = { octs: [], spots: [] };
+  }
   renderBuild();
 }
 
 function builderUndo() {
   if (!builder?.waypoints.length) return;
   builder.waypoints.pop();
-  builder.done = false;
-  builder.choices = computeBuilderChoices();
+  // Backing up onto a red you never had a pass for is still a stop; backing up
+  // onto a drop-off is still the end of the drive.
+  const last = builder.waypoints[builder.waypoints.length - 1];
+  builder.done = isWaiting() && builderStopsAt(last);
+  builder.choices = builder.done ? { octs: [], spots: [] } : computeBuilderChoices();
   renderBuild();
 }
 
@@ -2049,12 +2057,38 @@ function builderRestart() {
 }
 
 function builderGo() {
-  if (!builder?.done) return;
+  if (!builderCanGo()) return;
   const last = builder.waypoints[builder.waypoints.length - 1];
   const path = builderFullPath();
-  const reds = Math.min(12, builderReds());
-  pendingRoutes[builder.truckId] = { spot: last.index, path, endAngle: last.endAngle };
   const truckId = builder.truckId;
+
+  if (isWaiting()) {
+    // The whole route matters, not just its end: every kerb it called at is a
+    // stop, and it finishes at an address, at a drop-off, or on a light.
+    const calls = builder.waypoints.filter((w) => w.kind === "spot").map((w) => w.index);
+    const endSpot = last.kind === "spot" ? last.index : null;
+    const endLight = last.kind === "oct" ? last.index : null;
+    const visited = endSpot != null ? calls.slice(0, -1) : calls;
+    // Read the reds BEFORE the builder is torn down.
+    const crossed = builderRedsCrossed();
+    pendingRoutes[truckId] = {
+      key: endLight != null ? `l${endLight}` : `s${endSpot}`, path, endAngle: last.endAngle
+    };
+    builder = null;
+    renderBuild();
+    socket.emit("uber_mania_move_truck", {
+      roomId: app.roomId, truckId, spot: endSpot, light: endLight, visited,
+      reds: crossed,
+      // The heading the route finished on. A car waiting at a light is drawn
+      // backed up along it and pulls away along it next turn, so the server has
+      // to be told — nothing else on the board records which way it's pointing.
+      facing: last.endAngle
+    });
+    return;
+  }
+
+  const reds = Math.min(12, builderReds());
+  pendingRoutes[truckId] = { key: `s${last.index}`, path, endAngle: last.endAngle };
   builder = null;
   renderBuild();
   socket.emit("uber_mania_move_truck", { roomId: app.roomId, truckId, spot: last.index, reds });
@@ -2063,19 +2097,23 @@ function builderGo() {
 function refreshBuilder() {
   const car = myCar();
   const off = isOffBoard(car);
+  // Waiting mode is builder-only: stopping at a red is a step-by-step decision,
+  // and an auto route that can't know where it will be stopped is no use.
   const eligible =
-    (moveMode === "build" || off) && isActive() && app.roomId &&
-    isMyTurn() && !turnActed && winnerState == null && car && !diceAnimating &&
+    (moveMode === "build" || off || isWaiting()) &&
+    isActive() && app.roomId && isMyTurn() && (!turnActed || turnCarryOn) && !turnDrew &&
+    winnerState == null && car && !diceAnimating &&
     carAnim[car.id] == null && (off || carPos[car.id]);
   if (!eligible) {
     builder = null;
     renderBuild();
     return;
   }
-  if (!builder || builder.truckId !== car.id || builder.baseSpot !== car.spot) {
+  const baseKey = placeKeyOf(car);
+  if (!builder || builder.truckId !== car.id || builder.baseSpot !== baseKey) {
     builder = {
       truckId: car.id,
-      baseSpot: car.spot,
+      baseSpot: baseKey,
       entry: off,
       waypoints: [],
       done: false,
@@ -2086,6 +2124,41 @@ function refreshBuilder() {
   renderBuild();
 }
 
+// Where to hang the GO badge. It used to sit dead ahead of the route's tip,
+// which is exactly where the next kerb or stop light is — so GO covered the
+// choice you wanted and swallowed the click, driving off instead of carrying
+// on. That's felt worst in waiting mode, where GO is on offer from the first
+// waypoint onward. Try a ring of placements and take the one furthest from
+// anything still clickable, preferring the sides over straight ahead.
+const GO_R = 26; // the badge is 48x26 — treat it as a disc for clearance
+function goBadgePlace(end, angleDeg) {
+  const spots = mapState.spots ?? [];
+  const octs = mapState.intersections ?? [];
+  const live = [
+    ...(builder?.choices?.spots ?? []).map(({ index }) => ({ p: spots[index], r: 11 })),
+    ...(builder?.choices?.octs ?? []).map(({ index }) => ({ p: octs[index], r: octRadius() }))
+  ].filter((c) => c.p);
+  const w = mapState.width ?? 960;
+  const h = mapState.height ?? 720;
+  // Sides first, then behind, then ahead — ahead is where the route is going.
+  const turns = [90, -90, 135, -135, 180, 45, -45, 0];
+  let best = null;
+  turns.forEach((turn, k) => {
+    for (const dist of [34, 48, 62]) {
+      const rad = ((angleDeg + turn) * Math.PI) / 180;
+      const x = Math.max(GO_R, Math.min(w - GO_R, end[0] + Math.cos(rad) * dist));
+      const y = Math.max(14, Math.min(h - 14, end[1] + Math.sin(rad) * dist));
+      let clear = Infinity;
+      for (const c of live) clear = Math.min(clear, Math.hypot(c.p.x - x, c.p.y - y) - (GO_R + c.r));
+      // Anything clear of every choice is good enough; among the rest take the
+      // roomiest. The tiny per-preference nudge only breaks ties.
+      const v = Math.min(clear, 0) - k * 0.01 - (dist - 34) * 0.02;
+      if (!best || v > best.v) best = { x, y, v };
+    }
+  });
+  return best ?? { x: end[0], y: end[1] };
+}
+
 function renderBuild() {
   const svg = els.gameBoard.querySelector(".tm-map");
   if (!svg) return;
@@ -2093,8 +2166,9 @@ function renderBuild() {
   svg.querySelectorAll(".tm-oct-choice").forEach((el) => el.classList.remove("tm-oct-choice"));
   svg.querySelectorAll(".tm-spot-choice").forEach((el) => el.classList.remove("tm-spot-choice"));
   svg.querySelectorAll(".tm-spot-picked").forEach((el) => el.classList.remove("tm-spot-picked"));
+  svg.querySelectorAll(".ub-oct-wait").forEach((el) => el.classList.remove("ub-oct-wait"));
   if (!builder) {
-    renderBuildPanel(); // clears the action bar's builder slot
+    renderBuildPanel();
     return;
   }
 
@@ -2121,55 +2195,104 @@ function renderBuild() {
     }, g);
   }
 
-  if (builder.done) {
-    const last = builder.waypoints[builder.waypoints.length - 1];
-    svg.querySelector(`.tm-spot[data-spot="${last.index}"]`)?.classList.add("tm-spot-picked");
-    // The Go button floats just past the arrow, in the direction it points.
-    if (full.length >= 2) {
-      const dressed = dressPath(full);
-      const end = dressed[dressed.length - 1];
-      const cum = cumLengths(dressed);
-      const tip = sampleAlong(dressed, cum, Math.max(0, cum[cum.length - 1] - 0.5));
-      const rad = (tip.angle * Math.PI) / 180;
-      const gx = Math.max(34, Math.min((mapState.width ?? 960) - 34, end[0] + Math.cos(rad) * 34));
-      const gy = Math.max(20, Math.min((mapState.height ?? 720) - 20, end[1] + Math.sin(rad) * 34));
-      const go = svgEl("g", { class: "um-go", transform: `translate(${r1(gx)} ${r1(gy)})` }, layer);
-      // See-through: just a colored border and the text, so nothing under it
-      // is hidden. Stroke rides as a presentation attribute so :hover can win.
-      svgEl("rect", { x: -24, y: -13, width: 48, height: 26, rx: 13, stroke: color, class: "um-go-bg" }, go);
-      const t = svgEl("text", { x: 0, y: 1, class: "um-go-text" }, go);
-      t.textContent = "GO";
-      go.addEventListener("click", (e) => {
-        e.stopPropagation();
-        builderGo();
-      });
+  // Mark every kerb the route calls at — in waiting mode there can be several,
+  // and each is a drop-off rather than the end of the trip.
+  builder.waypoints.forEach((w) => {
+    if (w.kind === "spot") {
+      svg.querySelector(`.tm-spot[data-spot="${w.index}"]`)?.classList.add("tm-spot-picked");
     }
-  } else {
+  });
+  // The red that stopped you, wearing the fact that it did.
+  const last = builder.waypoints[builder.waypoints.length - 1];
+  const sitting = isWaiting() && last?.kind === "oct" &&
+    mapState.intersections[last.index]?.color === "red";
+  if (sitting) octEls[last.index]?.g.classList.add("ub-oct-wait");
+
+  if (builderCanGo() && full.length >= 2) {
+    const dressed = dressPath(full);
+    const end = dressed[dressed.length - 1];
+    const cum = cumLengths(dressed);
+    const tip = sampleAlong(dressed, cum, Math.max(0, cum[cum.length - 1] - 0.5));
+    const { x: gx, y: gy } = goBadgePlace(end, tip.angle);
+    const go = svgEl("g", { class: "ub-go", transform: `translate(${r1(gx)} ${r1(gy)})` }, layer);
+    svgEl("rect", { x: -24, y: -13, width: 48, height: 26, rx: 13, stroke: color, class: "ub-go-bg" }, go);
+    const t = svgEl("text", { x: 0, y: 1, class: "ub-go-text" }, go);
+    t.textContent = "GO";
+    go.addEventListener("click", (e) => {
+      e.stopPropagation();
+      builderGo();
+    });
+  }
+  // Waiting mode offers GO and the next step at once — you stop when you choose
+  // to. The other modes are done the moment they've picked a kerb.
+  if (!builder.done) {
     builder.choices.octs.forEach((c) => octEls[c.index]?.g.classList.add("tm-oct-choice"));
     builder.choices.spots.forEach((c) =>
-      svg.querySelector(`.tm-spot[data-spot="${c.index}"]`)?.classList.add("tm-spot-choice")
-    );
+      svg.querySelector(`.tm-spot[data-spot="${c.index}"]`)?.classList.add("tm-spot-choice"));
   }
   renderBuildPanel();
 }
 
-// The builder's controls live in the bottom-right action bar, next to
-// Leave Game (ensureActionBar owns the container).
+// The builder's controls live in the bottom-right action bar.
 function renderBuildPanel() {
-  const slot = ensureActionBar()?.querySelector(".um-actions-build");
+  const slot = ensureActionBar()?.querySelector(".ub-actions-build");
   if (!slot) return;
   slot.innerHTML = "";
   if (!builder) return;
 
-  const dice = document.createElement("span");
-  dice.className = "tm-build-dice";
-  const reds = builderReds();
-  for (let i = 0; i < Math.min(12, reds); i += 1) {
-    const d = document.createElement("span");
-    d.className = "tm-build-die";
-    dice.appendChild(d);
+  if (isWaiting()) {
+    // No dice to bank here. What a rushing fare buys is the right to run a red
+    // ON THE WAY TO THEM — so once you've run one, the route is stuck until it
+    // reaches one of their addresses, and the note has to say so.
+    const note = document.createElement("span");
+    note.className = "ub-build-note";
+    const rush = rushAboard();
+    const crossed = builderRedsCrossed();
+    const last = builder.waypoints[builder.waypoints.length - 1];
+    const onRed = last?.kind === "oct" && mapState.intersections[last.index]?.color === "red";
+    if (crossed > 0 && !builderCanGo()) {
+      note.textContent = "😡 Ran a red — finish at a rush fare";
+      note.classList.add("ub-build-note-stop");
+    } else if (onRed && !builder.done) {
+      // Sitting on it and running it are both still open — Go waits here, and
+      // carrying on spends the rushing fare's pass.
+      note.textContent = "Go to wait here, or drive on to a rush fare";
+      note.classList.add("ub-build-note-free");
+    } else if (builder.done && last?.kind === "oct") {
+      note.textContent = "Stopping at the red";
+      note.classList.add("ub-build-note-stop");
+    } else if (builder.done) {
+      note.textContent = last?.kind === "spot" && spotDelivers(last.index)
+        ? "Dropping off — that ends the drive"
+        : "Errand run — that ends the drive";
+      note.classList.add("ub-build-note-free");
+    } else if (rush.length > crossed) {
+      note.textContent = `😡 ${rush.length - crossed} red free, to reach them`;
+      note.classList.add("ub-build-note-free");
+    } else {
+      note.textContent = "Next red stops you";
+    }
+    slot.appendChild(note);
+  } else {
+    const dice = document.createElement("span");
+    dice.className = "tm-build-dice";
+    const reds = builderReds();
+    for (let i = 0; i < Math.min(12, reds); i += 1) {
+      const d = document.createElement("span");
+      d.className = "tm-build-die";
+      dice.appendChild(d);
+    }
+    slot.appendChild(dice);
   }
-  slot.appendChild(dice);
+
+  // A GO here as well as on the map: the badge floats near the route's tip and
+  // can always end up somewhere awkward, and there has to be one place to
+  // commit a route that nothing can ever sit on top of.
+  const goBtn = button("Go", "");
+  goBtn.className += " ub-go-btn";
+  goBtn.disabled = !builderCanGo();
+  goBtn.addEventListener("click", builderGo);
+  slot.appendChild(goBtn);
 
   const undoBtn = button("Undo", "");
   undoBtn.disabled = !builder.waypoints.length;
@@ -2180,7 +2303,6 @@ function renderBuildPanel() {
   restartBtn.disabled = !builder.waypoints.length;
   restartBtn.addEventListener("click", builderRestart);
   slot.appendChild(restartBtn);
-  // Go lives on the board itself, floating past the route arrow.
 }
 
 // ---------------------------------------------------------------------------
@@ -2199,31 +2321,9 @@ function renderSpots(svg) {
 function onBoardClick(event) {
   if (!app.roomId || !isMyTurn() || winnerState != null || diceAnimating || anyCarAnimating()) return;
 
-  // Use the glowing location the car is parked at. Duplicate mode splits the
-  // click: the big circle visits (places a token), anywhere else on the
-  // building completes a matching ride — one or the other, never both. Other
-  // modes: any click on the location places.
-  const locEl = event.target.closest?.(".um-loc-can, .um-loc-complete");
-  if (locEl) {
-    const bid = Number(locEl.getAttribute("data-bldg"));
-    if (isDuplicateMode()) {
-      const onCircle = !!event.target.closest?.(".um-slot, .um-upgrade-sq");
-      if (onCircle && placeableBids().includes(bid)) {
-        socket.emit("uber_mania_place_token", { roomId: app.roomId, truckId: activeTruckId(), bid });
-      } else if (!onCircle && completableBid() === bid) {
-        socket.emit("uber_mania_complete_ride", { roomId: app.roomId, truckId: activeTruckId() });
-      }
-      return;
-    }
-    if (placeableBids().includes(bid)) {
-      socket.emit("uber_mania_place_token", { roomId: app.roomId, truckId: activeTruckId(), bid });
-    }
-    return;
-  }
-
-  // Build mode (and every off-board entry): clicks grow the path.
-  if (moveMode === "build" || builder?.entry) {
-    if (!builder || turnActed) return;
+  // Build mode (and every off-board entry): clicks grow the route.
+  if (builder) {
+    if (turnActed && !turnCarryOn) return;
     const octG = event.target.closest?.(".tm-oct");
     if (octG && octG.dataset.oct != null) {
       const i = Number(octG.dataset.oct);
@@ -2238,18 +2338,16 @@ function onBoardClick(event) {
     return;
   }
 
-  // Commit a previewed route.
+  // Auto mode: click a parking spot to see the route(s), click a route to take it.
   const routeEl = event.target.closest?.(".tm-route-hit");
   if (routeEl) {
     commitRoute(Number(routeEl.dataset.route));
     return;
   }
-
-  if (turnActed) {
+  if (turnActed || turnDrew) {
     clearPreview();
     return;
   }
-
   const spotEl = event.target.closest?.(".tm-spot");
   if (!spotEl) {
     clearPreview();
@@ -2264,60 +2362,44 @@ function onBoardClick(event) {
 }
 
 // ---------------------------------------------------------------------------
-// Scoreboard + player panel
+// Scoreboard
 // ---------------------------------------------------------------------------
 
 function renderScoreboard() {
-  const header = document.querySelector(".game-header");
-  header?.querySelector(".tm-scoreboard")?.remove();
-  if (!header || !playersState.length) return;
+  const slot = railSlot("scores");
+  slot.innerHTML = "";
+  if (!playersState.length) return;
   const bar = document.createElement("div");
-  bar.className = "tm-scoreboard";
+  bar.className = "tm-scoreboard ub-scoreboard";
   playersState.forEach((p, i) => {
     const chip = document.createElement("div");
-    chip.className = "tm-score";
+    chip.className = "tm-score ub-score";
     chip.dataset.player = i;
     chip.style.setProperty("--pcolor", p.color);
-    if (winnerState === i) chip.classList.add("tm-score-winner");
+    if (winnerState != null && (resultsState?.winners ?? [winnerState]).includes(i)) {
+      chip.classList.add("tm-score-winner");
+    }
     if (winnerState == null && turnWhose === i) chip.classList.add("tm-score-turn");
+
     const dot = document.createElement("span");
     dot.className = "tm-score-dot";
     dot.style.background = p.color;
     chip.appendChild(dot);
 
-    if (isLandmarkMode()) {
-      // Landmark mode keeps the table quiet: the chip is a color and a name,
-      // nothing more. Tokens, time stones, whether they're sitting on a
-      // face-down stack, the card they're showing and the colors they've
-      // claimed all live in a panel you have to hover for — and how many cards
-      // anyone has finished, or is scoring, stays hidden until the end.
-      const nm = document.createElement("span");
-      nm.className = "um-score-name";
-      nm.textContent = p.name ?? seatName(i);
-      chip.appendChild(nm);
-      chip.appendChild(playerHoverCard(p, i));
-      chip.classList.add("um-score-hover");
-    } else {
-      const val = document.createElement("span");
-      val.className = "tm-score-val";
-      val.textContent = String(p.tokens ?? 0);
-      val.title = "Tokens in hand";
-      chip.appendChild(val);
-      if ((p.ridesCompleted ?? 0) > 0 || (p.rides?.length ?? 0) > 0) {
-        const rd = document.createElement("span");
-        rd.className = "tm-score-tickets";
-        rd.textContent = `🚕${p.ridesCompleted ?? 0}`;
-        rd.title = "Rides completed";
-        chip.appendChild(rd);
-      }
-      if (Array.isArray(p.upgrades) && p.upgrades.length) {
-        const up = document.createElement("span");
-        up.className = "tm-score-tickets";
-        up.textContent = `⬛${p.upgrades.length}`;
-        up.title = `Upgrades: ${p.upgrades.map((t) => upgradeMeta(t).name).join(", ")}`;
-        chip.appendChild(up);
-      }
-    }
+    const nm = document.createElement("span");
+    nm.className = "ub-score-name";
+    nm.textContent = p.name ?? seatName(i);
+    chip.appendChild(nm);
+
+    // A chip says WHO, and how their errands are going. Points, rating, rides
+    // and tips are all deliberately absent: the rating column beside the clock
+    // already carries the stars, and the rest is running-total bookkeeping that
+    // nobody needs at a glance. It's all still one hover away, in the peek card.
+    if (hasErrands()) chip.appendChild(errandPile(p, i));
+
+    chip.appendChild(playerPeek(p, i));
+    chip.classList.add("ub-score-hover");
+
     const garage = carsState.filter((t) => t.player === i && t.spot == null);
     if (garage.length) {
       const g = document.createElement("div");
@@ -2331,307 +2413,474 @@ function renderScoreboard() {
     }
     bar.appendChild(chip);
   });
-  header.appendChild(bar);
+  slot.appendChild(bar);
 }
 
-// Landmark mode: everything about another player you have to ask for. Built
-// into the scoreboard chip and revealed on hover — tokens, time stones, cards
-// completed, how deep their face-down stack is, the card they're showing, and
-// which colors they've claimed. (Their running score stays secret to the end.)
-function playerHoverCard(p, seat) {
+// The errand discs a driver has picked up off the board, stacked in front of
+// them. In dice mode each one still out there is worth −2 at the end; in
+// waiting mode the ones you GOT pay off a rising ladder. Either way the empty
+// space in the pile is the message as much as the discs are.
+function errandPile(p, seat) {
+  const done = p.errandsDone ?? 0;
+  const left = (p.errands ?? []).length;
+  const wrap = document.createElement("span");
+  wrap.className = "ub-discs";
+  for (let i = 0; i < done; i += 1) {
+    const disc = document.createElement("span");
+    disc.className = "ub-disc";
+    disc.style.background = p.color;
+    wrap.appendChild(disc);
+  }
+  for (let i = 0; i < left; i += 1) {
+    const gap = document.createElement("span");
+    gap.className = "ub-disc ub-disc-open";
+    wrap.appendChild(gap);
+  }
+  wrap.title = isWaiting()
+    ? `${seatName(seat)} has collected ${done} errand disc${done === 1 ? "" : "s"} — worth ${errandLadder(done)} at the end${left ? `, ${errandLadder(done + left)} for all ${done + left}` : ""}`
+    : left
+      ? `${seatName(seat)} has collected ${done} errand disc${done === 1 ? "" : "s"}; ${left} still on the board, worth −${left * (settingsState?.errandPenalty ?? 2)} at the end`
+      : `${seatName(seat)} has collected every errand disc`;
+  if (!left && done) wrap.classList.add("ub-discs-full");
+  return wrap;
+}
+
+// Everything about a driver you have to hover for: home district, stones,
+// errands left, rides per district and how full their car is.
+function playerPeek(p, seat) {
   const card = document.createElement("div");
-  card.className = "um-peek";
+  card.className = "ub-peek";
 
   const head = document.createElement("div");
-  head.className = "um-peek-head";
-  head.textContent = seatName(seat);
-  head.style.color = p.color;
+  head.className = "ub-peek-head";
+  const home = districtOf(p.home);
+  head.innerHTML = "";
+  const swatch = document.createElement("span");
+  swatch.className = "ub-peek-swatch";
+  swatch.style.background = p.color;
+  head.appendChild(swatch);
+  const title = document.createElement("strong");
+  // Static mode has no home district, so the driver is just a driver.
+  title.textContent = isStatic()
+    ? p.name ?? seatName(seat)
+    : `${p.name ?? seatName(seat)} — ${home?.name ?? "?"}`;
+  // In waiting mode the home district pays nothing — it's only the color of
+  // your car — so it's labelled rather than presented as a prize.
+  if (isWaiting()) title.textContent += " (home)";
+  head.appendChild(title);
   card.appendChild(head);
 
-  const line = (label, value) => {
-    const row = document.createElement("div");
-    row.className = "um-peek-row";
-    const l = document.createElement("span");
-    l.textContent = label;
-    const v = document.createElement("span");
-    v.className = "um-peek-val";
-    v.textContent = value;
-    row.append(l, v);
-    card.appendChild(row);
-  };
-  line("💰 Tokens", String(p.tokens ?? 0));
-  line("⬟ Time stones", String(p.timeStones ?? 0));
-  // Whether they're sitting on a face-down pile, never how deep it is — and
-  // how many cards they've finished is nobody's business until scoring.
-  const down = (p.rides ?? []).filter((r) => r.faceDown).length;
-  line("🂠 Stack", down > 0 ? "yes" : "none");
-
-  // The card they're actually showing (face-down ones stay secret).
-  const showing = (p.rides ?? []).filter((r) => !r.faceDown);
-  const cards = document.createElement("div");
-  cards.className = "um-peek-row";
-  const cl = document.createElement("span");
-  cl.textContent = "🎴 Showing";
-  const cv = document.createElement("span");
-  cv.className = "um-peek-val";
-  cv.textContent = showing.length
-    ? showing.map((r) => buildingByBid(r.loc)?.name ?? "?").join(", ")
-    : "—";
-  cards.append(cl, cv);
-  card.appendChild(cards);
-
-  // Colors claimed, as swatches carrying the place they took.
-  const claimRow = document.createElement("div");
-  claimRow.className = "um-peek-row";
-  const kl = document.createElement("span");
-  kl.textContent = "🎨 Colors";
-  const kv = document.createElement("span");
-  kv.className = "um-peek-val um-peek-swatches";
-  let any = false;
-  hoodsState.forEach((h) => {
-    const place = (colorClaimsState[h.id] ?? []).indexOf(seat);
-    if (place !== 0 && place !== 1) return;
-    any = true;
-    const sw = document.createElement("span");
-    sw.className = place === 1 ? "um-results-swatch um-results-swatch-second" : "um-results-swatch";
-    sw.style.background = h.color;
-    sw.title = `${h.name} — ${place === 0 ? "first" : "second"}`;
-    kv.appendChild(sw);
+  // The chips themselves only carry a name and an errand pile now, so this card
+  // is where every running total lives.
+  const rows = [
+    ["Time stones", `⬟ ${p.timeStones ?? 0}`],
+    ["Rating", `${num(p.rating ?? 0)} ★`],
+    ["Day points", String(p.points ?? 0)],
+    ["Passengers", `${(p.passengers ?? []).length}/${maxPassengers()}`],
+    ["Rides done", String(p.ridesCompleted ?? 0)]
+  ];
+  if (queueMode()) rows.push(["Tips banked", String(p.tipsDelivered ?? 0)]);
+  rows.push(hasErrands()
+    ? ["Errands left", String((p.errands ?? []).length)]
+    : ["Reached over", String(p.skipped ?? 0)]);
+  const grid = document.createElement("div");
+  grid.className = "ub-peek-grid";
+  rows.forEach(([k, v]) => {
+    const a = document.createElement("span");
+    a.className = "ub-peek-k";
+    a.textContent = k;
+    const b = document.createElement("span");
+    b.className = "ub-peek-v";
+    b.textContent = v;
+    grid.append(a, b);
   });
-  if (!any) kv.textContent = "—";
-  claimRow.append(kl, kv);
-  card.appendChild(claimRow);
+  card.appendChild(grid);
 
-  if ((p.upgrades ?? []).length) {
-    const ur = document.createElement("div");
-    ur.className = "um-peek-row";
-    const ul = document.createElement("span");
-    ul.textContent = "⬛ Upgrades";
-    const uv = document.createElement("span");
-    uv.className = "um-peek-val";
-    uv.textContent = p.upgrades.map((t) => upgradeMeta(t).icon).join(" ");
-    uv.title = p.upgrades.map((t) => upgradeMeta(t).name).join(", ");
-    ur.append(ul, uv);
-    card.appendChild(ur);
-  }
+  // Rides per district — the all-six bonus and the regular bonus both read off
+  // this, so it's worth being able to see at a glance.
+  const spread = document.createElement("div");
+  spread.className = "ub-peek-spread";
+  districtsState.forEach((d) => {
+    const cell = document.createElement("span");
+    cell.className = "ub-peek-cell";
+    const n = p.ridesByDistrict?.[d.id] ?? 0;
+    cell.style.setProperty("--dcolor", d.color);
+    cell.textContent = String(n);
+    // Only dice mode waives the regular bonus in your own district — the queue
+    // modes count it everywhere, so the mark has to follow the scoring.
+    const isHome = hasErrands() && d.id === p.home;
+    const counts = queueMode() || d.id !== p.home;
+    if (n > 0) cell.classList.add("ub-peek-cell-on");
+    if (counts && n >= 3) cell.classList.add("ub-peek-cell-regular");
+    if (isHome) cell.classList.add("ub-peek-cell-home");
+    cell.title = `${d.name}${isHome ? " (home)" : ""} — ${n} ride${n === 1 ? "" : "s"}`;
+    spread.appendChild(cell);
+  });
+  card.appendChild(spread);
   return card;
 }
 
-// The one public piece of the color race: what each color still pays. Seven
-// circles showing the best place left — 2 until someone claims it, then 1,
-// then nothing. How far along anyone is toward three of four is not shown:
-// that's yours to read off the board.
-function renderColorPrizes(wrap) {
-  const row = document.createElement("div");
-  row.className = "um-prizes";
-  const first = settingsState?.colorFirstPoints ?? 2;
-  const second = settingsState?.colorSecondPoints ?? 1;
-  hoodsState.forEach((h) => {
-    const taken = (colorClaimsState[h.id] ?? []).length;
-    const dot = document.createElement("span");
-    dot.className = taken >= 2 ? "um-prize um-prize-gone" : "um-prize";
-    dot.style.background = h.color;
-    dot.textContent = taken >= 2 ? "" : String(taken === 0 ? first : second);
-    dot.title = taken >= 2
-      ? `${h.name}: both places gone`
-      : taken === 1
-      ? `${h.name}: ${second} left — be the second to three of its four`
-      : `${h.name}: ${first} for the first player to three of its four, then ${second}`;
-    // Hovering a prize lights that color's locations on the board.
-    const lit = (on) => {
-      for (const bl of mapState?.blocks ?? []) {
-        for (const b of bl.buildings ?? []) {
-          if (b.hood !== h.id) continue;
-          els.gameBoard.querySelector(`.tm-building[data-bldg="${b.bid}"]`)
-            ?.classList.toggle("um-ride-hover", on);
-        }
-      }
-    };
-    dot.addEventListener("mouseenter", () => lit(true));
-    dot.addEventListener("mouseleave", () => lit(false));
-    row.appendChild(dot);
-  });
-  wrap.appendChild(row);
+// ---------------------------------------------------------------------------
+// The tray: the two tile piles and this player's passenger board. It sits at
+// the foot of the right rail, right above Leave Game — the place a player's own
+// board belongs. Errands aren't listed here at all: the discs live on the map
+// (that's where you go and get them) and the ones you've collected pile up on
+// your scoreboard chip.
+// ---------------------------------------------------------------------------
+
+function canDrawTile() {
+  return isMyTurn() && winnerState == null && !turnActed && !turnDrew &&
+    // Waiting mode lets the clock and a passenger share a turn.
+    (isWaiting() || !turnChangedTime) &&
+    turnTruck == null && !diceAnimating && !anyCarAnimating() &&
+    (myPlayer()?.passengers?.length ?? 0) < maxPassengers();
 }
 
+// Static mode: is this pile's rating requirement met? (Server: pileLocked.)
+function pileLocked(pile) {
+  return queueMode() && (myPlayer()?.rating ?? 0) < (pile?.need ?? 0);
+}
 
-// Bottom-right panel: my tokens, time stones, and open ride cards.
-function renderPlayerPanel() {
-  els.gameBoard.querySelector(".um-panel")?.remove();
-  const me = myPlayer();
-  if (!me) return;
+// Your time stones, standing to the left of the seats. They're the only thing
+// you spend, and in waiting mode they're the only way to turn a red green — so
+// the count belongs on the mat, not buried in a hover.
+function stonesBadge(player) {
+  const n = player?.timeStones ?? 0;
+  const el = document.createElement("div");
+  el.className = "ub-stones";
+  const icon = document.createElement("span");
+  icon.className = "ub-stones-icon";
+  icon.textContent = "⬟";
+  const count = document.createElement("span");
+  count.className = "ub-stones-count";
+  count.textContent = String(n);
+  el.append(icon, count);
+  el.title = `${n} time stone${n === 1 ? "" : "s"} — one per hour you push the clock forward`;
+  if (n <= 1) el.classList.add("ub-stones-low");
+  return el;
+}
 
+// Beside your own mat: every fare you've delivered, as a swatch in the color of
+// the district it went to — so the two spread bonuses (a ride in all six, three
+// rides for a regular) are something you can SEE rather than count. The tips you
+// hold ride along at the bottom, since what they're worth depends on the stars
+// you finish with.
+function deliveryPeek(player) {
+  const wrap = document.createElement("span");
+  wrap.className = "ub-mine";
+  const total = player?.ridesCompleted ?? 0;
+  const label = document.createElement("span");
+  label.className = "ub-mine-label";
+  label.textContent = `🚕 ${total}`;
+  wrap.appendChild(label);
+
+  const card = document.createElement("div");
+  card.className = "ub-mine-card";
+  const head = document.createElement("div");
+  head.className = "ub-mine-head";
+  head.textContent = total
+    ? `${total} fare${total === 1 ? "" : "s"} delivered`
+    : "No fares delivered yet";
+  card.appendChild(head);
+
+  const grid = document.createElement("div");
+  grid.className = "ub-mine-grid";
+  districtsState.forEach((d) => {
+    const n = player?.ridesByDistrict?.[d.id] ?? 0;
+    const name = document.createElement("span");
+    name.className = n ? "ub-mine-name" : "ub-mine-name ub-mine-none";
+    name.textContent = d.name;
+    const dots = document.createElement("span");
+    dots.className = "ub-mine-dots";
+    for (let i = 0; i < n; i += 1) {
+      const s = document.createElement("span");
+      s.className = "ub-mine-dot";
+      s.style.background = d.color;
+      dots.appendChild(s);
+    }
+    // The regular bonus wants three, so show what's still missing.
+    for (let i = n; i < 3; i += 1) {
+      const s = document.createElement("span");
+      s.className = "ub-mine-dot ub-mine-dot-open";
+      dots.appendChild(s);
+    }
+    if (n >= 3) dots.classList.add("ub-mine-regular");
+    grid.append(name, dots);
+  });
+  card.appendChild(grid);
+
+  if (queueMode()) {
+    const tips = document.createElement("div");
+    tips.className = "ub-mine-tips";
+    const n = player?.tipsDelivered ?? 0;
+    tips.textContent = n
+      ? `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — ${n} × your full stars at the end`
+      : `${BONUS_ICON.tip} No tip fares delivered yet`;
+    card.appendChild(tips);
+  }
+  wrap.appendChild(card);
+  wrap.title = "Hover: every fare you've delivered, by district";
+  return wrap;
+}
+
+// A tile — a pile's back or a passenger on your board — wears exactly the paint
+// its district's lots wear, so you can carry the color from your hand to the map
+// by eye.
+function paintTile(el, color) {
+  const base = color ?? "#8d867b";
+  el.style.setProperty("--tile", lotFill(base));
+  el.style.setProperty("--tile-edge", lotEdge(base));
+}
+
+function renderTray() {
+  const slot = railSlot("tray");
+  slot.innerHTML = "";
+  if (!playersState.length) return;
+  const player = myPlayer();
   const wrap = document.createElement("div");
-  wrap.className = "um-panel";
+  wrap.className = "ub-tray";
 
-  const stats = document.createElement("div");
-  stats.className = "um-panel-stats";
-
-  const tokens = document.createElement("div");
-  tokens.className = "um-stat";
-  const tokDot = document.createElement("span");
-  tokDot.className = "um-token-dot";
-  tokDot.style.background = me.color;
-  const tokVal = document.createElement("span");
-  tokVal.className = "um-stat-val";
-  tokVal.textContent = `×${me.tokens ?? 0}`;
-  tokens.append(tokDot, tokVal);
-  tokens.title = "Tokens — placed on locations, paid on failed stress dice";
-  stats.appendChild(tokens);
-
-  const stones = document.createElement("div");
-  stones.className = "um-stat um-stat-stones";
-  stones.textContent = `⬟ ×${me.timeStones ?? 0}`;
-  stones.title = "Time stones — one per hour of moving the clock";
-  stats.appendChild(stones);
-
-  const stress = document.createElement("div");
-  stress.className = "um-stat";
-  const safe = Math.max(1, Math.min(6, me.stress ?? 3));
-  stress.textContent = safe >= 6 ? "😌 all safe" : `😰 1–${safe} safe`;
-  stress.title = safe >= 6
-    ? "Super calm — no end-of-turn die can fine you until stress climbs back up"
-    : "Stress — end-of-turn dice at or under this are fine, over it costs a token";
-  stats.appendChild(stress);
-
-  const redLost = document.createElement("div");
-  redLost.className = "um-stat um-stat-red";
-  const fine = settingsState?.finePoints ?? 2;
-  redLost.textContent = isLandmarkMode()
-    ? `🚦 ${me.redTokensLost ?? 0} fines`
-    : `🚦 −${me.redTokensLost ?? 0}`;
-  redLost.title = isLandmarkMode()
-    ? `Fines paid — tokens lost to failed dice. Fewest at game end: +${fine}, and fines break ties on points. A fine you can't cover costs a point per token short.`
-    : "Tokens lost to red-light dice so far — the player who loses the most is docked points at game end, the least gains them";
-  stats.appendChild(redLost);
-
-  wrap.appendChild(stats);
-
-  // The one public part of the color race: what each color still pays.
-  if (isLandmarkMode() && hoodsState.length) renderColorPrizes(wrap);
-
-  // My upgrade board: four slots. Held upgrades fill from the left; the
-  // third slot unlocks with a token in every neighbourhood, the fourth with
-  // two in every neighbourhood. Filling all four banks the race points
-  // (7 for the first player, then 5, 3, 1).
-  {
-    const row = document.createElement("div");
-    row.className = "um-upgrades-row";
-    const cap = myUpgradeCap();
-    for (let i = 0; i < 4; i += 1) {
-      const t = me.upgrades?.[i];
-      if (t) {
-        const meta = upgradeMeta(t);
-        const chip = document.createElement("span");
-        chip.className = "um-upgrade-chip";
-        chip.textContent = `${meta.icon} ${meta.name}`;
-        chip.title = meta.desc;
-        if (meta.color) chip.style.borderColor = meta.color;
-        row.appendChild(chip);
-      } else {
-        const slot = document.createElement("span");
-        const locked = i >= cap;
-        slot.className = `um-upgrade-chip um-upgrade-slot${locked ? " um-upgrade-locked" : ""}`;
-        slot.textContent = locked ? "🔒" : "···";
-        slot.title = isLandmarkMode()
-          ? `Empty — a stack waits at each of the four upgrade locations (${LANDMARK_WINDOWS.map((w) => w.name).join(", ")}), one pull each per player, ${settingsState?.upgradePoints ?? 1} point apiece`
-          : locked
-          ? (i === 2
-            ? "Locked — place a token in every neighbourhood to unlock this upgrade slot"
-            : "Locked — place tokens in two locations of every neighbourhood to unlock this upgrade slot")
-          : "An open upgrade slot — fill all four for bonus points (first to do it: 7, then 5, 3, 1)";
-        row.appendChild(slot);
-      }
-    }
-    const deck = document.createElement("span");
-    deck.className = "um-upgrade-deck";
-    deck.textContent = `🂠×${upgradeDeckCountState}`;
-    deck.title = isStackUpgrades()
-      ? "Upgrades still on the board — each location shows the top of its stack, and the next slides up when it's taken"
-      : isScheduledUpgrades()
-      ? "Upgrades still waiting on the board — each opens only during its location's 4-hour window, and none come back"
-      : "Upgrades left in the supply — every type has two copies (neighbourhood locals one) and none come back";
-    row.appendChild(deck);
-    wrap.appendChild(row);
+  // --- the two piles ---
+  const piles = document.createElement("div");
+  piles.className = "ub-piles";
+  const pilesTitle = document.createElement("div");
+  pilesTitle.className = "ub-tray-title";
+  pilesTitle.textContent = "PASSENGERS";
+  // Waiting mode deals from ONE deck into three slots, so the count belongs to
+  // the row rather than to any slot in it.
+  if (isWaiting() && deckLeftState != null) {
+    const left = document.createElement("span");
+    left.className = "ub-deck-left";
+    left.textContent = `deck ${deckLeftState}`;
+    left.title = slotRuleState === "three"
+      ? "Take a slot and it's refilled off the deck where it stands — the other one is left alone"
+      : "Take a slot and the ones above it slide down; a fresh tile comes off the deck into the four-star slot";
+    pilesTitle.appendChild(left);
   }
-
-  // Open ride cards: painted the destination's neighbourhood color, with the
-  // place name up top and its landmark emoji big in the middle. Hovering
-  // lights the destination up on the board.
-  if (me.rides?.length) {
-    const row = document.createElement("div");
-    row.className = "um-rides";
-    // Landmark mode holds only a couple of cards face up; everything past
-    // that waits in one face-down pile rather than a row of card backs.
-    const down = me.rides.filter((r) => r.faceDown).length;
-    if (isLandmarkMode() && down) {
-      const card = document.createElement("div");
-      card.className = "um-ride-card um-ride-facedown um-ride-stack";
-      const name = document.createElement("div");
-      name.className = "um-ride-name";
-      name.textContent = "Face down";
-      const emoji = document.createElement("div");
-      emoji.className = "um-ride-emoji";
-      emoji.textContent = `×${down}`;
-      card.append(name, emoji);
-      const per = settingsState?.cardPenalty ?? 1;
-      card.title = `${down} landmark card${down > 1 ? "s" : ""} waiting. You hold ${visibleCardCap()} face up — the pile flips one up whenever a turn ends with room for it. Every card still down when a night ends (6am) costs ${per} point.`;
-      card.classList.add("um-ride-urgent");
-      row.appendChild(card);
+  piles.appendChild(pilesTitle);
+  const pileRow = document.createElement("div");
+  pileRow.className = "ub-pile-row";
+  const drawable = canDrawTile();
+  if (pilesState.length > 2) pileRow.classList.add("ub-pile-row-three");
+  pilesState.forEach((pile, i) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ub-pile";
+    const locked = pileLocked(pile);
+    if (!pile.left || !drawable || locked) btn.classList.add("ub-pile-off");
+    if (locked) btn.classList.add("ub-pile-locked");
+    btn.disabled = !pile.left || !drawable || locked;
+    if (pile.top) {
+      const d = districtOf(pile.top.district);
+      paintTile(btn, d?.color);
+      const sym = document.createElement("span");
+      sym.className = "ub-pile-sym";
+      sym.textContent = BONUS_ICON[pile.top.bonus] ?? "?";
+      btn.appendChild(sym);
+      const label = document.createElement("span");
+      label.className = "ub-pile-label";
+      label.textContent = d?.name ?? "";
+      btn.appendChild(label);
+      const kind = BONUS_NAME[pile.top.bonus];
+      btn.title = locked
+        ? `${kind ?? "A fare"} into ${d?.name ?? "a district"} — but this pile only deals at ${num(pile.need)} stars, and you have ${num(myPlayer()?.rating ?? 0)}.`
+        : `Top of pile ${i + 1}: ${kind ? `a ${kind.toLowerCase()} fare` : "a fare"} into ${d?.name ?? "a district"} — ${BONUS_TEXT[pile.top.bonus] ?? ""}. Taking it is your whole turn.`;
+    } else {
+      btn.classList.add("ub-pile-empty");
+      btn.textContent = "empty";
+      btn.title = "This pile is finished";
     }
-    me.rides.forEach((r) => {
-      if (r.faceDown) {
-        if (isLandmarkMode()) return; // already counted in the pile above
-        // Drawn this turn: a card back — the destination stays hidden (and
-        // the card inert) until the turn ends and it flips up.
-        const card = document.createElement("div");
-        card.className = "um-ride-card um-ride-facedown";
-        const name = document.createElement("div");
-        name.className = "um-ride-name";
-        name.textContent = "New ride";
-        const emoji = document.createElement("div");
-        emoji.className = "um-ride-emoji";
-        emoji.textContent = "❓";
-        card.append(name, emoji);
-        card.title = "Flips face up when your turn ends";
-        row.appendChild(card);
-        return;
+    // The stack depth is only a thing when the slot IS a stack.
+    if (!isWaiting()) {
+      const count = document.createElement("span");
+      count.className = "ub-pile-count";
+      count.textContent = String(pile.left);
+      btn.appendChild(count);
+    }
+    // The rating each pile asks for, worn on its face — the better fares are
+    // behind a rating you have to have earned first.
+    if (queueMode()) {
+      const need = document.createElement("span");
+      need.className = `ub-pile-need${locked ? " ub-pile-need-shut" : ""}`;
+      // Nothing on the first slot: a slot with no rating on it is open, and
+      // saying so is noise.
+      if (pile.need) {
+        need.textContent = `${num(pile.need)}★`;
+        btn.appendChild(need);
       }
-      const b = buildingByBid(r.loc);
-      // Landmark destinations carry no color, so their cards keep the deck's
-      // neutral stone; classic ride cards wear the destination's hood color.
-      const hood = hoodsState.find((h) => h.id === b?.hood);
-      const card = document.createElement("div");
-      card.className = "um-ride-card";
-      if (hood) {
-        // Same treatment as the buildings: light tint inside, full color border.
-        card.style.setProperty("--hood", lighten(hood.color));
-        card.style.setProperty("--hood-dark", hood.color);
-      }
-      const name = document.createElement("div");
-      name.className = "um-ride-name";
-      name.textContent = b?.name ?? "?";
-      const emoji = document.createElement("div");
-      emoji.className = "um-ride-emoji";
-      // Duplicate-mode destinations are circle locations: show their payout
-      // symbol in place of a landmark emoji.
-      emoji.textContent = b?.emoji ?? SLOT_SYMBOLS[b?.locType] ?? "🚕";
-      card.append(name, emoji);
-      card.title = isLandmarkMode()
-        ? `Drive to ${b?.name ?? "this landmark"} to complete the card — ${settingsState?.landmarkPoints ?? 1} point`
-        : `Drive to ${b?.name ?? "this location"} to complete the ride`;
-      card.addEventListener("mouseenter", () => {
-        els.gameBoard.querySelector(`.tm-building[data-bldg="${r.loc}"]`)?.classList.add("um-ride-hover");
-      });
-      card.addEventListener("mouseleave", () => {
-        els.gameBoard.querySelector(`.tm-building[data-bldg="${r.loc}"]`)?.classList.remove("um-ride-hover");
-      });
-      row.appendChild(card);
+    }
+    btn.addEventListener("click", () => {
+      if (btn.disabled || !app.roomId) return;
+      socket.emit("uber_mania_draw_tile", { roomId: app.roomId, pile: i });
     });
-    wrap.appendChild(row);
-  }
+    pileRow.appendChild(btn);
+  });
+  piles.appendChild(pileRow);
+  wrap.appendChild(piles);
 
-  els.gameBoard.appendChild(wrap);
+  // --- the passenger board ---
+  const board = document.createElement("div");
+  board.className = "ub-board";
+  const boardTitle = document.createElement("div");
+  boardTitle.className = "ub-tray-title";
+  boardTitle.textContent = queueMode() ? "YOUR QUEUE" : "YOUR BOARD";
+  boardTitle.appendChild(deliveryPeek(player));
+  board.appendChild(boardTitle);
+  if (queueMode()) {
+    buildQueue(board, player);
+    wrap.appendChild(board);
+    slot.appendChild(wrap);
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "ub-board-row";
+  row.appendChild(stonesBadge(player));
+
+  const bySlot = new Map((player?.passengers ?? []).map((t) => [t.slot, t]));
+  BOARD_NUMBERS.forEach((n, slotIdx) => {
+    const cell = document.createElement("div");
+    cell.className = "ub-slot";
+    const tile = bySlot.get(slotIdx);
+    if (tile) {
+      const d = districtOf(tile.district);
+      const dest = buildingByBid(tile.loc);
+      cell.classList.add("ub-slot-filled");
+      paintTile(cell, d?.color);
+      if (tile.done) cell.classList.add("ub-slot-done");
+      const top = document.createElement("div");
+      top.className = "ub-slot-top";
+      top.textContent = `${BONUS_ICON[tile.bonus] ?? ""} ${d?.name ?? ""}`;
+      const pic = document.createElement("div");
+      pic.className = "ub-slot-emoji";
+      pic.textContent = dest?.emoji ?? "📍";
+      const name = document.createElement("div");
+      name.className = "ub-slot-dest";
+      name.textContent = dest?.name ?? "…";
+      cell.append(top, pic, name);
+      cell.title = tile.done
+        ? `Delivered — ${dest?.name ?? ""}. The tile comes off once this turn's dice are thrown, which is why ${n} is still covered.`
+        : `Fare to ${dest?.name ?? "?"} in ${d?.name ?? "?"} — ${BONUS_TEXT[tile.bonus] ?? ""}. It sits on ${n}, so ${n} is not safe on the dice.`;
+    } else {
+      const digit = document.createElement("span");
+      digit.className = "ub-slot-num";
+      digit.textContent = String(n);
+      cell.appendChild(digit);
+      cell.title = `${n} is showing — a die that lands on it is safe`;
+    }
+    row.appendChild(cell);
+  });
+
+  // The bare 6: no square, and nothing can ever cover it.
+  const free = document.createElement("div");
+  free.className = "ub-free";
+  const freeNum = document.createElement("span");
+  freeNum.className = "ub-slot-num";
+  freeNum.textContent = String(FREE_NUMBER);
+  free.appendChild(freeNum);
+  free.title = "The 6 has no square — it is always showing, whatever you're carrying";
+  row.appendChild(free);
+  board.appendChild(row);
+
+  const showing = showingFor(player);
+  const hint = document.createElement("div");
+  hint.className = "ub-board-hint";
+  hint.textContent = `Safe rolls: ${showing.join(", ")}`;
+  hint.title = "Every red light you run throws a die. A die is safe only on a number still showing; anything else costs half a star.";
+  if (showing.length <= 2) hint.classList.add("ub-board-hint-hot");
+  board.appendChild(hint);
+  wrap.appendChild(board);
+
+  slot.appendChild(wrap);
+}
+
+// The queue modes' board: four places in a line, and the line is the rule. The
+// leftmost is the priority fare — deliver that one and you gain a star; deliver
+// anyone else and it costs half a star for every head you reached over. Each
+// tile wears what delivering it would do, because that number is the whole
+// decision and it changes every time the queue closes up.
+function buildQueue(board, player) {
+  const held = [...(player?.passengers ?? [])].sort((a, b) => a.slot - b.slot);
+  const row = document.createElement("div");
+  row.className = "ub-board-row ub-queue-row";
+  row.appendChild(stonesBadge(player));
+
+  for (let i = 0; i < maxPassengers(); i += 1) {
+    const cell = document.createElement("div");
+    cell.className = "ub-slot ub-queue-slot";
+    if (i === 0) cell.classList.add("ub-queue-first");
+    const tile = held[i];
+    if (!tile) {
+      cell.classList.add("ub-queue-empty");
+      cell.title = i === 0
+        ? "Empty — the next fare you take becomes the priority"
+        : "Empty — a fare taken now joins the back of the queue here";
+      row.appendChild(cell);
+      continue;
+    }
+    const d = districtOf(tile.district);
+    const dest = buildingByBid(tile.loc);
+    cell.classList.add("ub-slot-filled");
+    paintTile(cell, d?.color);
+    if (tile.done) cell.classList.add("ub-slot-done");
+
+    // Five tiles have to fit where four did, so the district's NAME comes off
+    // the queue tile — its color already says which one, and the address is the
+    // thing you're actually hunting for.
+    const kindIcon = document.createElement("div");
+    kindIcon.className = "ub-queue-kind";
+    kindIcon.textContent = BONUS_ICON[tile.bonus] ?? "";
+    const pic = document.createElement("div");
+    pic.className = "ub-slot-emoji";
+    pic.textContent = dest?.emoji ?? "📍";
+    const name = document.createElement("div");
+    name.className = "ub-slot-dest";
+    name.textContent = dest?.name ?? "…";
+
+    const delta = slotStarDelta(i);
+    const tag = document.createElement("div");
+    tag.className = `ub-queue-tag${delta >= 0 ? " ub-queue-tag-good" : " ub-queue-tag-bad"}`;
+    tag.textContent = starDeltaText(delta);
+    cell.append(kindIcon, pic, name, tag);
+
+    const kind = BONUS_NAME[tile.bonus];
+    const reach = i === 0
+      ? `They're at the front of the queue, so dropping them off is ${priorityStarState === 1 ? "a whole star" : "half a star"}.`
+      : `Dropping them off means reaching over ${i} passenger${i === 1 ? "" : "s"} — ${num(i * SKIP_STAR_STEP)} stars off.`;
+    cell.title = tile.done
+      ? `Delivered — ${dest?.name ?? ""}. The queue closes up when you end your turn.`
+      : `${kind ?? "Fare"} to ${dest?.name ?? "?"} in ${d?.name ?? "?"} — ${BONUS_TEXT[tile.bonus] ?? ""}. ${reach}`;
+    row.appendChild(cell);
+  }
+  board.appendChild(row);
+
+  const hint = document.createElement("div");
+  hint.className = "ub-board-hint";
+  const riding = held.filter((t) => !t.done).length;
+  const rush = held.filter((t) => t.bonus === "rush" && !t.done).length;
+  if (isWaiting()) {
+    // Nothing is billed in waiting mode — the two things that can cost you a
+    // star are the queue and an errand run with a full car.
+    hint.textContent = riding
+      ? `An errand now costs ${num(riding * SKIP_STAR_STEP)}★ — ${riding} aboard`
+      : "Empty car: errands are free right now";
+    hint.title = "Running one of your errands annoys everybody still riding: half a star each. Red lights cost nothing here — they just stop you.";
+    if (riding >= 3) hint.classList.add("ub-board-hint-hot");
+    else if (!riding) hint.classList.add("ub-board-hint-good");
+    board.appendChild(hint);
+    return;
+  }
+  // The running bill only means anything on your own turn.
+  const reds = isMyTurn() ? dicePoolState : 0;
+  const free = held.filter((t) => t.bonus === "rush" && t.done).length;
+  const charged = Math.max(0, reds - free);
+  hint.textContent = reds > 0
+    ? `${reds} red${reds === 1 ? "" : "s"} run${free ? `, ${free} waved through` : ""} — −${charged * RED_STAR_COST}★ at end of turn`
+    : rush
+    ? `${rush} rush fare${rush === 1 ? "" : "s"} aboard — each waves one red through`
+    : "Every red light is a whole star. Left is priority.";
+  hint.title = "Reds are charged when you end your turn. Each rush passenger you drop off that turn forgives one of them.";
+  if (charged > 0) hint.classList.add("ub-board-hint-hot");
+  board.appendChild(hint);
 }
 
 // ---------------------------------------------------------------------------
@@ -2643,10 +2892,10 @@ const DIE_PIPS = {
   5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8]
 };
 
-function makeDieEl(d, settled, threshold) {
+function makeDieEl(d, settled, safeSet) {
   const die = document.createElement("div");
   if (!settled) die.className = "tm-die tm-die-rolling";
-  else die.className = `tm-die ${d > threshold ? "tm-die-ticket" : "tm-die-safe"}`;
+  else die.className = `tm-die ${safeSet.has(d) ? "tm-die-safe" : "tm-die-ticket"}`;
   (DIE_PIPS[d] ?? []).forEach((pos) => {
     const pip = document.createElement("span");
     pip.className = "tm-pip";
@@ -2661,49 +2910,116 @@ function setDiceHead(head, roll, settled) {
   head.className = "tm-dice-head";
   if (!settled) {
     head.textContent = `${who} rolling…`;
-  } else if (roll.tickets > 0) {
-    head.textContent = `${who}: too stressed! −${roll.loss ?? roll.tickets} token${(roll.loss ?? roll.tickets) === 1 ? "" : "s"}`;
+    return;
+  }
+  if (roll.fails > 0) {
+    head.textContent = `${who}: missed ×${roll.fails} — −${num(roll.fails * 0.5)}★`;
     head.classList.add("tm-dice-bad");
   } else {
-    head.textContent = `${who}: stress held`;
+    head.textContent = `${who}: all safe`;
     head.classList.add("tm-dice-good");
   }
 }
 
-function setDiceFaces(row, roll, faces, settled) {
+function setDiceFaces(row, faces, settled, safeSet) {
   row.innerHTML = "";
-  faces.forEach((d) => row.appendChild(makeDieEl(d, settled, roll.aversion)));
+  faces.forEach((d) => row.appendChild(makeDieEl(d, settled, safeSet)));
 }
 
 function renderDicePanel(roll, faces, settled, big = false) {
-  els.gameBoard.querySelector(".tm-dice")?.remove();
+  const slot = railSlot("dice");
+  slot.innerHTML = "";
   if (!roll || !faces?.length) return;
+  const safeSet = new Set(roll.showing ?? []);
 
   const wrap = document.createElement("div");
-  wrap.className = `tm-dice${big ? " tm-dice-big" : ""}`;
+  wrap.className = `tm-dice ub-dice${big ? " tm-dice-big" : ""}`;
   const head = document.createElement("div");
   setDiceHead(head, roll, settled);
   wrap.appendChild(head);
 
   const row = document.createElement("div");
   row.className = "tm-dice-row";
-  setDiceFaces(row, roll, faces, settled);
+  setDiceFaces(row, faces, settled, safeSet);
   wrap.appendChild(row);
-  els.gameBoard.appendChild(wrap);
+
+  const sub = document.createElement("div");
+  sub.className = "ub-dice-sub";
+  sub.textContent = `showing ${(roll.showing ?? []).join(", ")}`;
+  wrap.appendChild(sub);
+
+  slot.appendChild(wrap);
 }
 
 function renderDice() {
   if (diceAnimating) return;
+  if (queueMode()) {
+    renderTollPanel(lastTollState);
+    return;
+  }
   const roll = lastRollState;
   if (!roll || !roll.dice?.length) {
-    els.gameBoard.querySelector(".tm-dice")?.remove();
+    railSlot("dice").innerHTML = "";
     return;
   }
   renderDicePanel(roll, roll.dice, true);
 }
 
+// Static mode's stand-in for the dice: nothing is rolled, so this is just the
+// bill for the reds that turn — how many were run, how many a rush passenger
+// waved through, and what it cost.
+function renderTollPanel(toll, big = false) {
+  const slot = railSlot("dice");
+  slot.innerHTML = "";
+  if (!toll || !toll.reds) return;
+  const wrap = document.createElement("div");
+  wrap.className = `tm-dice ub-dice ub-toll${big ? " tm-dice-big" : ""}`;
+
+  const head = document.createElement("div");
+  head.className = `tm-dice-head ${toll.charged > 0 ? "tm-dice-bad" : "tm-dice-good"}`;
+  head.textContent = toll.charged > 0
+    ? `${seatName(toll.player)}: ran ${toll.reds} red${toll.reds === 1 ? "" : "s"} — −${num(toll.charged * RED_STAR_COST)}★`
+    : `${seatName(toll.player)}: waved through`;
+  wrap.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "ub-toll-row";
+  for (let i = 0; i < toll.reds; i += 1) {
+    const light = document.createElement("span");
+    // The forgiven ones are the last off the bill, so they read as the ones
+    // the rush passengers covered.
+    light.className = i < toll.charged ? "ub-toll-light" : "ub-toll-light ub-toll-free";
+    light.textContent = i < toll.charged ? "●" : "😡";
+    row.appendChild(light);
+  }
+  wrap.appendChild(row);
+
+  const sub = document.createElement("div");
+  sub.className = "ub-dice-sub";
+  sub.textContent = toll.forgiven
+    ? `${toll.forgiven} forgiven by rush fares`
+    : "a whole star per red";
+  wrap.appendChild(sub);
+
+  slot.appendChild(wrap);
+}
+
+// The toll has no roll to watch, so it just lands and then flashes the loss on
+// the driver's chip the same way a bad roll does.
+function showToll(toll, onDone) {
+  renderTollPanel(toll, true);
+  if (toll.charged > 0) {
+    setTimeout(() => flashLoss(toll.player, toll.charged * RED_STAR_COST), 200 / speedMult);
+  }
+  setTimeout(() => {
+    els.gameBoard.querySelector(".tm-dice")?.classList.remove("tm-dice-big");
+    onDone();
+  }, (toll.charged > 0 ? 1900 : 1000) / speedMult);
+}
+
 function animateDiceRoll(roll, onDone) {
   const n = roll.dice.length;
+  const safeSet = new Set(roll.showing ?? []);
   const rnd = () => Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6));
   renderDicePanel(roll, rnd(), false, true);
   const wrap = els.gameBoard.querySelector(".tm-dice");
@@ -2713,13 +3029,13 @@ function animateDiceRoll(roll, onDone) {
   const iv = setInterval(() => {
     elapsed += 90;
     if (elapsed < 1300 / speedMult) {
-      if (row) setDiceFaces(row, roll, rnd(), false);
+      if (row) setDiceFaces(row, rnd(), false, safeSet);
     } else {
       clearInterval(iv);
-      if (row) setDiceFaces(row, roll, roll.dice, true);
+      if (row) setDiceFaces(row, roll.dice, true, safeSet);
       if (head) setDiceHead(head, roll, true);
-      const hasLoss = roll.tickets > 0;
-      if (hasLoss) setTimeout(() => flashLoss(roll), 250 / speedMult);
+      const hasLoss = roll.fails > 0;
+      if (hasLoss) setTimeout(() => flashLoss(roll.player, roll.fails * 0.5), 250 / speedMult);
       setTimeout(() => {
         els.gameBoard.querySelector(".tm-dice")?.classList.remove("tm-dice-big");
         onDone();
@@ -2728,8 +3044,8 @@ function animateDiceRoll(roll, onDone) {
   }, 90);
 }
 
-function flashLoss(roll) {
-  const amount = `−${roll.loss ?? roll.tickets} ●`;
+function flashLoss(seat, stars) {
+  const amount = `−${num(stars)}★`;
   const wrap = els.gameBoard.querySelector(".tm-dice");
   if (wrap) {
     const loss = document.createElement("div");
@@ -2738,7 +3054,7 @@ function flashLoss(roll) {
     wrap.appendChild(loss);
     setTimeout(() => loss.remove(), 1900);
   }
-  const chip = document.querySelector(`.tm-scoreboard .tm-score[data-player="${roll.player}"]`);
+  const chip = document.querySelector(`.tm-scoreboard .tm-score[data-player="${seat}"]`);
   if (chip) {
     chip.classList.add("tm-score-hit");
     const f = document.createElement("span");
@@ -2752,8 +3068,34 @@ function flashLoss(roll) {
   }
 }
 
+// The fun die: a driving turn that ran no reds gets one of two faces.
+const FUN_FACE = {
+  stones: { icon: "⬟", text: "Fun die: 2 time stones" },
+  star: { icon: "⭐", text: "Fun die: half a star" }
+};
+
+function showFunRoll(roll) {
+  document.querySelector(".ub-fun")?.remove();
+  const face = FUN_FACE[roll.face];
+  if (!face) return;
+  const el = document.createElement("div");
+  el.className = "ub-fun";
+  const who = document.createElement("span");
+  who.className = "ub-fun-who";
+  who.textContent = seatName(roll.player);
+  const icon = document.createElement("span");
+  icon.className = "ub-fun-icon";
+  icon.textContent = face.icon;
+  const text = document.createElement("span");
+  text.textContent = face.text;
+  el.append(who, icon, text);
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add("ub-fun-out"), 1700 / speedMult);
+  setTimeout(() => el.remove(), 2300 / speedMult);
+}
+
 // ---------------------------------------------------------------------------
-// Controls + tuning
+// Controls
 // ---------------------------------------------------------------------------
 
 function button(label, action, className = "ghost-btn") {
@@ -2766,286 +3108,44 @@ function button(label, action, className = "ghost-btn") {
 }
 
 function endTurnLabel() {
-  return isMyTurn() && dicePoolState > 0 ? `End turn · 🎲×${dicePoolState}` : "End turn";
-}
-
-// Landmark mode's clock splits every skip in two: by DAY you may nap (stress)
-// or take welfare (tokens); by NIGHT you may sleep (stress) or beg (a token).
-// Nothing else sits a turn out.
-const isNightNow = () => timeState >= 19 || timeState <= 6;
-
-// The handout on offer right now — welfare by day, begging by night. (The
-// classic game only has welfare, any hour.)
-const handoutKind = () => (isLandmarkMode() && isNightNow() ? "beg" : "welfare");
-
-// Welfare / begging: skip the turn — before doing anything with it — for the
-// handout that's open at this hour.
-function canSkipTurn() {
-  return isMyTurn() && winnerState == null && turnTruck == null && !turnActed &&
-    dicePoolState === 0;
-}
-
-function skipTurnLabel() {
-  const s = settingsState;
-  if (handoutKind() === "beg") return `🥺 Beg · +${s?.begTokens ?? 1}●`;
-  const stones = s?.welfareStones ?? 2;
-  return stones > 0
-    ? `Welfare · +${s?.welfareTokens ?? 1}● +${stones}⬟`
-    : `🤲 Welfare · +${s?.welfareTokens ?? 1}●`;
-}
-
-function skipTurnButton() {
-  const btn = button(skipTurnLabel(), "skipturn", "ghost-btn um-skip-turn");
-  btn.title = handoutKind() === "beg"
-    ? "Sit the turn out and beg (night only): one token"
-    : isLandmarkMode()
-    ? "Sit the turn out and collect welfare (day only): tokens, no time stones"
-    : "Sit this turn out and collect welfare: tokens and time stones";
-  btn.style.display = canSkipTurn() ? "" : "none";
-  btn.disabled = diceAnimating || anyCarAnimating() || flipping;
-  return btn;
-}
-
-// Sleep: only at night (7pm–6am), and — like welfare — only in place of the
-// whole turn: no movement, no location. Stress drops all the way down and
-// the clock can sweep forward up to 4 hours for free.
-function canSleep() {
-  return isMyTurn() && winnerState == null && turnTruck == null && !turnActed &&
-    dicePoolState === 0 && isNightNow();
-}
-
-// Where a full rest lands the marker, in the bar's own numbering: the bottom
-// of it, or one past the end (nothing can fine you) with super calm.
-const restLabel = () => (hasUpgrade("superCalm")
-  ? "all safe"
-  : isLandmarkMode() ? "1–2" : "2–3");
-
-function sleepButton() {
-  const wrap = document.createElement("span");
-  wrap.className = "um-sleep-wrap";
-  const btn = button(`😴 Sleep · calm to ${restLabel()}`, "", "ghost-btn um-sleep");
-  btn.title = "Sit the turn out to sleep (night only): stress drops all the way down, and the clock can sweep forward for free";
-  const sel = document.createElement("select");
-  sel.className = "um-sleep-hours";
-  for (let h = 0; h <= 4; h += 1) {
-    const opt = document.createElement("option");
-    opt.value = String(h);
-    opt.textContent = `+${h}h`;
-    sel.appendChild(opt);
-  }
-  sel.title = "Hours to sweep the clock forward for free while sleeping";
-  btn.addEventListener("click", () => {
-    if (btn.disabled || !app.roomId) return;
-    const hours = Number(sel.value) || 0;
-    withHoodChoices((hoodChoices) =>
-      socket.emit("uber_mania_sleep", { roomId: app.roomId, hours, hoodChoices }));
-  });
-  wrap.append(btn, sel);
-  wrap.style.display = canSleep() ? "" : "none";
-  return wrap;
-}
-
-// Nap: landmark mode's daytime answer to sleeping. Same whole-turn cost —
-// nothing moved, no location used — but the marker only walks two steps down
-// the bar instead of resetting. (Landmark mode has no destress locations.)
-function canNap() {
-  return isLandmarkMode() && isMyTurn() && winnerState == null && turnTruck == null &&
-    !turnActed && dicePoolState === 0 && !isNightNow();
-}
-
-function napButton() {
-  const wrap = document.createElement("span");
-  wrap.className = "um-nap-wrap";
-  const btn = button("🛌 Nap · −2 stress", "", "ghost-btn um-nap");
-  btn.title = "Sit the turn out for a daytime nap: the stress marker moves two steps down the bar, and the clock can sweep forward a couple of hours for free";
-  const sel = document.createElement("select");
-  sel.className = "um-sleep-hours";
-  for (let h = 0; h <= 2; h += 1) {
-    const opt = document.createElement("option");
-    opt.value = String(h);
-    opt.textContent = `+${h}h`;
-    sel.appendChild(opt);
-  }
-  sel.title = "Hours to sweep the clock forward for free while napping";
-  btn.addEventListener("click", () => {
-    if (btn.disabled || !app.roomId) return;
-    const hours = Number(sel.value) || 0;
-    withHoodChoices((hoodChoices) =>
-      socket.emit("uber_mania_nap", { roomId: app.roomId, hours, hoodChoices }));
-  });
-  wrap.append(btn, sel);
-  wrap.style.display = canNap() ? "" : "none";
-  return wrap;
-}
-
-// How many neighbourhood bonuses ending the turn here would pay: my
-// "hood:<id>" upgrades matching the hood my car is parked in.
-function myHoodBonusCount() {
-  const car = myCar();
-  if (!car || car.spot == null) return 0;
-  const b = buildingByBid(mapState?.spots?.[car.spot]?.building);
-  if (!b || b.hood == null) return 0;
-  return myUpgrades().filter((t) => hoodIdOf(t) === b.hood).length;
-}
-
-// Every way a turn can end (End turn, welfare, sleep) runs through here: when
-// neighbourhood bonuses are due, a small chooser collects one reward pick per
-// matching upgrade before the ending is sent; otherwise it sends right away.
-function withHoodChoices(send) {
-  const count = myHoodBonusCount();
-  if (count < 1) {
-    send([]);
-    return;
-  }
-  els.gameBoard.querySelector(".um-hood-choice")?.remove();
-  const picks = [];
-  const overlay = document.createElement("div");
-  overlay.className = "um-hood-choice";
-  const panel = document.createElement("div");
-  panel.className = "um-hood-choice-panel";
-  const title = document.createElement("div");
-  title.className = "um-hood-choice-title";
-  const setTitle = () => {
-    title.textContent = count > 1
-      ? `🏘️ Neighbourhood bonus ${picks.length + 1}/${count} — choose your reward`
-      : "🏘️ Neighbourhood bonus — choose your reward";
-  };
-  setTitle();
-  panel.appendChild(title);
-  const row = document.createElement("div");
-  row.className = "um-hood-choice-row";
-  [["token", "💰 1 token"], ["destress", "🍵 1 destress"], ["stones", "⬟ 2 time stones"]].forEach(([value, label]) => {
-    const btn = button(label, "", "ghost-btn");
-    btn.addEventListener("click", () => {
-      picks.push(value);
-      if (picks.length >= count) {
-        overlay.remove();
-        send(picks);
-      } else {
-        setTitle();
-      }
-    });
-    row.appendChild(btn);
-  });
-  panel.appendChild(row);
-  const cancel = button("Cancel", "", "ghost-btn um-hood-cancel");
-  cancel.addEventListener("click", () => overlay.remove());
-  panel.appendChild(cancel);
-  overlay.appendChild(panel);
-  els.gameBoard.appendChild(overlay);
-}
-
-// The fun die: a turn that banked no stress dice (and wasn't sat out) ends
-// on this instead — a floating banner that tumbles through the three faces
-// (same beat as the stress-dice roll) before settling on what it paid.
-const FUN_FACE_TEXT = {
-  token: "+1 token 💰",
-  destress: "−1 stress 🍵",
-  stones: "+2 time stones ⬟"
-};
-const FUN_FACES = ["token", "destress", "stones"];
-const FUN_FACE_ICONS = { token: "💰", destress: "🍵", stones: "⬟" };
-
-// The fun die rolls like the stress dice, in the same spot: a grown panel on
-// the right where one die shakes through the three faces until it lands.
-function showFunRoll(roll) {
-  document.querySelector(".um-fun-dice")?.remove();
-  const wrap = document.createElement("div");
-  wrap.className = "um-fun-dice";
-  wrap.style.borderColor = playersState[roll.player]?.color ?? "rgba(255, 255, 255, 0.14)";
-  const who = seatName(roll.player);
-  const head = document.createElement("div");
-  head.className = "tm-dice-head";
-  head.textContent = `${who} rolling the fun die…`;
-  const row = document.createElement("div");
-  row.className = "tm-dice-row";
-  const die = document.createElement("div");
-  die.className = "tm-die um-fun-die tm-die-rolling";
-  let i = Math.floor(Math.random() * FUN_FACES.length);
-  die.textContent = FUN_FACE_ICONS[FUN_FACES[i]];
-  row.appendChild(die);
-  wrap.append(head, row);
-  els.gameBoard.appendChild(wrap);
-  let elapsed = 0;
-  const iv = setInterval(() => {
-    if (!wrap.isConnected) {
-      clearInterval(iv);
-      return;
-    }
-    elapsed += 90;
-    if (elapsed < 1300 / speedMult) {
-      i = (i + 1) % FUN_FACES.length;
-      die.textContent = FUN_FACE_ICONS[FUN_FACES[i]];
-    } else {
-      clearInterval(iv);
-      die.textContent = FUN_FACE_ICONS[roll.face] ?? "🎲";
-      die.classList.remove("tm-die-rolling");
-      die.classList.add("tm-die-safe");
-      head.textContent = `${who}: ${FUN_FACE_TEXT[roll.face] ?? roll.face}`;
-      head.classList.add("tm-dice-good");
-      wrap.classList.add("um-fun-done");
-      setTimeout(() => wrap.remove(), 1800 / speedMult);
-    }
-  }, 90);
-}
-
-// Keep going: after movement has ended, take on one stress level to reopen
-// movement (and another time change). Barred at max stress or after a
-// destress location this turn (destressing forces the turn to end).
-function canKeepGoing() {
-  return isMyTurn() && winnerState == null && turnActed && !turnDestressed &&
-    (myPlayer()?.stress ?? 3) > 1;
-}
-
-function keepGoingButton() {
-  const btn = button("Keep going · +stress 😰", "", "ghost-btn um-keep-going");
-  btn.title = "Take on one stress level (one fewer safe die number) to keep moving — and change time again — this turn";
-  btn.style.display = canKeepGoing() ? "" : "none";
-  btn.disabled = diceAnimating || anyCarAnimating() || flipping;
-  btn.addEventListener("click", () => {
-    if (!btn.disabled && app.roomId) socket.emit("uber_mania_keep_going", { roomId: app.roomId });
-  });
-  return btn;
+  if (!isMyTurn() || dicePoolState <= 0) return "End turn";
+  if (!queueMode()) return `End turn · 🎲×${dicePoolState}`;
+  // Static mode: the bill is already known, so the button says what it is.
+  const free = (myPlayer()?.passengers ?? []).filter((t) => t.done && t.bonus === "rush").length;
+  const charged = Math.max(0, dicePoolState - free);
+  return charged > 0 ? `End turn · −${num(charged * RED_STAR_COST)}★` : "End turn · waved through";
 }
 
 function canUndoTurn() {
-  return isMyTurn() && winnerState == null && !!turnUndo;
+  return isMyTurn() && winnerState == null && turnUndo != null && !diceAnimating;
 }
 
 function undoTurnLabel() {
-  return turnUndo?.kind === "time" ? "↩ Undo time" : "↩ Undo move";
+  return turnUndo?.kind === "time" ? "Undo clock" : "Undo drive";
 }
 
-
-// The bottom-right action bar, sitting next to Leave Game in the shared game
-// footer: the route builder's Undo / Restart / Go, the one-step turn undo,
-// and End turn — the buttons a turn actually runs on, kept small.
 function ensureActionBar() {
   const footer = document.querySelector(".game-footer");
   if (!footer) return null;
-  let bar = footer.querySelector(".um-actions");
+  let bar = footer.querySelector(".ub-actions");
   if (!bar) {
     bar = document.createElement("div");
-    bar.className = "um-actions";
+    bar.className = "ub-actions";
 
     const buildSlot = document.createElement("span");
-    buildSlot.className = "um-actions-build";
+    buildSlot.className = "ub-actions-build";
     bar.appendChild(buildSlot);
 
-    const undoBtn = button(undoTurnLabel(), "", "ghost-btn tm-undo-turn");
+    const undoBtn = button(undoTurnLabel(), "", "ghost-btn ub-undo-turn");
     undoBtn.addEventListener("click", () => {
       if (!undoBtn.disabled && app.roomId) socket.emit("uber_mania_undo", { roomId: app.roomId });
     });
     bar.appendChild(undoBtn);
 
-    bar.appendChild(keepGoingButton());
-
-    const endBtn = button(endTurnLabel(), "", "primary-btn tm-end-turn");
+    const endBtn = button(endTurnLabel(), "", "primary-btn ub-end-turn");
     endBtn.addEventListener("click", () => {
       if (endBtn.disabled || !app.roomId) return;
-      // Neighbourhood bonuses are chosen before the turn actually ends.
-      withHoodChoices((hoodChoices) =>
-        socket.emit("uber_mania_end_turn", { roomId: app.roomId, hoodChoices }));
+      socket.emit("uber_mania_end_turn", { roomId: app.roomId });
     });
     bar.appendChild(endBtn);
 
@@ -3055,210 +3155,201 @@ function ensureActionBar() {
 }
 
 function removeActionBar() {
-  document.querySelector(".game-footer .um-actions")?.remove();
+  document.querySelector(".game-footer .ub-actions")?.remove();
 }
 
-// The settings bar (bottom left): compact by default, collapsible to a ⚙.
-// The contextual Welfare / Keep going offers stay visible either way.
+// The settings bar, top of the right rail: a new city, a reshuffle of the
+// lights, how many AI share the table, and the animation speed.
 function renderControls() {
-  els.hand.innerHTML = "";
-  els.hand.classList.remove("player-0", "player-1", "toy-rack", "flip-score", "tm-controls-min");
-  els.hand.classList.add("tm-controls", "um-controls");
-  els.hand.classList.toggle("um-controls-min", controlsMin);
+  const slot = railSlot("controls");
+  slot.innerHTML = "";
+  const bar = document.createElement("div");
+  bar.className = "ub-controls";
 
-  if (controlsMin) {
-    const openBtn = button("⚙", "togglebar");
-    openBtn.title = "Show settings";
-    els.hand.appendChild(openBtn);
-    els.hand.appendChild(skipTurnButton());
-    els.hand.appendChild(sleepButton());
-    els.hand.appendChild(napButton());
-    ensureActionBar();
-    updateTurnControls();
-    renderTuning();
-    return;
+  bar.appendChild(button("New city", "regen"));
+  bar.appendChild(button("Mix lights", "mixup"));
+
+  const pre = button(preTimeState ? "Pre-time: on" : "Pre-time: off", "pretime");
+  pre.title = preTimeState
+    ? "On: the clock is something you set BEFORE your turn. Once you've driven or taken a passenger the hand is locked."
+    : "Off: you can move the clock at any point in your turn. Turn on to make it a decision you commit to first.";
+  if (preTimeState) pre.classList.add("ub-opt-on");
+  bar.appendChild(pre);
+
+  // Waiting mode is the only ruleset where a drive can be truncated part-way,
+  // so it's the only one this rule has anything to say about.
+  if (isWaiting()) {
+    const multi = button(multiMoveState ? "Multi-move: on" : "Multi-move: off", "multimove");
+    multi.title = multiMoveState
+      ? "On: dropping off and running errands no longer end your drive — only a red light stops you."
+      : "Off: a drop-off or an errand ends your drive where it happened.";
+    if (multiMoveState) multi.classList.add("ub-opt-on");
+    bar.appendChild(multi);
+
+    const slots = button(slotLabel(), "slots");
+    slots.title = SLOT_BLURB[slotRuleState] ?? "";
+    bar.appendChild(slots);
   }
 
-  const minBtn = button("⌄", "togglebar");
-  minBtn.title = "Minimize settings";
-  els.hand.appendChild(minBtn);
+  // What the front of the queue pays, and what everyone opens on. Both belong
+  // to the queue's star economy, so both ride with it.
+  if (queueMode()) {
+    const top = button(topFareLabel(), "topfare");
+    top.title = TOP_FARE_BLURB();
+    bar.appendChild(top);
 
-  els.hand.appendChild(button("New map", "regen"));
-  els.hand.appendChild(button("Mix up", "mixup"));
-
-  // Landmark mode: the one switch that re-tunes the whole board. Flipping it
-  // re-deals, so it lives right here next to New map rather than only inside
-  // the tuning panel.
-  const lmWrap = document.createElement("label");
-  lmWrap.className = "um-mode-toggle";
-  lmWrap.title = "Landmark mode: 50 locations, 7 scoring colors, landmark cards discovered one at a time, 7 day / 7 night locations, 4 upgrade stacks behind named windows. Everything else tunes itself — switching back restores your classic board.";
-  const lmBox = document.createElement("input");
-  lmBox.type = "checkbox";
-  lmBox.checked = isLandmarkMode();
-  lmBox.addEventListener("change", () => {
-    if (!app.roomId || !settingsState) return;
-    const next = JSON.parse(JSON.stringify(settingsState));
-    next.landmarkMode = lmBox.checked;
-    socket.emit("uber_mania_tune", { roomId: app.roomId, settings: next });
-  });
-  const lmLabel = document.createElement("span");
-  lmLabel.textContent = "🗽 Landmark";
-  lmWrap.append(lmBox, lmLabel);
-  if (isLandmarkMode()) lmWrap.classList.add("tm-active");
-  els.hand.appendChild(lmWrap);
-
-  // Blank stoplights on top of the guaranteed 24 numbered ones. Picking a new
-  // count regenerates the map with exactly that many lights (corners carry
-  // none), so this re-deals the board.
-  const lightsWrap = document.createElement("span");
-  lightsWrap.className = "um-lights-wrap";
-  lightsWrap.title = "Extra blank stoplights beyond the 24 numbered — changing re-deals the board";
-  const lightInput = (key, symbol) => {
-    const lab = document.createElement("label");
-    lab.className = "um-light";
-    lab.textContent = symbol;
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "0";
-    input.max = "30";
-    input.className = "um-light-input";
-    input.value = String(settingsState?.blankLights?.[key] ?? 6);
-    input.addEventListener("change", () => {
-      if (!app.roomId || !settingsState) return;
-      const next = JSON.parse(JSON.stringify(settingsState));
-      (next.blankLights ??= {})[key] = Number(input.value);
-      socket.emit("uber_mania_tune", { roomId: app.roomId, settings: next });
+    const startWrap = document.createElement("label");
+    startWrap.className = "ub-ai-wrap";
+    startWrap.append("Start ★");
+    const stars = document.createElement("select");
+    stars.className = "ub-ai ub-start-stars";
+    for (let v = 0; v <= 5; v += 0.5) {
+      const opt = document.createElement("option");
+      opt.value = String(v);
+      opt.textContent = num(v);
+      if (v === startStarsState) opt.selected = true;
+      stars.appendChild(opt);
+    }
+    stars.title = "What every driver's rating opens on. Changing it re-deals the table.";
+    stars.addEventListener("change", () => {
+      if (!app.roomId) return;
+      socket.emit("uber_mania_set_start_stars", { roomId: app.roomId, stars: Number(stars.value) });
     });
-    lab.appendChild(input);
-    return lab;
-  };
-  lightsWrap.append(lightInput("green", "🟢"), lightInput("red", "🔴"));
-  els.hand.appendChild(lightsWrap);
+    startWrap.appendChild(stars);
+    bar.appendChild(startWrap);
+  }
 
-  const modeBtn = button(moveMode === "build" ? "Route: build" : "Route: auto", "routemode");
-  if (moveMode === "build") modeBtn.classList.add("tm-active");
-  els.hand.appendChild(modeBtn);
+  const rules = button(`Mode: ${MODE_NAME[modeState] ?? "Dice"}`, "rules");
+  rules.title = `${MODE_BLURB[modeState] ?? ""}\n\nClick to switch to ${MODE_NAME[nextMode()]} — which re-deals the table.`;
+  bar.appendChild(rules);
 
-  const tuneBtn = button("Tuning", "tuning");
-  if (tuneDraft) tuneBtn.classList.add("tm-active");
-  els.hand.appendChild(tuneBtn);
+  // Waiting mode has no auto option — where you'll be stopped isn't knowable
+  // until you've walked the route, so the builder is the only way to drive.
+  if (!isWaiting()) {
+    const modeBtn = button(moveMode === "build" ? "Route: build" : "Route: auto", "mode");
+    modeBtn.title = "Build walks the route stop light by stop light. Auto offers the cheapest route(s) to a parking spot you click. A car still in the garage always builds its way in.";
+    bar.appendChild(modeBtn);
+  }
 
-  const speedWrap = document.createElement("label");
-  speedWrap.className = "tm-speed-wrap";
-  speedWrap.textContent = "Speed";
-  const dial = document.createElement("input");
-  dial.type = "range";
-  dial.min = "1";
-  dial.max = "3";
-  dial.step = "0.5";
-  dial.value = String(speedMult);
-  dial.className = "tm-speed";
-  const dialVal = document.createElement("span");
-  dialVal.className = "tm-speed-val";
-  dialVal.textContent = `×${speedMult}`;
-  dial.addEventListener("input", () => {
-    dialVal.textContent = `×${dial.value}`;
-  });
-  dial.addEventListener("change", () => {
-    if (app.roomId) socket.emit("uber_mania_set_speed", { roomId: app.roomId, speed: Number(dial.value) });
-  });
-  speedWrap.append(dial, dialVal);
-  els.hand.appendChild(speedWrap);
-
-  // Building size — visual only: 100% packs the lots wall to wall (as
-  // generated), lower shrinks them around their centers for more open
-  // ground. Never sent to the server, so it's safe to slide mid-game.
-  const sizeWrap = document.createElement("label");
-  sizeWrap.className = "tm-speed-wrap um-bsize-wrap";
-  sizeWrap.textContent = "Lots";
-  sizeWrap.title = "Building size (visual only) — slide any time, the game doesn't notice";
-  const size = document.createElement("input");
-  size.type = "range";
-  size.min = "55";
-  size.max = "100";
-  size.step = "5";
-  size.value = String(Math.round(buildingScale * 100));
-  size.className = "tm-speed um-bsize";
-  const sizeVal = document.createElement("span");
-  sizeVal.className = "tm-speed-val";
-  sizeVal.textContent = `${Math.round(buildingScale * 100)}%`;
-  size.addEventListener("input", () => {
-    buildingScale = Number(size.value) / 100;
-    sizeVal.textContent = `${size.value}%`;
-    localStorage.setItem("umBuildingScale", String(buildingScale));
-    applyBuildingScale();
-  });
-  sizeWrap.append(size, sizeVal);
-  els.hand.appendChild(sizeWrap);
-
-  // AI opponents (0 up to the free seats). Re-deals the board when changed.
   const aiWrap = document.createElement("label");
-  aiWrap.className = "tm-ai-wrap";
-  aiWrap.textContent = "AI";
-  const aiSelect = document.createElement("select");
-  aiSelect.className = "tm-ai-select";
-  const currentAi = playersState.filter((p) => p.isAI).length;
-  for (let n = 0; n <= maxAiState; n += 1) {
+  aiWrap.className = "ub-ai-wrap";
+  aiWrap.append("AI");
+  const ai = document.createElement("select");
+  ai.className = "ub-ai";
+  // maxAi is the free seats, so the humans at the table are the rest of them.
+  const humans = Math.max(1, MAX_SEATS - maxAiState);
+  const aiNow = Math.max(0, (playersState.length || humans) - humans);
+  for (let n = 0; n <= Math.max(0, maxAiState); n += 1) {
     const opt = document.createElement("option");
     opt.value = String(n);
     opt.textContent = String(n);
-    if (n === currentAi) opt.selected = true;
-    aiSelect.appendChild(opt);
+    if (n === aiNow) opt.selected = true;
+    ai.appendChild(opt);
   }
-  aiSelect.addEventListener("change", () => {
+  ai.addEventListener("change", () => {
     if (!app.roomId) return;
-    socket.emit("uber_mania_set_opponents", { roomId: app.roomId, count: Number(aiSelect.value) });
+    socket.emit("uber_mania_set_opponents", { roomId: app.roomId, count: Number(ai.value) });
   });
-  aiWrap.appendChild(aiSelect);
-  els.hand.appendChild(aiWrap);
+  aiWrap.appendChild(ai);
+  bar.appendChild(aiWrap);
 
-  els.hand.appendChild(skipTurnButton());
-  els.hand.appendChild(sleepButton());
-  els.hand.appendChild(napButton());
+  const speedWrap = document.createElement("label");
+  speedWrap.className = "ub-speed-wrap";
+  speedWrap.append("Speed");
+  const speed = document.createElement("input");
+  speed.type = "range";
+  speed.className = "ub-speed";
+  speed.min = "1";
+  speed.max = "3";
+  speed.step = "0.5";
+  speed.value = String(speedMult);
+  const val = document.createElement("span");
+  val.className = "ub-speed-val";
+  val.textContent = `×${speedMult}`;
+  speed.addEventListener("input", () => {
+    val.textContent = `×${speed.value}`;
+    if (app.roomId) socket.emit("uber_mania_set_speed", { roomId: app.roomId, speed: Number(speed.value) });
+  });
+  speedWrap.append(speed, val);
+  bar.appendChild(speedWrap);
 
+  bar.addEventListener("click", (event) => {
+    const btn = event.target.closest?.("[data-action]");
+    if (!btn || !app.roomId) return;
+    if (btn.dataset.action === "regen") socket.emit("uber_mania_regenerate", { roomId: app.roomId });
+    if (btn.dataset.action === "mixup") socket.emit("uber_mania_mix_up", { roomId: app.roomId });
+    if (btn.dataset.action === "pretime") {
+      socket.emit("uber_mania_set_pretime", { roomId: app.roomId, on: !preTimeState });
+    }
+    if (btn.dataset.action === "multimove") {
+      socket.emit("uber_mania_set_multimove", { roomId: app.roomId, on: !multiMoveState });
+    }
+    if (btn.dataset.action === "slots") {
+      socket.emit("uber_mania_set_slots", { roomId: app.roomId, rule: nextSlotRule() });
+    }
+    if (btn.dataset.action === "topfare") {
+      socket.emit("uber_mania_set_priority_star", { roomId: app.roomId, value: nextTopFare() });
+    }
+    if (btn.dataset.action === "rules") {
+      socket.emit("uber_mania_set_mode", { roomId: app.roomId, mode: nextMode() });
+    }
+    if (btn.dataset.action === "mode") {
+      moveMode = moveMode === "build" ? "auto" : "build";
+      localStorage.setItem("ubMoveMode", moveMode);
+      btn.textContent = moveMode === "build" ? "Route: build" : "Route: auto";
+      clearPreview();
+      refreshBuilder();
+    }
+  });
+
+  slot.appendChild(bar);
   ensureActionBar();
   updateTurnControls();
-  renderTuning();
+}
+
+// The settings bar is only built when the board is, so a toggle that doesn't
+// change the map — Pre-time — would never repaint its own label. Refresh the
+// labels in place on every state update instead.
+function syncControlLabels() {
+  const pre = els.gameBoard.querySelector('.ub-controls [data-action="pretime"]');
+  if (pre) {
+    pre.textContent = preTimeState ? "Pre-time: on" : "Pre-time: off";
+    pre.classList.toggle("ub-opt-on", preTimeState);
+  }
+  const multi = els.gameBoard.querySelector('.ub-controls [data-action="multimove"]');
+  if (multi) {
+    multi.textContent = multiMoveState ? "Multi-move: on" : "Multi-move: off";
+    multi.classList.toggle("ub-opt-on", multiMoveState);
+  }
+  const slots = els.gameBoard.querySelector('.ub-controls [data-action="slots"]');
+  if (slots) {
+    slots.textContent = slotLabel();
+    slots.title = SLOT_BLURB[slotRuleState] ?? "";
+  }
+  const top = els.gameBoard.querySelector('.ub-controls [data-action="topfare"]');
+  if (top) {
+    top.textContent = topFareLabel();
+    top.title = TOP_FARE_BLURB();
+  }
+  const stars = els.gameBoard.querySelector(".ub-controls .ub-start-stars");
+  if (stars && Number(stars.value) !== startStarsState) stars.value = String(startStarsState);
+  const rules = els.gameBoard.querySelector('.ub-controls [data-action="rules"]');
+  if (rules) rules.textContent = `Mode: ${MODE_NAME[modeState] ?? "Dice"}`;
 }
 
 function updateTurnControls() {
-  const bar = document.querySelector(".game-footer .um-actions");
-  const btn = bar?.querySelector(".tm-end-turn");
+  const bar = document.querySelector(".game-footer .ub-actions");
+  const btn = bar?.querySelector(".ub-end-turn");
+  const busy = diceAnimating || anyCarAnimating() || flipping;
   if (btn) {
-    btn.disabled = !isMyTurn() || winnerState != null || diceAnimating || anyCarAnimating() || flipping;
+    btn.disabled = !isMyTurn() || winnerState != null || busy;
     btn.textContent = endTurnLabel();
   }
-  const ub = bar?.querySelector(".tm-undo-turn");
+  const ub = bar?.querySelector(".ub-undo-turn");
   if (ub) {
     ub.style.display = canUndoTurn() ? "" : "none";
-    ub.disabled = diceAnimating || anyCarAnimating() || flipping;
+    ub.disabled = busy;
     ub.textContent = undoTurnLabel();
-  }
-  const kg = bar?.querySelector(".um-keep-going");
-  if (kg) {
-    kg.style.display = canKeepGoing() ? "" : "none";
-    kg.disabled = diceAnimating || anyCarAnimating() || flipping;
-  }
-  const sk = els.hand.querySelector(".um-skip-turn");
-  if (sk) {
-    sk.style.display = canSkipTurn() ? "" : "none";
-    sk.disabled = diceAnimating || anyCarAnimating() || flipping;
-    sk.textContent = skipTurnLabel();
-  }
-  const sw = els.hand.querySelector(".um-sleep-wrap");
-  if (sw) {
-    sw.style.display = canSleep() ? "" : "none";
-    const sb = sw.querySelector(".um-sleep");
-    if (sb) {
-      sb.disabled = diceAnimating || anyCarAnimating() || flipping;
-      sb.textContent = `😴 Sleep · calm to ${restLabel()}`;
-    }
-  }
-  const nw = els.hand.querySelector(".um-nap-wrap");
-  if (nw) {
-    nw.style.display = canNap() ? "" : "none";
-    const nb = nw.querySelector(".um-nap");
-    if (nb) nb.disabled = diceAnimating || anyCarAnimating() || flipping;
   }
 }
 
@@ -3266,643 +3357,185 @@ function applySpeed(sp) {
   if (sp === speedMult) return;
   speedMult = sp;
   document.body.style.setProperty("--tm-mult", String(sp));
-  const dial = els.hand.querySelector(".tm-speed");
+  const dial = els.gameBoard.querySelector(".ub-speed");
   if (dial) {
     dial.value = String(sp);
-    const v = els.hand.querySelector(".tm-speed-val");
+    const v = els.gameBoard.querySelector(".ub-speed-val");
     if (v) v.textContent = `×${sp}`;
   }
 }
 
-// The end-of-game chart: every player's scoring breakdown, shown to everyone
-// once the days run out (after the final dice roll settles).
+// ---------------------------------------------------------------------------
+// End-game chart
+// ---------------------------------------------------------------------------
+
+const RESULT_COLUMNS = [
+  ["daily", "Stars", "Banked at the end of each day: a point for every FULL star you were holding, plus one for each night parked in your home district"],
+  ["ridePoints", "Rides", "A point per fare delivered"],
+  ["allDistricts", "All six", "Two for having driven a fare into every district"],
+  ["regularPoints", "Regular", "Two for every district that isn't home where you finished three rides"],
+  ["errandPenalty", "Errands", "Two off for every errand left standing"]
+];
+
+const STATIC_RESULT_COLUMNS = [
+  ["daily", "Stars", "Banked at the end of each day: a point for every FULL star you were holding"],
+  ["ridePoints", "Rides", "Three points per fare delivered"],
+  ["tipPoints", "Tips", "Every tip fare delivered, times your full stars at the end"],
+  ["allDistricts", "All six", "Five for having driven a fare into every district"],
+  ["regularPoints", "Regular", "Five for every district you finished three rides in"]
+];
+
+// No wage column here: waiting mode pays nothing for the stars you hold at the
+// end of a day. A rating is worth points only through the tips it multiplies.
+const WAITING_RESULT_COLUMNS = [
+  ["ridePoints", "Rides", "Three points per fare delivered"],
+  ["tipPoints", "Tips", "Every tip fare delivered, times your full stars at the end"],
+  ["errandPoints", "Errands", "What your finished errands pay: 2, 5, 8, 11, 15, 20 for one through six"],
+  ["allDistricts", "All six", "Five for having driven a fare into every district"],
+  ["regularPoints", "Regular", "Five for every district you finished three rides in"]
+];
+
+const resultColumns = () =>
+  (isWaiting() ? WAITING_RESULT_COLUMNS : isStatic() ? STATIC_RESULT_COLUMNS : RESULT_COLUMNS);
+
+// How the night actually went, under the scoring: none of it is worth points,
+// which is exactly why it's a separate table — reading it next to the totals is
+// how you find out whether the winner drove well or just got a clean run.
+function driveLog() {
+  const wrap = document.createElement("div");
+  wrap.className = "ub-log";
+  const h = document.createElement("div");
+  h.className = "ub-log-title";
+  h.textContent = "ALONG THE WAY";
+  wrap.appendChild(h);
+
+  const cols = [
+    ["redsWaited", "Reds waited at", "Turns that ended sat at a red light, going nowhere"],
+    ["clockChanges", "Clock changes", "Times this driver pushed the hand round"],
+    ["stonesSpent", "Stones spent", "Time stones burned on the clock, all game"]
+  ];
+  // Only waiting mode makes you sit at reds; the others charge for them instead.
+  const live = isWaiting() ? cols : cols.slice(1);
+
+  const table = document.createElement("table");
+  table.className = "ub-results-table ub-log-table";
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  ["Driver", ...live.map(([, label]) => label)].forEach((label, i) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    if (i > 0) th.title = live[i - 1]?.[2] ?? "";
+    hr.appendChild(th);
+  });
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  [...(resultsState?.rows ?? [])].sort((a, b) => b.total - a.total).forEach((row) => {
+    const tr = document.createElement("tr");
+    const who = document.createElement("td");
+    who.className = "ub-results-who";
+    const dot = document.createElement("span");
+    dot.className = "ub-results-dot";
+    dot.style.background = row.color;
+    who.append(dot, row.name);
+    tr.appendChild(who);
+    live.forEach(([key]) => {
+      const td = document.createElement("td");
+      td.textContent = String(row[key] ?? 0);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
 function renderResults() {
-  els.gameBoard.querySelector(".um-results")?.remove();
+  els.gameBoard.querySelector(".ub-results")?.remove();
   if (!resultsState || winnerState == null || resultsDismissed || diceAnimating) return;
 
   const overlay = document.createElement("div");
-  overlay.className = "um-results";
+  overlay.className = "ub-results";
   const panel = document.createElement("div");
-  panel.className = "um-results-panel";
+  panel.className = "ub-results-card";
 
+  const h = document.createElement("h3");
   const winners = resultsState.winners ?? [];
-  const title = document.createElement("div");
-  title.className = "um-results-title";
-  title.textContent = winners.length > 1
-    ? `It's a tie — ${winners.map((i) => seatName(i)).join(" & ")}!`
+  h.textContent = winners.length > 1
+    ? `Tie — ${winners.map((i) => seatName(i)).join(" & ")}`
     : winners.includes(myIndex())
-    ? "🏆 You win!"
-    : `🏆 ${seatName(winners[0] ?? 0)} wins!`;
-  panel.appendChild(title);
+    ? "You win!"
+    : `${seatName(winners[0])} wins`;
+  panel.appendChild(h);
 
-  const sub = document.createElement("div");
-  sub.className = "um-results-sub";
-  sub.textContent = `The ${settingsState?.days ?? 3} days are over`;
-  panel.appendChild(sub);
-
+  const columns = resultColumns();
   const table = document.createElement("table");
-  table.className = "um-results-table";
-
-  // Landmark mode has its own breakdown: colors, upgrades, landmark cards,
-  // fines and the two running penalties.
-  if (resultsState.mode === "landmark") {
-    renderLandmarkResults(table);
-    panel.appendChild(table);
-    finishResults(panel, overlay);
-    return;
-  }
-
-  const head = document.createElement("tr");
-  ["", "Rides", "Upgrades", "🚦 Tokens lost", "Total"].forEach((h) => {
+  table.className = "ub-results-table";
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  ["Driver", ...columns.map(([, label]) => label), "Total"].forEach((label, i) => {
     const th = document.createElement("th");
-    th.textContent = h;
-    head.appendChild(th);
+    th.textContent = label;
+    if (i > 0) th.title = columns[i - 1]?.[2] ?? "";
+    hr.appendChild(th);
   });
-  table.appendChild(head);
+  thead.appendChild(hr);
+  table.appendChild(thead);
 
-  (resultsState.perPlayer ?? []).forEach((r, i) => {
-    const p = playersState[i];
+  const tbody = document.createElement("tbody");
+  [...resultsState.rows].sort((a, b) => b.total - a.total).forEach((row) => {
     const tr = document.createElement("tr");
-    if (winners.includes(i)) tr.classList.add("um-results-winner");
-
-    const name = document.createElement("td");
-    name.className = "um-results-name";
+    if (winners.includes(row.seat)) tr.className = "ub-results-win";
+    const who = document.createElement("td");
+    who.className = "ub-results-who";
     const dot = document.createElement("span");
-    dot.className = "um-token-dot";
-    dot.style.background = p?.color ?? "#888";
-    const nm = document.createElement("span");
-    nm.textContent = seatName(i);
-    name.append(dot, nm);
-    tr.appendChild(name);
-
-    const rides = document.createElement("td");
-    rides.innerHTML = `${r.rides} <span class="um-results-pts">+${r.ridePts}</span>`;
-    tr.appendChild(rides);
-
-    const ups = document.createElement("td");
-    ups.innerHTML = `${r.upgrades ?? 0} <span class="um-results-pts">+${r.upgradePts ?? 0}</span>`;
-    tr.appendChild(ups);
-
-    const red = document.createElement("td");
-    const adj = r.redAdj > 0 ? `+${r.redAdj}` : String(r.redAdj);
-    red.innerHTML = `${r.redLost} <span class="um-results-pts ${r.redAdj < 0 ? "um-results-neg" : r.redAdj > 0 ? "um-results-pos" : ""}">${r.redAdj === 0 ? "±0" : adj}</span>`;
-    tr.appendChild(red);
-
+    dot.className = "ub-results-dot";
+    dot.style.background = row.color;
+    who.append(dot, row.homeName ? `${row.name} · ${row.homeName}` : row.name);
+    tr.appendChild(who);
+    columns.forEach(([key]) => {
+      const td = document.createElement("td");
+      const v = row[key] ?? 0;
+      td.textContent = key === "errandPenalty" ? (v ? `−${v}` : "0") : String(v);
+      if (key === "errandPenalty" && v) td.className = "ub-results-neg";
+      if (key === "tipPoints") td.title = `${row.tips ?? 0} tip fares × ${Math.floor(row.rating ?? 0)} stars`;
+      tr.appendChild(td);
+    });
     const total = document.createElement("td");
-    total.className = "um-results-total";
-    total.textContent = String(r.total);
+    total.className = "ub-results-total";
+    total.textContent = String(row.total);
     tr.appendChild(total);
-
-    table.appendChild(tr);
+    tbody.appendChild(tr);
   });
+  table.appendChild(tbody);
   panel.appendChild(table);
 
-  const hint = document.createElement("div");
-  hint.className = "um-results-hint";
-  const s = settingsState;
-  hint.textContent = `Points: ${s?.ridePoints ?? 2} per ride · 7/5/3/1 for filling all four upgrade slots (in finishing order) · ±${s?.redPenalty ?? 3} for least/most tokens lost to red lights`;
-  panel.appendChild(hint);
+  // Nothing below here scores anything — it's the log of how the night went.
+  panel.appendChild(driveLog());
 
-  finishResults(panel, overlay);
-}
+  const note = document.createElement("p");
+  note.className = "ub-results-note";
+  note.textContent = "Ties break on rides delivered, then on rating.";
+  panel.appendChild(note);
 
-// Landmark mode's scoring chart: colors, upgrades, landmark cards, fines.
-function renderLandmarkResults(table) {
-  const winners = resultsState.winners ?? [];
-  const head = document.createElement("tr");
-  ["", "🎨 Colors", "⬛ Upgrades", "🗽 Landmarks", "🚦 Fines", "➖ Penalties", "Total"].forEach((h) => {
-    const th = document.createElement("th");
-    th.textContent = h;
-    head.appendChild(th);
-  });
-  table.appendChild(head);
-
-  (resultsState.perPlayer ?? []).forEach((r, i) => {
-    const p = playersState[i];
-    const tr = document.createElement("tr");
-    if (winners.includes(i)) tr.classList.add("um-results-winner");
-
-    const name = document.createElement("td");
-    name.className = "um-results-name";
-    const dot = document.createElement("span");
-    dot.className = "um-token-dot";
-    dot.style.background = p?.color ?? "#888";
-    const nm = document.createElement("span");
-    nm.textContent = seatName(i);
-    name.append(dot, nm);
-    // A player who tied on points but lost the fines tiebreak says so.
-    if (r.tiebroken) {
-      const note = document.createElement("span");
-      note.className = "um-results-tiebreak";
-      note.textContent = "tied — more fines";
-      note.title = "Level on points, but broken by fines paid";
-      name.appendChild(note);
-    }
-    tr.appendChild(name);
-
-    // Colors: a swatch per claimed color, first places brighter than seconds.
-    const colors = document.createElement("td");
-    const swatches = document.createElement("span");
-    swatches.className = "um-results-swatches";
-    (r.colorsFirst ?? []).forEach((id) => {
-      const sw = document.createElement("span");
-      sw.className = "um-results-swatch";
-      sw.style.background = hoodsState.find((h) => h.id === id)?.color ?? "#888";
-      sw.title = `${hoodsState.find((h) => h.id === id)?.name ?? "Color"} — claimed first`;
-      swatches.appendChild(sw);
-    });
-    (r.colorsSecond ?? []).forEach((id) => {
-      const sw = document.createElement("span");
-      sw.className = "um-results-swatch um-results-swatch-second";
-      sw.style.background = hoodsState.find((h) => h.id === id)?.color ?? "#888";
-      sw.title = `${hoodsState.find((h) => h.id === id)?.name ?? "Color"} — claimed second`;
-      swatches.appendChild(sw);
-    });
-    const cpts = document.createElement("span");
-    cpts.className = "um-results-pts";
-    cpts.textContent = `+${r.colorPts ?? 0}`;
-    colors.append(swatches, cpts);
-    tr.appendChild(colors);
-
-    const ups = document.createElement("td");
-    ups.innerHTML = `${r.upgrades ?? 0} <span class="um-results-pts">+${r.upgradePts ?? 0}</span>`;
-    tr.appendChild(ups);
-
-    const lm = document.createElement("td");
-    lm.innerHTML = `${r.landmarks ?? 0}${r.mostBonus ? " ⭐" : ""} <span class="um-results-pts">+${r.landmarkPts ?? 0}</span>`;
-    if (r.mostBonus) lm.title = `Most landmark cards completed — +${r.mostBonus} bonus`;
-    tr.appendChild(lm);
-
-    const fines = document.createElement("td");
-    fines.innerHTML = `${r.fines ?? 0} <span class="um-results-pts ${r.fineAdj > 0 ? "um-results-pos" : ""}">${r.fineAdj > 0 ? `+${r.fineAdj}` : "±0"}</span>`;
-    if (r.fineAdj > 0) fines.title = "Fewest fines paid";
-    tr.appendChild(fines);
-
-    // The two running penalties, revealed only now: cards caught face down at
-    // the end of a night, and tokens come up short paying the dice.
-    const pen = document.createElement("td");
-    const bits = [];
-    if (r.cardPen) bits.push(`🂠${r.cardPen}`);
-    if (r.shortPen) bits.push(`💸${r.shortPen}`);
-    pen.innerHTML = `${bits.join(" ") || "—"} <span class="um-results-pts ${r.penalties ? "um-results-neg" : ""}">${r.penalties ? `−${r.penalties}` : "±0"}</span>`;
-    pen.title = `${r.cardPen ?? 0} for landmark cards left face down at the end of a night · ${r.shortPen ?? 0} for tokens come up short when the dice asked to be paid`;
-    tr.appendChild(pen);
-
-    const total = document.createElement("td");
-    total.className = "um-results-total";
-    total.textContent = String(r.total);
-    tr.appendChild(total);
-
-    table.appendChild(tr);
-  });
-}
-
-// The chart's footer: the scoring key, then Close / New game.
-function finishResults(panel, overlay) {
-  const s = settingsState;
-  if (resultsState.mode === "landmark") {
-    const hint = document.createElement("div");
-    hint.className = "um-results-hint";
-    hint.textContent = `Colors: ${s?.colorFirstPoints ?? 2} to the first player at three of a color's four, ${s?.colorSecondPoints ?? 1} to the second (21 on the table) · Upgrades: ${s?.upgradePoints ?? 1} each · Landmark cards: ${s?.landmarkPoints ?? 1} each, +${s?.mostLandmarksBonus ?? 2} to everyone tied for the most · Fines: +${s?.finePoints ?? 2} for the fewest paid, and the tiebreak on equal totals · Penalties: −${s?.cardPenalty ?? 1} per landmark card still face down when a night ends, −${s?.shortPenalty ?? 1} per token you couldn't cover on a roll`;
-    panel.appendChild(hint);
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "um-results-actions";
-  const closeBtn = button("Close", "", "ghost-btn");
-  closeBtn.addEventListener("click", () => {
+  const close = button("Close", "", "ghost-btn");
+  close.addEventListener("click", () => {
     resultsDismissed = true;
     overlay.remove();
   });
-  const againBtn = button("New game", "", "primary-btn");
-  againBtn.addEventListener("click", () => {
-    resultsDismissed = false;
-    socket.emit("uber_mania_regenerate", { roomId: app.roomId });
-  });
-  actions.append(closeBtn, againBtn);
-  panel.appendChild(actions);
+  panel.appendChild(close);
 
   overlay.appendChild(panel);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) {
+      resultsDismissed = true;
+      overlay.remove();
+    }
+  });
   els.gameBoard.appendChild(overlay);
 }
-
-function showTurnToast() {
-  document.querySelector(".tm-turn-toast")?.remove();
-  const p = playersState[turnWhose];
-  const div = document.createElement("div");
-  div.className = "tm-turn-toast";
-  div.style.borderColor = p?.color ?? "#ffe17a";
-  div.textContent = isMyTurn() ? "Your turn" : `${p?.name ?? "Opponent"}'s turn`;
-  document.body.appendChild(div);
-  setTimeout(() => div.remove(), 1900);
-}
-
-// The tuning drop-up: the room's numbers, applied with a re-deal.
-const TUNE_FIELDS = [
-  ["timeStoneReward", "Time stone reward"],
-  ["tokenReward", "Token reward"],
-  ["startingTokens", "Starting tokens"],
-  ["startingTimeStones", "Starting time stones"],
-  ["startingStress", "Starting stress (1–5)"],
-  ["tokensPerFail", "Tokens per failed die"],
-  ["neighbourhoods", "Neighbourhoods"],
-  ["days", "Days until game end"],
-  ["ridePoints", "Points per ride"],
-  ["redPenalty", "Red-light swing (±)"],
-  ["welfareTokens", "Welfare tokens"],
-  ["welfareStones", "Welfare time stones"]
-];
-const TUNE_LOC_FIELDS = [
-  ["timestone", "⏳ Time stone locations"],
-  ["token", "💰 Token locations"],
-  ["destress", "🍵 Destress locations"],
-  ["upgrade", "⬛ Upgrade locations"],
-  ["discovery", "🔭 Discovery locations"],
-  ["landmark", "🗽 Landmark locations"]
-];
-// Landmark mode's own scoring numbers — shown only when the mode is on.
-const TUNE_LANDMARK_FIELDS = [
-  ["colorFirstPoints", "🎨 Color — first player"],
-  ["colorSecondPoints", "🎨 Color — second player"],
-  ["upgradePoints", "⬛ Points per upgrade"],
-  ["landmarkPoints", "🗽 Points per landmark card"],
-  ["mostLandmarksBonus", "⭐ Most landmark cards bonus"],
-  ["finePoints", "🚦 Fewest fines bonus"],
-  ["cardPenalty", "🂠 Per card left face down"],
-  ["shortPenalty", "💸 Per token short on a roll"],
-  ["begTokens", "🥺 Beg tokens (night)"]
-];
-// The classic scoring numbers landmark mode replaces.
-const TUNE_CLASSIC_SCORING = ["ridePoints", "redPenalty"];
-// Fields landmark mode derives — greyed out while it's on. (Server:
-// LANDMARK_OWNED.)
-const LANDMARK_OWNED = new Set([
-  "rideMode", "upgradeMode", "timedPeriods", "locations",
-  "timeStoneReward", "tokenReward", "neighbourhoods",
-  "dayLocations", "nightLocations", "startingTokens", "startingTimeStones",
-  "welfareTokens", "welfareStones"
-]);
-// Blank stoplights beyond the guaranteed 24 numbered (corners carry none).
-const TUNE_LIGHT_FIELDS = [
-  ["green", "🟢 Green blank lights"],
-  ["red", "🔴 Red blank lights"]
-];
-
-function openTuning() {
-  if (!settingsState) return;
-  tuneDraft = JSON.parse(JSON.stringify(settingsState));
-  tuneName = "";
-  if (!tuningsRequested) {
-    tuningsRequested = true;
-    socket.emit("uber_mania_list_settings");
-  }
-  renderControls();
-}
-
-function closeTuning() {
-  tuneDraft = null;
-  els.gameBoard.querySelector(".um-tune")?.remove();
-}
-
-// The saved-tunings list inside the panel: apply, rename (type, then hit the
-// green ✓), and a two-click delete.
-function buildTuningList() {
-  const list = document.createElement("div");
-  list.className = "um-tune-saved";
-  savedTunings.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "um-tune-saved-row";
-
-    const name = document.createElement("input");
-    name.type = "text";
-    name.className = "um-tune-name";
-    name.maxLength = 40;
-    name.value = item.name;
-    name.readOnly = !canSaveTunings;
-    name.title = canSaveTunings ? "Type to rename, then hit the green ✓" : item.name;
-
-    const ok = document.createElement("button");
-    ok.type = "button";
-    ok.className = "tm-btn um-tune-ok";
-    ok.textContent = "✓";
-    ok.title = "Save the new name";
-    ok.style.display = "none";
-    name.addEventListener("input", () => {
-      const dirty = canSaveTunings && name.value.trim() && name.value.trim() !== item.name;
-      ok.style.display = dirty ? "" : "none";
-    });
-    name.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && ok.style.display !== "none") ok.click();
-    });
-    ok.addEventListener("click", () => {
-      socket.emit("uber_mania_rename_settings", { roomId: app.roomId, settingsId: item.id, name: name.value.trim() });
-    });
-
-    const apply = document.createElement("button");
-    apply.type = "button";
-    apply.className = "ghost-btn tm-btn";
-    apply.textContent = "Apply";
-    apply.title = "Apply this tuning (re-deals the board)";
-    apply.addEventListener("click", () => {
-      socket.emit("uber_mania_load_settings", { roomId: app.roomId, settingsId: item.id });
-      closeTuning();
-      renderControls();
-    });
-
-    row.append(name, ok, apply);
-
-    if (canSaveTunings) {
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "ghost-btn tm-btn um-tune-del";
-      del.textContent = "🗑";
-      del.title = `Delete “${item.name}”`;
-      del.addEventListener("click", () => {
-        if (del.dataset.armed) {
-          socket.emit("uber_mania_delete_settings", { roomId: app.roomId, settingsId: item.id });
-          return;
-        }
-        del.dataset.armed = "1";
-        del.textContent = "Sure?";
-        setTimeout(() => {
-          delete del.dataset.armed;
-          del.textContent = "🗑";
-        }, 2500);
-      });
-      row.appendChild(del);
-    }
-    list.appendChild(row);
-  });
-  return list;
-}
-
-function renderTuning() {
-  els.gameBoard.querySelector(".um-tune")?.remove();
-  if (!tuneDraft) return;
-  const panel = document.createElement("div");
-  panel.className = "um-tune";
-
-  const title = document.createElement("div");
-  title.className = "um-tune-title";
-  title.textContent = "Uber Mania tuning — applying re-deals the board";
-  panel.appendChild(title);
-
-  if (savedTunings.length) panel.appendChild(buildTuningList());
-
-  // Landmark mode: the one switch that tunes the rest of the board for you.
-  // Everything it owns goes grey below.
-  const lm = !!tuneDraft.landmarkMode;
-  const lmRow = document.createElement("label");
-  lmRow.className = `um-tune-mode${lm ? " um-tune-mode-on" : ""}`;
-  const lmBox = document.createElement("input");
-  lmBox.type = "checkbox";
-  lmBox.checked = lm;
-  lmBox.addEventListener("change", () => {
-    tuneDraft.landmarkMode = lmBox.checked;
-    renderTuning();
-  });
-  const lmText = document.createElement("span");
-  lmText.className = "um-tune-mode-text";
-  lmText.innerHTML = "<b>🗽 Landmark mode</b><br><small>50 locations · 7 scoring colors, 4 locations each · landmark cards discovered one at a time, the rest face down and bleeding a point every night · 7 day / 7 night locations · 4 upgrade stacks behind named windows · no neighbourhoods, no destress locations. The greyed settings below are set for you.</small>";
-  lmRow.append(lmBox, lmText);
-  panel.appendChild(lmRow);
-
-  const grid = document.createElement("div");
-  grid.className = "um-tune-grid";
-  // Ride mode: ride-2 (start with two cards, completions replaced) or
-  // ride-pickup (the original rule — any landmark deals a card).
-  const modeLab = document.createElement("label");
-  modeLab.className = lm ? "um-tune-row um-tune-off" : "um-tune-row";
-  const modeSpan = document.createElement("span");
-  modeSpan.textContent = "🚕 Ride mode";
-  const modeSel = document.createElement("select");
-  modeSel.className = "um-tune-input";
-  [["ride-2", "Ride 2"], ["ride-pickup", "Ride pickup"], ["duplicate", "Duplicate"]].forEach(([value, label]) => {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = label;
-    modeSel.appendChild(opt);
-  });
-  modeSel.value = ["ride-pickup", "duplicate"].includes(tuneDraft.rideMode) ? tuneDraft.rideMode : "ride-2";
-  modeSel.disabled = lm;
-  // A mode switch re-renders the panel: the landmark row greys in duplicate.
-  modeSel.addEventListener("change", () => {
-    tuneDraft.rideMode = modeSel.value;
-    renderTuning();
-  });
-  modeLab.append(modeSpan, modeSel);
-  grid.appendChild(modeLab);
-
-  // Upgrade mode: spawn (the one roaming upgrade, respawning when taken) or
-  // scheduled (every upgrade location dealt one up front, each behind its
-  // own 4-hour window, no respawns).
-  const upLab = document.createElement("label");
-  upLab.className = lm ? "um-tune-row um-tune-off" : "um-tune-row";
-  const upSpan = document.createElement("span");
-  upSpan.textContent = "⬛ Upgrade mode";
-  const upSel = document.createElement("select");
-  upSel.className = "um-tune-input";
-  [["spawn", "Spawn"], ["scheduled", "Scheduled"]].forEach(([value, label]) => {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = label;
-    upSel.appendChild(opt);
-  });
-  upSel.value = tuneDraft.upgradeMode === "scheduled" ? "scheduled" : "spawn";
-  upSel.title = "Spawn: one roaming upgrade, a random new one appears when it's taken. Scheduled: every upgrade location shows one from the start, each only usable during its own 4-hour window";
-  upSel.disabled = lm;
-  upSel.addEventListener("change", () => { tuneDraft.upgradeMode = upSel.value; });
-  upLab.append(upSpan, upSel);
-  grid.appendChild(upLab);
-
-  // Timed locations: off, or the three visiting periods.
-  const timedLab = document.createElement("label");
-  timedLab.className = lm ? "um-tune-row um-tune-off" : "um-tune-row";
-  const timedSpan = document.createElement("span");
-  timedSpan.textContent = "🌅 Timed locations";
-  const timedSel = document.createElement("select");
-  timedSel.className = "um-tune-input";
-  [["0", "None"], ["2", "Day, Night"], ["3", "Morning, Afternoon, Night"]].forEach(([value, label]) => {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = label;
-    timedSel.appendChild(opt);
-  });
-  timedSel.value = [2, 3].includes(Number(tuneDraft.timedPeriods)) ? String(tuneDraft.timedPeriods) : "0";
-  timedSel.disabled = lm;
-  // A scheme switch re-renders the panel: the day/night counts below only
-  // come alive under Day, Night.
-  timedSel.addEventListener("change", () => {
-    tuneDraft.timedPeriods = Number(timedSel.value);
-    renderTuning();
-  });
-  timedLab.append(timedSpan, timedSel);
-  grid.appendChild(timedLab);
-
-  const addField = (label, value, onInput, disabled = false) => {
-    const lab = document.createElement("label");
-    lab.className = disabled ? "um-tune-row um-tune-off" : "um-tune-row";
-    const span = document.createElement("span");
-    span.textContent = label;
-    const input = document.createElement("input");
-    input.type = "number";
-    input.className = "um-tune-input";
-    input.value = String(value);
-    input.disabled = disabled;
-    input.addEventListener("input", () => onInput(input.value));
-    lab.append(span, input);
-    grid.appendChild(lab);
-  };
-  // Day / Night location counts — only alive under the Day, Night scheme.
-  // Leftover circle locations become neither: open at any hour.
-  const dayNight = Number(tuneDraft.timedPeriods) === 2;
-  addField("☀️ Day locations", tuneDraft.dayLocations ?? 11, (v) => {
-    tuneDraft.dayLocations = Number(v);
-  }, lm || !dayNight);
-  addField("🌙 Night locations", tuneDraft.nightLocations ?? 11, (v) => {
-    tuneDraft.nightLocations = Number(v);
-  }, lm || !dayNight);
-  // In duplicate mode every location is a ride location, so the landmark row
-  // goes grey — the count isn't dealt. Landmark mode fixes all of them.
-  const dupDraft = tuneDraft.rideMode === "duplicate";
-  const totalEl = document.createElement("span");
-  const locTotal = () => TUNE_LOC_FIELDS.reduce((n, [key]) =>
-    n + (dupDraft && key === "landmark" ? 0 : Number(tuneDraft.locations?.[key]) || 0), 0);
-  const updateTotal = () => { totalEl.textContent = String(locTotal()); };
-  TUNE_LOC_FIELDS.forEach(([key, label]) => {
-    addField(label, tuneDraft.locations?.[key] ?? 0, (v) => {
-      (tuneDraft.locations ??= {})[key] = Number(v);
-      updateTotal();
-    }, lm || (dupDraft && key === "landmark"));
-  });
-  // The running total of locations that will actually be dealt.
-  const totalLab = document.createElement("div");
-  totalLab.className = "um-tune-row um-tune-total";
-  const totalSpan = document.createElement("span");
-  totalSpan.textContent = "Σ Locations total";
-  updateTotal();
-  totalLab.append(totalSpan, totalEl);
-  grid.appendChild(totalLab);
-  TUNE_LIGHT_FIELDS.forEach(([key, label]) => {
-    addField(label, tuneDraft.blankLights?.[key] ?? 6, (v) => {
-      (tuneDraft.blankLights ??= {})[key] = Number(v);
-    });
-  });
-  TUNE_FIELDS.forEach(([key, label]) => {
-    // Landmark mode replaces the classic ride/red-light scoring with its own
-    // numbers below, and fixes the rewards and the color count.
-    if (lm && TUNE_CLASSIC_SCORING.includes(key)) return;
-    addField(label, tuneDraft[key] ?? 0, (v) => {
-      tuneDraft[key] = Number(v);
-    }, lm && LANDMARK_OWNED.has(key));
-  });
-  if (lm) {
-    const head = document.createElement("div");
-    head.className = "um-tune-row um-tune-subhead";
-    head.textContent = "🗽 Landmark scoring";
-    grid.appendChild(head);
-    TUNE_LANDMARK_FIELDS.forEach(([key, label]) => {
-      addField(label, tuneDraft[key] ?? 0, (v) => {
-        tuneDraft[key] = Number(v);
-      });
-    });
-  }
-  panel.appendChild(grid);
-
-  const actions = document.createElement("div");
-  actions.className = "um-tune-actions";
-  if (canSaveTunings) {
-    // Name it here, then Save — the version persists and applies right away.
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.className = "um-tune-name um-tune-savename";
-    nameInput.maxLength = 40;
-    nameInput.placeholder = "Tuning name…";
-    nameInput.value = tuneName || `Tuning ${savedTunings.length + 1}`;
-    nameInput.addEventListener("input", () => { tuneName = nameInput.value; });
-    const save = button("✓ Save", "", "primary-btn");
-    save.title = "Save this tuning under the name on the left and apply it (re-deals)";
-    save.addEventListener("click", () => {
-      socket.emit("uber_mania_save_settings", {
-        roomId: app.roomId,
-        name: nameInput.value.trim() || `Tuning ${savedTunings.length + 1}`,
-        settings: tuneDraft
-      });
-      closeTuning();
-      renderControls();
-    });
-    actions.append(nameInput, save);
-  }
-  const apply = button("Apply · re-deal", "", "primary-btn");
-  apply.addEventListener("click", () => {
-    socket.emit("uber_mania_tune", { roomId: app.roomId, settings: tuneDraft });
-    closeTuning();
-    renderControls();
-  });
-  const cancel = button("Cancel", "");
-  cancel.addEventListener("click", () => {
-    closeTuning();
-    renderControls();
-  });
-  actions.append(apply, cancel);
-  panel.appendChild(actions);
-
-  els.gameBoard.appendChild(panel);
-}
-
-socket.on("uber_mania_settings", ({ settings, canSave } = {}) => {
-  savedTunings = Array.isArray(settings) ? settings : [];
-  canSaveTunings = canSave !== false;
-  if (tuneDraft && isActive()) renderTuning(); // refresh the open panel's list
-});
-
-socket.on("uber_mania_settings_error", ({ message } = {}) => {
-  if (isActive() && message) window.alert(message);
-});
-
-els.hand.addEventListener("click", (event) => {
-  if (!isActive()) return;
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  const btn = target.closest("[data-action]");
-  if (!btn || btn.disabled || !app.roomId) return;
-
-  switch (btn.dataset.action) {
-    case "regen":
-      socket.emit("uber_mania_regenerate", { roomId: app.roomId });
-      break;
-    case "mixup":
-      socket.emit("uber_mania_mix_up", { roomId: app.roomId });
-      break;
-    case "togglebar":
-      controlsMin = !controlsMin;
-      localStorage.setItem("umControlsMin", controlsMin ? "1" : "0");
-      renderControls();
-      break;
-    case "skipturn":
-      withHoodChoices((hoodChoices) =>
-        socket.emit("uber_mania_skip_turn", {
-          roomId: app.roomId, kind: handoutKind(), hoodChoices
-        }));
-      break;
-    case "routemode":
-      moveMode = moveMode === "build" ? "auto" : "build";
-      clearPreview();
-      refreshBuilder();
-      renderControls();
-      break;
-    case "tuning":
-      if (tuneDraft) {
-        closeTuning();
-        renderControls();
-      } else {
-        openTuning();
-      }
-      break;
-    default:
-      break;
-  }
-});
 
 // ---------------------------------------------------------------------------
 // Map render + state handling
@@ -3947,7 +3580,10 @@ function renderMap() {
 
   els.gameBoard.innerHTML = "";
   els.gameBoard.classList.remove("player-0", "player-1", "toy-battle-board", "flip-triples-board", "tm-editing");
-  els.gameBoard.classList.add("truck-mania-board", "um-board");
+  els.gameBoard.classList.add("truck-mania-board", "ub-board-el");
+  // The shared hand strip belongs to other games; this one keeps its board in
+  // the rail, so make sure nothing is left sitting under the map.
+  els.hand.innerHTML = "";
 
   const svg = boardSvg();
   drawStreets(svg, mapState.streets);
@@ -3955,6 +3591,7 @@ function renderMap() {
   mapState.blocks.forEach((block) => {
     block.buildings.forEach((building) => appendBuilding(buildingsLayer, building));
   });
+  renderDistrictBlocks(svg);
 
   renderSpots(svg);
   renderOctagons(svg);
@@ -3964,7 +3601,7 @@ function renderMap() {
   syncCars(carsState);
   renderClock();
   renderScoreboard();
-  renderPlayerPanel();
+  renderTray();
   renderDice();
   refreshLocations();
 }
@@ -3983,48 +3620,57 @@ function setTurnStatus() {
     els.turnStatus.textContent = `${playersState[turnWhose]?.name ?? "Opponent"}'s turn…`;
     return;
   }
-  if (turnActed) {
-    els.turnStatus.textContent = "Your turn — end when ready";
-  } else if (placeableBid() != null || completableBid() != null) {
-    const canVisit = placeableBid() != null;
-    const canComplete = completableBid() != null;
-    const b = buildingByBid(placeableBid() ?? completableBid());
-    els.turnStatus.textContent = canVisit && canComplete
-      ? `Your turn — click the circle to visit ${b?.name ?? "the location"}, or elsewhere on it to complete your ride`
-      : canComplete
-      ? `Your turn — click ${b?.name ?? "the location"} to complete your ride`
-      : b?.locType === "landmark"
-      ? `Your turn — click ${b.name ?? "the landmark"} to take a ride card`
-      : b?.locType === "discovery"
-      ? `Your turn — click ${b.name ?? "this location"} to discover a landmark card`
-      : b?.locType === "upgrade"
-      ? `Your turn — click ${b.name ?? "this spot"} to take ${isStackUpgrades() ? "the top upgrade" : "the upgrade"}`
-      : `Your turn — click the ${LOC_LABELS[b?.locType] ?? "location"} to place a token`;
-  } else {
-    // Parked at a duplicate-mode location that's just closed for the period?
-    // Say when it opens.
-    const car = myCar();
-    const b = car && car.spot != null && !turnActed
-      ? buildingByBid(mapState?.spots?.[car.spot]?.building)
-      : null;
-    const PERIOD_PHRASES = {
-      morning: "in the morning", afternoon: "in the afternoon",
-      night: "at night", day: "during the day"
-    };
-    els.turnStatus.textContent =
-      b && !locOpen(b, timeState) && Array.isArray(b.slots) && b.slots.includes(null)
-        ? `Your turn — ${b.name ?? "this location"} only opens ${PERIOD_PHRASES[b.period] ?? `in the ${b.period}`} ${PERIOD_SYMBOLS[b.period] ?? ""}`
-        : b && b.locType === "upgrade" && upgradeTypeAt(b) != null && upgradeWindowClosed(b)
-        ? `Your turn — this upgrade spot only opens ${windowTitleFor(b) || "later"}`
-        : "Your turn";
+  if (turnDrew) {
+    els.turnStatus.textContent = "Passenger picked up — end your turn";
+    return;
   }
+  if (turnActed) {
+    const car = myCar();
+    const b = car && car.spot != null ? buildingByBid(mapState?.spots?.[car.spot]?.building) : null;
+    const dropped = (myPlayer()?.passengers ?? []).filter((t) => t.done);
+    const atLight = isWaiting() && car?.light != null;
+    // Multi-move: that stop didn't end the drive, so say so rather than telling
+    // somebody who can still drive to end their turn.
+    if (turnCarryOn) {
+      els.turnStatus.textContent =
+        `Done at ${b?.name ?? "the address"} — drive on, or end your turn`;
+      return;
+    }
+    if (!dropped.length) {
+      els.turnStatus.textContent = atLight
+        ? "Stopped at the red — end your turn and drive through it on your next one"
+        : "Parked — end your turn";
+      return;
+    }
+    if (!queueMode()) {
+      els.turnStatus.textContent =
+        `Dropped off at ${b?.name ?? "the address"} — end your turn to throw the dice`;
+      return;
+    }
+    const delta = slotStarDelta(Math.min(...dropped.map((t) => t.slot)));
+    const where = atLight ? "stopped at the red" : `parked at ${b?.name ?? "the address"}`;
+    els.turnStatus.textContent = isWaiting()
+      ? `Dropped ${dropped.length} off, ${where} — ${starDeltaText(delta)} when you end your turn`
+      : `Dropped off at ${b?.name ?? "the address"} — ${starDeltaText(delta)} when you end your turn`;
+    return;
+  }
+  const car = myCar();
+  if (isOffBoard(car)) {
+    els.turnStatus.textContent = "Your turn — pick an edge stop light to drive in through, or take a passenger";
+    return;
+  }
+  if (isWaiting()) {
+    els.turnStatus.textContent = car?.light != null
+      ? "Waiting at the light — drive straight through it, or take a passenger"
+      : "Your turn — drive until you drop somebody off, a red stops you, or you choose to stop";
+    return;
+  }
+  els.turnStatus.textContent = "Your turn — build a route, or take a passenger from a pile";
 }
 
-// Undo everything the uber layout does to the shared chrome (body class, the
-// footer action bar) — run whenever another game takes over or the player
-// leaves.
 function teardownChrome() {
-  document.body.classList.remove("um-mode");
+  document.body.classList.remove("ub-mode");
+  document.body.classList.remove("ub-waiting");
   removeActionBar();
 }
 
@@ -4032,39 +3678,48 @@ export const uberMania = {
   id: "uber-mania",
   name: "Uber Mania",
   description: "",
+  soloOnly: false,
 
   handleState(payload, resetGameUi) {
     if (!payload.uberMania?.map) return false;
     resetGameUi();
-    document.body.classList.add("um-mode"); // the uber layout owns the screen
+    document.body.classList.add("ub-mode");
     const um = payload.uberMania;
     const prevHour = hourState;
     hourState = um.hour ?? null;
     timeState = um.time ?? 0;
-    nightState = !!um.night;
+    sectionState = um.section ?? sectionOf(timeState);
     elapsedState = um.elapsed ?? 0;
     turnWhose = um.turn ?? 0;
     turnActed = !!um.turnState?.acted;
+    turnCarryOn = !!um.turnState?.carryOn;
     turnChangedTime = !!um.turnState?.changedTime;
-    turnDestressed = !!um.turnState?.destressed;
-    turnKeptGoing = !!um.turnState?.keptGoing;
+    turnDrew = !!um.turnState?.drew;
     turnUndo = um.turnState?.undo ?? null;
     turnTruck = um.turnState?.truck ?? null;
     dicePoolState = um.turnState?.dicePool ?? 0;
     aiMoveState = um.aiMove ?? null;
-    maxAiState = um.maxAi ?? 3;
-    upgradeAtState = um.upgradeAt ?? null;
-    upgradeTypeState = um.upgradeType ?? null;
-    upgradeDeckCountState = um.upgradeDeckCount ?? 0;
-    upgradeChampionsState = um.upgradeChampions ?? [];
-    colorClaimsState = um.colorClaims ?? {};
+    snapCarState = um.snapCar ?? null;
+    maxAiState = um.maxAi ?? 5;
     funRollState = um.funRoll ?? null;
     applySpeed(um.speed ?? 1);
     playersState = um.players ?? [];
-    hoodsState = um.hoods ?? [];
+    districtsState = um.districts ?? [];
+    pilesState = um.piles ?? [];
+    modeState = um.mode ?? "dice";
+    slotsState = um.slots ?? (modeState === "dice" ? MAX_PASSENGERS : STATIC_SLOTS);
+    deckLeftState = um.deckLeft ?? null;
+    preTimeState = !!um.preTime;
+    multiMoveState = !!um.multiMove;
+    slotRuleState = um.slotRule ?? "two-four";
+    priorityStarState = Number.isFinite(um.priorityStar) ? um.priorityStar : PRIORITY_STAR;
+    startStarsState = Number.isFinite(um.startStars) ? um.startStars : 2;
+    // Waiting mode's stop signs have to be big enough to park a car on.
+    document.body.classList.toggle("ub-waiting", modeState === "waiting");
     lastRollState = um.lastRoll ?? null;
+    lastTollState = um.lastToll ?? null;
     winnerState = um.winner ?? null;
-    if (um.results && !resultsState) resultsDismissed = false; // fresh game end — show the chart
+    if (um.results && !resultsState) resultsDismissed = false;
     resultsState = um.results ?? null;
     settingsState = um.settings ?? settingsState;
     if (!isMyTurn()) clearPreview();
@@ -4095,35 +3750,42 @@ export const uberMania = {
         setHand();
       }
       updateDayNight();
-      renderStressBar();
+      renderRatingBar();
 
+      // The dice (or, in static mode, the red-light bill) hold the turn open
+      // until they've been seen — same gate either way.
       const roll = um.lastRoll;
+      const toll = um.lastToll;
       const newRoll = roll && roll.seq !== lastRollSeq && roll.dice?.length;
+      const newToll = toll && toll.seq !== lastTollSeq && toll.reds > 0;
       if (roll) lastRollSeq = roll.seq;
-      if (newRoll) {
-        const startDice = () => {
+      if (toll) lastTollSeq = toll.seq;
+      if (newRoll || newToll) {
+        const settle = (done) =>
+          (newRoll ? animateDiceRoll(roll, done) : showToll(toll, done));
+        const start = () => {
           diceAnimating = true;
           updateTurnControls();
           refreshBuilder();
-          animateDiceRoll(roll, () => {
+          settle(() => {
             diceAnimating = false;
             runDeferredDrives();
             updateTurnControls();
             refreshBuilder();
-            renderResults(); // the end-game chart waits out the final roll
+            renderResults();
           });
         };
-        if (flipping) clockQueue.push(startDice);
-        else startDice();
+        if (flipping) clockQueue.push(start);
+        else start();
       }
-      // The fun die (a no-dice turn's consolation roll): banner on a new seq.
       if (funRollState && funRollState.seq !== lastFunSeq) {
         lastFunSeq = funRollState.seq;
         showFunRoll(funRollState);
       }
       syncCars(um.trucks);
+      syncControlLabels();
       renderScoreboard();
-      renderPlayerPanel();
+      renderTray();
       renderDice();
       refreshLocations();
       renderResults();
@@ -4141,9 +3803,11 @@ export const uberMania = {
       clockQueue = [];
       deferredDrives = [];
       lastRollSeq = um.lastRoll?.seq ?? lastRollSeq;
-      lastFunSeq = um.funRoll?.seq ?? lastFunSeq; // no banner on a fresh render
+      lastTollSeq = um.lastToll?.seq ?? lastTollSeq;
+      lastFunSeq = um.funRoll?.seq ?? lastFunSeq;
       Object.keys(carSpots).forEach((k) => delete carSpots[k]);
       Object.keys(carPos).forEach((k) => delete carPos[k]);
+      Object.keys(carUndoPose).forEach((k) => delete carUndoPose[k]);
       carsState = um.trucks ?? [];
       builder = null;
       renderMap();
@@ -4161,7 +3825,8 @@ export const uberMania = {
 
   clearState() {
     mapState = null;
-    hoodsState = [];
+    districtsState = [];
+    pilesState = [];
     hourState = null;
     octEls = [];
     handEl = null;
@@ -4174,26 +3839,32 @@ export const uberMania = {
     handDeg = 0;
     previewState = null;
     lastRollState = null;
+    lastTollState = null;
+    lastTollSeq = -1;
+    modeState = "waiting";
+    slotsState = STATIC_SLOTS;
+    deckLeftState = null;
+    preTimeState = true;
+    multiMoveState = false;
+    slotRuleState = "two-four";
+    priorityStarState = PRIORITY_STAR;
+    startStarsState = 2;
     winnerState = null;
-    timeState = 0;
-    nightState = true;
+    timeState = 1;
+    sectionState = "morning";
     elapsedState = 0;
     turnWhose = 0;
     turnActed = false;
+    turnCarryOn = false;
     turnChangedTime = false;
-    turnDestressed = false;
-    turnKeptGoing = false;
+    turnDrew = false;
     turnUndo = null;
     turnTruck = null;
     resultsState = null;
     resultsDismissed = false;
     aiMoveState = null;
-    maxAiState = 3;
-    upgradeAtState = null;
-    upgradeTypeState = null;
-    upgradeDeckCountState = 0;
-    upgradeChampionsState = [];
-    colorClaimsState = {};
+    snapCarState = null;
+    maxAiState = 5;
     funRollState = null;
     lastFunSeq = -1;
     lastRollSeq = -1;
@@ -4205,17 +3876,13 @@ export const uberMania = {
     speedMult = 1;
     dicePoolState = 0;
     settingsState = null;
-    tuneDraft = null;
-    els.gameBoard.classList.remove("um-board");
-    els.gameBoard.querySelector(".um-tune")?.remove();
+    els.gameBoard.classList.remove("ub-board-el");
     teardownChrome();
     document.body.style.removeProperty("--tm-mult");
-    document.querySelector(".game-header .tm-scoreboard")?.remove();
-    document.querySelector(".tm-turn-toast")?.remove();
-    document.querySelector(".um-fun-dice")?.remove();
-    [carEls, carPos, carSpots, pendingRoutes].forEach((o) =>
-      Object.keys(o).forEach((k) => delete o[k])
-    );
+    document.querySelector(".ub-turn-toast")?.remove();
+    document.querySelector(".ub-fun")?.remove();
+    [carEls, carPos, carSpots, pendingRoutes, carUndoPose].forEach((o) =>
+      Object.keys(o).forEach((k) => delete o[k]));
     Object.values(carAnim).forEach((h) => h && cancelAnimationFrame(h));
     Object.keys(carAnim).forEach((k) => delete carAnim[k]);
   },
@@ -4228,3 +3895,17 @@ export const uberMania = {
     this.clearState();
   }
 };
+
+// A quiet banner when the turn passes, so an AI table is followable.
+function showTurnToast() {
+  document.querySelector(".ub-turn-toast")?.remove();
+  const p = playersState[turnWhose];
+  if (!p) return;
+  const el = document.createElement("div");
+  el.className = "ub-turn-toast";
+  el.style.setProperty("--pcolor", p.color);
+  el.textContent = turnWhose === myIndex() ? "Your turn" : `${p.name}'s turn`;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add("ub-toast-out"), 1100 / speedMult);
+  setTimeout(() => el.remove(), 1700 / speedMult);
+}

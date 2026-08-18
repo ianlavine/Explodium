@@ -1,0 +1,268 @@
+/* Only 3: the 6x6 lattice, the three-color palette and the score panel. */
+
+.only-3-board {
+  --only3-red: #df2424;
+  --only3-blue: #2268e8;
+  --only3-purple: #9b4dff;
+  --only3-pick: var(--only3-red);
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(44px, 74px));
+  gap: 0;
+  width: fit-content;
+  max-width: calc(100vw - 64px);
+  margin: 18px 0 32px;
+  padding: 6px;
+  border-radius: 18px;
+  background: rgba(12, 16, 23, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+  overflow: visible;
+}
+
+/* Gapless cells keep every stone centre exactly on the 1/6 lattice, which is
+   what lets the SVG triple overlay line up with a plain 0..6 viewBox. */
+.only3-cell {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 8%;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  border-radius: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.only3-cell:disabled {
+  cursor: default;
+}
+
+.only3-cell:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.only3-cell.last-move {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+}
+
+.only3-stone {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: transparent;
+  transition: transform 0.16s ease;
+}
+
+.only3-stone.red {
+  background: var(--only3-red);
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.35), 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+.only3-stone.blue {
+  background: var(--only3-blue);
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.35), 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+.only3-stone.purple {
+  background: var(--only3-purple);
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.35), 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+/* Ghost of the currently selected color under the cursor. */
+.only3-cell:not(:disabled):hover .only3-stone:not(.red):not(.blue):not(.purple) {
+  background: var(--only3-pick);
+  opacity: 0.32;
+}
+
+.only3-triples {
+  position: absolute;
+  inset: 6px;
+  width: calc(100% - 12px);
+  height: calc(100% - 12px);
+  pointer-events: none;
+  overflow: visible;
+}
+
+.only3-triple-line {
+  stroke-width: 0.1;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.only3-triple-line.red {
+  stroke: #ff7a7a;
+}
+
+.only3-triple-line.blue {
+  stroke: #8ab6ff;
+}
+
+/* --- Side panel ---------------------------------------------------------- */
+
+.only-3-panel {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  max-width: 340px;
+}
+
+.only3-scores {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.only3-score {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "dot score"
+    "sub sub";
+  align-items: center;
+  gap: 4px 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(16, 21, 29, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.only3-score.leading {
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.only3-score-dot {
+  grid-area: dot;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.only3-score.red .only3-score-dot {
+  background: #df2424;
+}
+
+.only3-score.blue .only3-score-dot {
+  background: #2268e8;
+}
+
+.only3-score strong {
+  grid-area: score;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.only3-score small {
+  grid-area: sub;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.only3-palette {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.only3-swatch {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 11px 6px;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(16, 21, 29, 0.9);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.14s ease, transform 0.14s ease;
+}
+
+.only3-swatch:not(:disabled):hover {
+  transform: translateY(-2px);
+}
+
+.only3-swatch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.only3-swatch.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 138, 0, 0.2);
+}
+
+.only3-swatch-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+}
+
+.only3-swatch.red .only3-swatch-dot {
+  background: #df2424;
+}
+
+.only3-swatch.blue .only3-swatch-dot {
+  background: #2268e8;
+}
+
+.only3-swatch.purple .only3-swatch-dot {
+  background: #9b4dff;
+}
+
+.only3-swatch-name {
+  font-weight: 700;
+  font-size: 13px;
+  text-transform: capitalize;
+}
+
+.only3-swatch small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.only3-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.only3-winner {
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.only3-winner.red {
+  border-color: rgba(223, 36, 36, 0.6);
+}
+
+.only3-winner.blue {
+  border-color: rgba(34, 104, 232, 0.6);
+}
+
+.only3-again {
+  justify-self: start;
+}
+
+@media (max-width: 600px) {
+  .only-3-board {
+    grid-template-columns: repeat(6, minmax(38px, 1fr));
+    width: 100%;
+  }
+
+  .only-3-panel {
+    max-width: none;
+  }
+}
