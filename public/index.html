@@ -4,16 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Explodium Playtest</title>
+    <!-- Only the shell's stylesheet is render-blocking. Each game's CSS is
+         injected by shared/app.js when that game is loaded. -->
     <link rel="stylesheet" href="/shared/styles.css" />
-    <link rel="stylesheet" href="/games/explodium/styles.css" />
-    <link rel="stylesheet" href="/games/toy-battle/styles.css" />
-    <link rel="stylesheet" href="/games/flip-triples/styles.css" />
-    <link rel="stylesheet" href="/games/truck-mania/styles.css" />
-    <link rel="stylesheet" href="/games/landmark-mania/styles.css" />
-    <link rel="stylesheet" href="/games/uber-mania/styles.css" />
-    <link rel="stylesheet" href="/games/lino/styles.css" />
-    <link rel="stylesheet" href="/games/downstream/styles.css" />
-    <link rel="stylesheet" href="/games/only-3/styles.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -116,7 +109,7 @@
       </div>
     </div>
 
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="/socket.io/socket.io.min.js"></script>
     <script type="module" src="/shared/app.js"></script>
   </body>
 </html>

@@ -127,6 +127,13 @@ h2 {
   color: var(--muted);
 }
 
+/* Chrome that belongs to one game (Flip Triples' banners, Lino's setup) lives
+   in the shell's HTML, so the rule that hides it has to live in the shell's CSS
+   too — a game's stylesheet only arrives once that game is loaded. */
+.hidden {
+  display: none !important;
+}
+
 .bot-thinking.hidden {
   display: none;
 }

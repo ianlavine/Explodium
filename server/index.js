@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import http from "http";
 import { Server } from "socket.io";
 import path from "path";
@@ -15,6 +16,10 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 const publicDir = path.join(__dirname, "..", "public");
+// The clients are big hand-written files — gzip takes the payload down by
+// roughly three quarters, which matters most on the first hit to a cold
+// free-tier instance.
+app.use(compression());
 app.use(express.static(publicDir));
 
 app.get("*", (req, res) => {
