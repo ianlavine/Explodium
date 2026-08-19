@@ -82,9 +82,11 @@
 //   * Your home district pays NOTHING here — it is only the color of your car.
 //     You open with four time stones rather than ten, because the
 //     clock is the only thing that turns a red green.
-//   * The three passenger slots are a RIVER, not three piles: take the 0-star
-//     one and the others slide down to fill the gap, with a fresh face-down
-//     tile landing in the 4-star slot.
+//   * The passenger slots are a RIVER, not piles. The table sets how many there
+//     are (two or three) and what rating each one asks for. Three of them slide:
+//     take the cheap one and the others come down to fill the gap, with a fresh
+//     face-down tile landing in the dearest slot. Two of them stand still and
+//     refill where they are.
 //   * One clock change a turn as ever — but here it can be spent on a turn you
 //     took a passenger, not just on one you drove.
 import {
@@ -243,13 +245,27 @@ const STATIC_SLOTS = 4;
 const STATIC_PILE_SIZE = 14;
 // What each of the three piles asks of your rating before it will deal to you.
 const STATIC_PILE_RATING = [0, 2, 4];
-// Waiting mode can lay its slots out two ways (`settings.slotRule`):
-//   "two-four" — three slots at 0/2/4 stars, and taking one SLIDES the rest
-//                down, so emptying the cheap slot is what feeds the dear ones
-//   "three"    — two slots at 0 and 3 stars that don't slide at all; whichever
-//                you take is refilled off the deck and the other is left alone
-const THREE_PILE_RATING = [0, 3];
-const SLOT_RULES = ["two-four", "three"];
+// Waiting mode's PICKUP SLOTS are the table's to set (`settings.slotGates`):
+// one entry per slot on offer, each the rating that slot asks for before it
+// will deal. Two slots or three, and any gate from 0 to 5 stars.
+//
+// The COUNT still decides whether the row is a river: three slots SLIDE — take
+// one and the rest come down, so emptying the cheap slot is what feeds the dear
+// ones — while two slots don't, and whichever you take is refilled where it
+// stands. That's the two layouts this used to offer as fixed rules, now reached
+// by choosing their gates.
+const DEFAULT_SLOT_GATES = [0, 2, 4];
+const MIN_SLOTS = 2;
+const MAX_SLOTS = 3;
+const MAX_GATE = 5;
+
+// A gate list off the wire: 2-3 slots, each a rating in half steps up to 5.
+// Returns null for anything that isn't one, so a bad message changes nothing.
+function normalizeGates(list) {
+  if (!Array.isArray(list) || list.length < MIN_SLOTS || list.length > MAX_SLOTS) return null;
+  const out = list.map((v) => Math.max(0, Math.min(MAX_GATE, Math.round(Number(v) * 2) / 2)));
+  return out.every((v) => Number.isFinite(v)) ? out : null;
+}
 // The three kinds of passenger, in an even mix through the whole deck.
 const STATIC_TYPES = ["chill", "tip", "rush"];
 const CHILL_STONES = 6;      // paid the moment a chill passenger is taken
@@ -274,11 +290,6 @@ const errandLadder = (n) =>
 // Time stones are far tighter here: the clock is the ONLY way to turn a red
 // green, and a red you can't turn green costs you a whole turn sitting on it.
 const WAITING_START_STONES = 4;
-// The 3★ layout only has two slots, and a table that opens at two stars would
-// open with one of them shut — no choice at all on the first pickup. So that
-// layout starts everyone level with its gate.
-const THREE_START_RATING = 3;
-
 const MODES = ["dice", "static", "waiting"];
 
 const BASE_SETTINGS = {
@@ -291,8 +302,9 @@ const BASE_SETTINGS = {
   // MULTI-MOVE: when on, dropping someone off or running an errand no longer
   // ends the drive — only a red light does. Nothing else about them changes.
   multiMove: false,
-  // Which slot layout waiting mode deals — see THREE_PILE_RATING.
-  slotRule: "two-four",
+  // What waiting mode's pickup slots ask for, one entry per slot — see
+  // normalizeGates.
+  slotGates: DEFAULT_SLOT_GATES.slice(),
   // What delivering the FRONT of the queue pays: half a star, or a whole one.
   priorityStar: PRIORITY_STAR,
   days: 3,
@@ -456,10 +468,11 @@ export function createUberManiaGame({ io, rooms }) {
   // What the piles ask of your rating, and — the other half of the same rule —
   // how many of them there are. Only waiting mode offers the choice; static's
   // three standing piles are cut from the deck and can't be re-laid.
-  const pileGates = (room) =>
-    (isWaiting(room) && S(room).slotRule === "three" ? THREE_PILE_RATING : STATIC_PILE_RATING);
+  const slotGates = (room) => normalizeGates(S(room).slotGates) ?? DEFAULT_SLOT_GATES.slice();
+  const pileGates = (room) => (isWaiting(room) ? slotGates(room) : STATIC_PILE_RATING);
   // Does taking a slot pull the others down after it?
-  const riverSlides = (room) => S(room).slotRule !== "three";
+  // Three slots are a river; two stand still. See DEFAULT_SLOT_GATES.
+  const riverSlides = (room) => pileGates(room).length > MIN_SLOTS;
   // What everyone opens on, and what the front of the queue pays. Both are the
   // table's to set; the 3★ layout nudges the opening rating up to its gate when
   // it's dealt, rather than overriding the choice here.
@@ -887,19 +900,19 @@ export function createUberManiaGame({ io, rooms }) {
     return -1;
   }
 
-  // Can this driver deal from this slot at all? The gates are the slot rule's
-  // half of the bargain — 0/2/4 stars across three, or 0/3 across two.
+  // Can this driver deal from this slot at all? The gates are whatever the
+  // table set for each slot (dice mode has none).
   function pileLocked(room, player, pileIdx) {
     if (!queueMode(room)) return false;
     return (player?.rating ?? 0) < (pileGates(room)[pileIdx] ?? 0);
   }
 
   // Waiting mode's river: taking a slot pulls everything above it DOWN one and
-  // deals a fresh face-down tile into the four-star slot. So emptying the cheap
+  // deals a fresh face-down tile into the dearest slot. So emptying the cheap
   // slot is what feeds the expensive one — the table refills itself, and taking
-  // the top slot moves nothing. Under the 3-star rule nothing slides: the slot
-  // you took is refilled where it stands and the other is left exactly as it
-  // was, so the dear slot's tile sits there until somebody can afford it.
+  // the top slot moves nothing. On a two-slot table nothing slides: the slot you
+  // took is refilled where it stands and the other is left exactly as it was, so
+  // the dear slot's tile sits there until somebody can afford it.
   function slideRiver(room, taken) {
     const piles = room.uberMania.piles ?? [];
     const deck = room.uberMania.deck ?? [];
@@ -1368,7 +1381,7 @@ export function createUberManiaGame({ io, rooms }) {
         mode: modeOf(room),
         preTime: !!S(room).preTime,
         multiMove: !!S(room).multiMove,
-        slotRule: S(room).slotRule ?? "two-four",
+        slotGates: slotGates(room),
         priorityStar: priorityStar(room),
         startStars: startingRating(room),
         slots: slotCount(room),
@@ -2394,26 +2407,24 @@ export function createUberManiaGame({ io, rooms }) {
         emitState(roomId, room);
       });
 
-      // Which slot layout the table deals. It changes how many slots there are
-      // and what they cost, so the whole table has to be dealt again.
-      socket.on("uber_mania_set_slots", ({ roomId, rule } = {}) => {
+      // How many pickup slots the table offers and what each one asks for.
+      // The COUNT is part of the deal — a slot more or fewer means dealing the
+      // row again — but a gate on its own only says who may draw from a slot,
+      // so changing one takes effect where the table sits.
+      socket.on("uber_mania_set_slot_gates", ({ roomId, gates } = {}) => {
         const room = playerRoom(socket, roomId);
-        if (!room || !SLOT_RULES.includes(rule)) return;
-        if ((S(room).slotRule ?? "two-four") === rule) return;
-        clearAiTimer(roomId);
-        const next = { ...S(room), slotRule: rule };
-        // Two slots and a 3★ gate means a table opening under it gets no choice
-        // at all on its first pickup, so dealing this layout lifts everyone to
-        // the gate. It's a nudge to the setting, not an override — the table can
-        // set the opening rating to whatever it likes afterwards.
-        if (rule === "three" && (next.startingRating ?? RATING_START) < THREE_START_RATING) {
-          next.startingRating = THREE_START_RATING;
+        if (!room) return;
+        const next = normalizeGates(gates);
+        const now = slotGates(room);
+        if (!next || (next.length === now.length && next.every((v, i) => v === now[i]))) return;
+        room.uberMania.settings = { ...S(room), slotGates: next };
+        if (next.length !== now.length) {
+          clearAiTimer(roomId);
+          setupBoard(room);
+          // Same as switching ruleset: the deal changes the districts and puts
+          // the cars back in the garage, so the client rebuilds from scratch.
+          room.uberMania.map.seed = `${room.uberMania.map.seed}-s${next.length}-${Date.now()}`;
         }
-        room.uberMania.settings = next;
-        setupBoard(room);
-        // Same as switching ruleset: the deal changes the districts and puts
-        // the cars back in the garage, so the client rebuilds from scratch.
-        room.uberMania.map.seed = `${room.uberMania.map.seed}-${rule}-${Date.now()}`;
         emitState(roomId, room);
       });
 

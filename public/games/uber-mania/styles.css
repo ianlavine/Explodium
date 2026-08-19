@@ -210,15 +210,12 @@ body.ub-waiting .tm-oct-num {
 
 /* Static mode: the rating at which a pile starts dealing to you. Red while it's
    out of reach, gold once you've climbed past it. */
+/* A printed mark on the rating column, not a verdict on your rating: the same
+   line whether you have reached it or not. */
 .ub-rating-gate {
-  stroke: #a8402f;
+  stroke: rgba(240, 244, 250, 0.5);
   stroke-width: 2;
   stroke-dasharray: 3 2;
-}
-
-.ub-rating-gate-open {
-  stroke: #f0d68a;
-  opacity: 0.55;
 }
 
 .ub-rating-dot {
@@ -715,17 +712,9 @@ body.ub-waiting .tm-oct-num {
   white-space: nowrap;
 }
 
-.ub-pile-need-shut {
-  color: #f7e2df;
-  background: #a8402f;
-}
-
-/* Locked by rating rather than empty: dimmed, but not greyed out of existence,
-   and it still shows what it's holding. */
-.ub-pile-locked {
-  opacity: 0.55;
-  filter: saturate(0.55);
-}
+/* There is deliberately NO styling for a slot your rating can't open. The star
+   it asks for is printed on its face; whether you can meet it is yours to read,
+   the way it would be across a table. */
 
 .ub-pile-count {
   position: absolute;

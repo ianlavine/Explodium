@@ -83,13 +83,12 @@ const MODE_BLURB = {
   waiting: "Waiting: you cannot pass a red at all — you stop and sit on it, and drive through on a later turn. A rushing fare buys you one red, but only on the way to them. Dropping somebody off ends the drive. Errands are back — one in every district — and the set pays 2, 5, 8, 11, 15, 20."
 };
 
-// The two slot layouts waiting mode can deal. (Server: SLOT_RULES.)
-const SLOT_RULES = ["two-four", "three"];
-const SLOT_NAME = { "two-four": "2/4★", three: "3★" };
-const SLOT_BLURB = {
-  "two-four": "Three slots, at nothing, two stars and four stars. Take one and the ones above it slide down, so emptying the cheap slot is what feeds the dear ones.\n\nClick for the 3★ layout.",
-  three: "Two slots: one always open, one that wants three stars. Nothing slides — whichever you take is refilled where it stands and the other is left exactly as it was.\n\nClick for the 2/4★ layout."
-};
+// Waiting mode's pickup slots: how many fares are on offer, and the rating each
+// one asks for. The table sets both. (Server: slotGates / normalizeGates.)
+const MIN_SLOTS = 2;
+const MAX_SLOTS = 3;
+const MAX_GATE = 5;
+const DEFAULT_SLOT_GATES = [0, 2, 4];
 
 // Half stars want one decimal, whole ones none.
 const num = (v) => (Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
@@ -182,7 +181,7 @@ let multiMoveState = false; // table rule: drop-offs and errands don't end the d
 // Slot layout: "two-four" = three slots at 0/2/4 stars that slide down when one
 // is taken; "three" = two slots at 0 and 3 that don't slide, each refilled where
 // it stands.
-let slotRuleState = "two-four";
+let slotGatesState = DEFAULT_SLOT_GATES.slice();
 let priorityStarState = PRIORITY_STAR; // what the front of the queue pays
 let startStarsState = 2;               // what everyone opens on
 let lastTollState = null; // static: the red-light bill for the turn just ended
@@ -351,8 +350,22 @@ function slotStarDelta(slot) {
 const starDeltaText = (d) => (d >= 0 ? `+${num(d)}★` : `−${num(-d)}★`);
 
 const nextMode = () => MODES[(MODES.indexOf(modeState) + 1) % MODES.length];
-const nextSlotRule = () => SLOT_RULES[(SLOT_RULES.indexOf(slotRuleState) + 1) % SLOT_RULES.length];
-const slotLabel = () => `Slots: ${SLOT_NAME[slotRuleState] ?? "2/4★"}`;
+const slotLabel = () => `Slots: ${slotGatesState.length}`;
+// The count button just flips between the two sizes. Growing invents a gate for
+// the new slot — two stars above the dearest, which keeps the row a ladder —
+// and shrinking drops the dearest one.
+const nextSlotGates = () =>
+  slotGatesState.length >= MAX_SLOTS
+    ? slotGatesState.slice(0, MIN_SLOTS)
+    : slotGatesState.concat(Math.min(MAX_GATE, (slotGatesState[slotGatesState.length - 1] ?? 0) + 2));
+const SLOT_BLURB = () =>
+  slotGatesState.length > MIN_SLOTS
+    ? "Three fares on offer, and they're a river: take one and the ones above it slide down, so emptying the cheap slot is what feeds the dear ones.\n\nClick for two."
+    : "Two fares on offer, and nothing slides — whichever you take is refilled where it stands and the other is left exactly as it was.\n\nClick for three.";
+const emitSlotGates = (gates) => {
+  if (!app.roomId) return;
+  socket.emit("uber_mania_set_slot_gates", { roomId: app.roomId, gates });
+};
 // Delivering the front of the queue: half a star, or a whole one.
 const nextTopFare = () => (priorityStarState === 1 ? 0.5 : 1);
 const topFareLabel = () => `Top fare: ${priorityStarState === 1 ? "1★" : "½★"}`;
@@ -997,8 +1010,10 @@ function renderRatingBar() {
   const mine = Math.max(0, Math.min(max, myPlayer()?.rating ?? 0));
   const cx = W / 2 + 1;
 
-  // Static mode: mark where the second and third piles start dealing, so the
-  // rating column doubles as the thing telling you what you can draw.
+  // Where each slot starts dealing, PRINTED on the rating column — one line per
+  // gate, the same line whether you've reached it or not. Your stars are drawn
+  // up the same column, so reading one against the other is the player's job,
+  // exactly as it is at a table.
   if (queueMode()) {
     pilesState.forEach((pile) => {
       if (!pile.need) return;
@@ -1006,9 +1021,8 @@ function renderRatingBar() {
       const gate = svgEl("line", {
         x1: 1, y1: r1(y), x2: W + 1, y2: r1(y), class: "ub-rating-gate"
       }, svg);
-      if (mine >= pile.need) gate.classList.add("ub-rating-gate-open");
       svgEl("title", {}, gate).textContent =
-        `A pile opens at ${num(pile.need)} stars`;
+        `A slot opens at ${num(pile.need)} stars`;
     });
   }
 
@@ -2652,9 +2666,9 @@ function renderTray() {
     const left = document.createElement("span");
     left.className = "ub-deck-left";
     left.textContent = `deck ${deckLeftState}`;
-    left.title = slotRuleState === "three"
-      ? "Take a slot and it's refilled off the deck where it stands — the other one is left alone"
-      : "Take a slot and the ones above it slide down; a fresh tile comes off the deck into the four-star slot";
+    left.title = pilesState.length > MIN_SLOTS
+      ? "Take a slot and the ones above it slide down; a fresh tile comes off the deck into the dearest slot"
+      : "Take a slot and it's refilled off the deck where it stands — the other one is left alone";
     pilesTitle.appendChild(left);
   }
   piles.appendChild(pilesTitle);
@@ -2666,10 +2680,14 @@ function renderTray() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "ub-pile";
+    // A slot your rating can't open looks EXACTLY like one it can — the board
+    // doesn't tell you what you may pick up any more than a wooden table would.
+    // The star it asks for is printed on its face and that is the whole hint.
+    // So no dimming and no disabled attribute (which dims it too); the click
+    // just doesn't do anything, and the server refuses it as well.
     const locked = pileLocked(pile);
-    if (!pile.left || !drawable || locked) btn.classList.add("ub-pile-off");
-    if (locked) btn.classList.add("ub-pile-locked");
-    btn.disabled = !pile.left || !drawable || locked;
+    if (!pile.left || !drawable) btn.classList.add("ub-pile-off");
+    btn.disabled = !pile.left || !drawable;
     if (pile.top) {
       const d = districtOf(pile.top.district);
       paintTile(btn, d?.color);
@@ -2683,7 +2701,7 @@ function renderTray() {
       btn.appendChild(label);
       const kind = BONUS_NAME[pile.top.bonus];
       btn.title = locked
-        ? `${kind ?? "A fare"} into ${d?.name ?? "a district"} — but this pile only deals at ${num(pile.need)} stars, and you have ${num(myPlayer()?.rating ?? 0)}.`
+        ? `${kind ?? "A fare"} into ${d?.name ?? "a district"} — but this slot only deals at ${num(pile.need)} stars, and you have ${num(myPlayer()?.rating ?? 0)}.`
         : `Top of pile ${i + 1}: ${kind ? `a ${kind.toLowerCase()} fare` : "a fare"} into ${d?.name ?? "a district"} — ${BONUS_TEXT[pile.top.bonus] ?? ""}. Taking it is your whole turn.`;
     } else {
       btn.classList.add("ub-pile-empty");
@@ -2701,7 +2719,7 @@ function renderTray() {
     // behind a rating you have to have earned first.
     if (queueMode()) {
       const need = document.createElement("span");
-      need.className = `ub-pile-need${locked ? " ub-pile-need-shut" : ""}`;
+      need.className = "ub-pile-need";
       // Nothing on the first slot: a slot with no rating on it is open, and
       // saying so is noise.
       if (pile.need) {
@@ -2710,7 +2728,7 @@ function renderTray() {
       }
     }
     btn.addEventListener("click", () => {
-      if (btn.disabled || !app.roomId) return;
+      if (btn.disabled || locked || !app.roomId) return;
       socket.emit("uber_mania_draw_tile", { roomId: app.roomId, pile: i });
     });
     pileRow.appendChild(btn);
@@ -3187,8 +3205,35 @@ function renderControls() {
     bar.appendChild(multi);
 
     const slots = button(slotLabel(), "slots");
-    slots.title = SLOT_BLURB[slotRuleState] ?? "";
+    slots.title = SLOT_BLURB();
     bar.appendChild(slots);
+
+    // One select per slot: what that slot asks for before it will deal. A gate
+    // is not part of the deal, so changing one leaves the table exactly as it
+    // is — only adding or dropping a slot deals the row again.
+    const gateWrap = document.createElement("label");
+    gateWrap.className = "ub-ai-wrap ub-gates";
+    gateWrap.append("Needs");
+    slotGatesState.forEach((gate, i) => {
+      const sel = document.createElement("select");
+      sel.className = "ub-ai ub-gate";
+      sel.dataset.slot = String(i);
+      for (let v = 0; v <= MAX_GATE; v += 1) {
+        const opt = document.createElement("option");
+        opt.value = String(v);
+        opt.textContent = `${v}★`;
+        if (v === gate) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.title = `What slot ${i + 1} asks of your rating before it will deal. Changing it doesn't re-deal the table.`;
+      sel.addEventListener("change", () => {
+        const next = slotGatesState.slice();
+        next[i] = Number(sel.value);
+        emitSlotGates(next);
+      });
+      gateWrap.appendChild(sel);
+    });
+    bar.appendChild(gateWrap);
   }
 
   // What the front of the queue pays, and what everyone opens on. Both belong
@@ -3203,12 +3248,22 @@ function renderControls() {
     startWrap.append("Start ★");
     const stars = document.createElement("select");
     stars.className = "ub-ai ub-start-stars";
-    for (let v = 0; v <= 5; v += 0.5) {
+    // Whole stars, 0 through 5 — the table picks where everyone opens.
+    for (let v = 0; v <= MAX_GATE; v += 1) {
       const opt = document.createElement("option");
       opt.value = String(v);
-      opt.textContent = num(v);
+      opt.textContent = `${v}★`;
       if (v === startStarsState) opt.selected = true;
       stars.appendChild(opt);
+    }
+    // A rating that isn't a whole star (a table mid-game, or a setting from
+    // before) still has to be selectable or the box would show the wrong number.
+    if (!Number.isInteger(startStarsState)) {
+      const odd = document.createElement("option");
+      odd.value = String(startStarsState);
+      odd.textContent = `${num(startStarsState)}★`;
+      odd.selected = true;
+      stars.appendChild(odd);
     }
     stars.title = "What every driver's rating opens on. Changing it re-deals the table.";
     stars.addEventListener("change", () => {
@@ -3284,9 +3339,7 @@ function renderControls() {
     if (btn.dataset.action === "multimove") {
       socket.emit("uber_mania_set_multimove", { roomId: app.roomId, on: !multiMoveState });
     }
-    if (btn.dataset.action === "slots") {
-      socket.emit("uber_mania_set_slots", { roomId: app.roomId, rule: nextSlotRule() });
-    }
+    if (btn.dataset.action === "slots") emitSlotGates(nextSlotGates());
     if (btn.dataset.action === "topfare") {
       socket.emit("uber_mania_set_priority_star", { roomId: app.roomId, value: nextTopFare() });
     }
@@ -3324,7 +3377,17 @@ function syncControlLabels() {
   const slots = els.gameBoard.querySelector('.ub-controls [data-action="slots"]');
   if (slots) {
     slots.textContent = slotLabel();
-    slots.title = SLOT_BLURB[slotRuleState] ?? "";
+    slots.title = SLOT_BLURB();
+  }
+  // A gate change doesn't re-deal, so the settings bar isn't rebuilt — the
+  // selects have to be walked back into line here.
+  const gates = els.gameBoard.querySelectorAll(".ub-controls .ub-gate");
+  if (gates.length === slotGatesState.length) {
+    gates.forEach((sel, i) => {
+      if (Number(sel.value) !== slotGatesState[i]) sel.value = String(slotGatesState[i]);
+    });
+  } else if (gates.length) {
+    renderControls();
   }
   const top = els.gameBoard.querySelector('.ub-controls [data-action="topfare"]');
   if (top) {
@@ -3711,7 +3774,9 @@ export const uberMania = {
     deckLeftState = um.deckLeft ?? null;
     preTimeState = !!um.preTime;
     multiMoveState = !!um.multiMove;
-    slotRuleState = um.slotRule ?? "two-four";
+    slotGatesState = Array.isArray(um.slotGates) && um.slotGates.length
+      ? um.slotGates.slice()
+      : DEFAULT_SLOT_GATES.slice();
     priorityStarState = Number.isFinite(um.priorityStar) ? um.priorityStar : PRIORITY_STAR;
     startStarsState = Number.isFinite(um.startStars) ? um.startStars : 2;
     // Waiting mode's stop signs have to be big enough to park a car on.
@@ -3846,7 +3911,7 @@ export const uberMania = {
     deckLeftState = null;
     preTimeState = true;
     multiMoveState = false;
-    slotRuleState = "two-four";
+    slotGatesState = DEFAULT_SLOT_GATES.slice();
     priorityStarState = PRIORITY_STAR;
     startStarsState = 2;
     winnerState = null;
