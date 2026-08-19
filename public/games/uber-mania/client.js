@@ -155,8 +155,9 @@ let sectionState = "morning";
 let elapsedState = 0;
 let turnWhose = 0;
 let turnActed = false;
-// Multi-move: the last drive ended on a drop-off or an errand, so the turn is
-// still open — this driver may pull away again.
+// The last drive left the turn open — it stopped somewhere ordinary — so this
+// driver may pull away again. Only a red light or a completed drop-off/errand
+// clears it. (Server: turnState.carryOn.)
 let turnCarryOn = false;
 let turnChangedTime = false;
 let turnDrew = false;
@@ -177,7 +178,7 @@ let modeState = "waiting";
 let slotsState = MAX_PASSENGERS;
 let deckLeftState = null; // waiting: tiles left in the shared deck
 let preTimeState = true; // table rule: the clock must be set BEFORE you act
-let multiMoveState = false; // table rule: drop-offs and errands don't end the drive
+let multiMoveState = false; // table rule: not even a drop-off ends the drive
 // Slot layout: "two-four" = three slots at 0/2/4 stars that slide down when one
 // is taken; "three" = two slots at 0 and 3 that don't slide, each refilled where
 // it stands.
@@ -3201,7 +3202,7 @@ function renderControls() {
     const multi = button(multiMoveState ? "Multi-move: on" : "Multi-move: off", "multimove");
     multi.title = multiMoveState
       ? "On: dropping off and running errands no longer end your drive — only a red light stops you."
-      : "Off: a drop-off or an errand ends your drive where it happened.";
+      : "Off: a drop-off or an errand ends your drive where it happened. You can still make as many drives as you like before that — pulling over is only a pause.";
     if (multiMoveState) multi.classList.add("ub-opt-on");
     bar.appendChild(multi);
 
@@ -3687,11 +3688,14 @@ function setTurnStatus() {
     const b = car && car.spot != null ? buildingByBid(mapState?.spots?.[car.spot]?.building) : null;
     const dropped = (myPlayer()?.passengers ?? []).filter((t) => t.done);
     const atLight = isWaiting() && car?.light != null;
-    // Multi-move: that stop didn't end the drive, so say so rather than telling
+    // The turn is still open — that stop finished nothing, or multi-move says
+    // finishing something doesn't matter — so say so rather than telling
     // somebody who can still drive to end their turn.
     if (turnCarryOn) {
-      els.turnStatus.textContent =
-        `Done at ${b?.name ?? "the address"} — drive on, or end your turn`;
+      const where = b?.name ?? "the address";
+      els.turnStatus.textContent = canChangeTime()
+        ? `Stopped at ${where} — drive on, change the clock, or end your turn`
+        : `Stopped at ${where} — drive on, or end your turn`;
       return;
     }
     if (!dropped.length) {

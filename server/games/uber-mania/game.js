@@ -73,7 +73,10 @@
 //     you sail through one. Nothing here costs a star: there is no toll.
 //   * A route can call at address after address — stopping to collect an errand
 //     doesn't stop the car — but DROPPING SOMEBODY OFF ends the drive, as does
-//     a red light or your own choice.
+//     a red light or your own choice. Stopping by choice does NOT end your
+//     TURN, though: a turn holds as many drives as you care to make, and only
+//     a red light or a completed drop-off or errand closes it. So you can pull
+//     over, think, and set off again.
 //   * ERRANDS are back, dealt as in dice mode — one in every district,
 //     collectable only during that district's own section of the day — and they
 //     pay on a rising ladder: 2, 5, 8, 11, 15, 20 points for one through six, so
@@ -334,7 +337,7 @@ function shuffle(arr) {
 
 const freshTurnState = () => ({
   acted: false,       // movement is over (the car parked, or a tile was taken)
-  carryOn: false,     // multi-move: that stop completed something, drive on
+  carryOn: false,     // waiting: the drive left the turn open — you may drive on
   changedTime: false, // the clock moves once a turn
   drew: false,        // the turn was spent taking a passenger tile
   truck: null,        // the car locked in as this turn's mover
@@ -1105,11 +1108,14 @@ export function createUberManiaGame({ io, rooms }) {
     if (Number.isFinite(facing)) truck.facing = facing;
     if (endLight != null && player) player.redsWaited = (player.redsWaited ?? 0) + 1;
     ts.acted = true;
-    // MULTI-MOVE: dropping somebody off or running an errand doesn't end your
-    // movement, so a drive that finishes on one leaves the turn open — park up,
-    // let them out, and pull away again. Stopping anywhere else, or on a red,
-    // is you choosing to stop, and that's the turn.
-    ts.carryOn = finished && !!S(room).multiMove && endLight == null;
+    // A TURN HOLDS AS MANY DRIVES AS YOU LIKE. Only two things close it: a red
+    // light, because you are stopped there until a later turn drives through
+    // it, and completing a drop-off or an errand — that has to be the last
+    // thing you do. Stopping anywhere else is just a pause, so pull over, look
+    // at the board (change the clock, if the table allows it mid-turn) and
+    // drive on. MULTI-MOVE takes away even the completion rule, so a drive can
+    // run through a drop-off and keep going.
+    ts.carryOn = endLight == null && (!finished || !!S(room).multiMove);
     ts.truck = truck.id;
     room.uberMania.lastRoll = null;
   }
@@ -2296,8 +2302,8 @@ export function createUberManiaGame({ io, rooms }) {
         const seat = seatOf(room, socket);
         if (room.uberMania.turn !== seat || room.uberMania.winner != null) return;
         const ts = room.uberMania.turnState;
-        // `carryOn` is multi-move's second wind: the last drive ended on a
-        // drop-off or an errand, so this driver may pull away again.
+        // `carryOn` says the last drive left the turn open — it stopped
+        // somewhere ordinary — so this driver may pull away again.
         if ((ts.acted && !ts.carryOn) || ts.drew) return;
         const truck = humanTruck(room, seat, truckId);
         if (!truck) return;
@@ -2494,9 +2500,16 @@ export function createUberManiaGame({ io, rooms }) {
           if (oct.number === hour) oct.color = oct.color === "green" ? "red" : "green";
         }
         // The new hour may have opened the errand the car is already sitting on.
+        const prevCarryOn = !!ts.carryOn;
         resolveParked(room, seat);
+        // Collecting one that way is still a completion, and a completion is
+        // the last thing a turn does — so it shuts the driving down exactly as
+        // it would have done on arrival.
+        if ((player.errandsDone ?? 0) > prevErrandsDone && !S(room).multiMove) {
+          ts.carryOn = false;
+        }
         ts.undo = {
-          kind: "time", prevTime: t, hour, cost, prevPending,
+          kind: "time", prevTime: t, hour, cost, prevPending, prevCarryOn,
           prevErrands, prevErrandsDone, prevRating, prevStarsLost, prevAnnoyed
         };
         emitState(roomId, room);
@@ -2552,6 +2565,9 @@ export function createUberManiaGame({ io, rooms }) {
           if (undo.prevRating != null) player.rating = undo.prevRating;
           if (undo.prevStarsLost != null) player.starsLost = undo.prevStarsLost;
           if (undo.prevAnnoyed != null) player.annoyed = undo.prevAnnoyed;
+          // If the change collected an errand it also closed the driving, so
+          // taking it back hands the rest of the turn over as well.
+          if (undo.prevCarryOn != null) ts.carryOn = !!undo.prevCarryOn;
           ts.changedTime = false;
         }
         ts.undo = null;
