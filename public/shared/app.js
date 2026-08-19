@@ -20,14 +20,17 @@ import { socket, els, app, setScreen, setBotThinking, updateTurn } from "./conte
 // `state` is the key a state_update carries when the payload belongs to this
 // game; explodium is the fallback for a payload with none of them. `hidden`
 // keeps a game off the home screen without unwiring it — the server will still
-// deal it, it just isn't offered.
+// deal it, it just isn't offered. `styles` is only for a game that DRAWS WITH
+// ANOTHER GAME'S CSS: the Traffic Time games render their map, clock, route and
+// dice with Truck Mania's tm- classes, and when every stylesheet was linked up
+// front that dependency was invisible. Listed in cascade order, own sheet last.
 const GAMES = [
   { id: "explodium", name: "Explodium", export: "explodium", state: null, hidden: true },
   { id: "toy-battle", name: "Toy Battle", export: "toyBattle", state: "toyBattle", hidden: true },
   { id: "flip-triples", name: "Flip Triples", export: "flipTriples", state: "flipTriples" },
   { id: "truck-mania", name: "Truck Mania", export: "truckMania", state: "truckMania", hidden: true },
-  { id: "uber-mania", name: "Uber Mania", export: "uberMania", state: "uberMania" },
-  { id: "landmark-mania", name: "Landmark Mania", export: "landmarkMania", state: "landmarkMania", hidden: true },
+  { id: "uber-mania", name: "Uber Mania", export: "uberMania", state: "uberMania", styles: ["truck-mania", "uber-mania"] },
+  { id: "landmark-mania", name: "Landmark Mania", export: "landmarkMania", state: "landmarkMania", hidden: true, styles: ["truck-mania", "landmark-mania"] },
   { id: "lino", name: "Lino", export: "lino", state: "lino", hidden: true },
   { id: "downstream", name: "Downstream", export: "downstream", state: "downstream", hidden: true },
   { id: "only-3", name: "Only 3", export: "only3", state: "only3", hidden: true }
@@ -42,21 +45,24 @@ const loadedGames = new Map();
 const loading = new Map();
 const loaded = () => GAMES.map((g) => loadedGames.get(g.id)).filter(Boolean);
 
-// A game's stylesheet has to be in the document BEFORE its first render or the
-// board flashes up unstyled, so the load waits on the link as well as the code.
-function loadStyles(id) {
-  const href = `/games/${id}/styles.css`;
-  if (document.querySelector(`link[data-game-css="${id}"]`)) return Promise.resolve();
+// A game's stylesheets have to be in the document BEFORE its first render or
+// the board flashes up unstyled, so the load waits on the links as well as the
+// code. They're appended in the order the manifest lists them, which is the
+// order they cascade in.
+function loadOneSheet(name) {
+  if (document.querySelector(`link[data-game-css="${name}"]`)) return Promise.resolve();
   return new Promise((resolve) => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = href;
-    link.dataset.gameCss = id;
+    link.href = `/games/${name}/styles.css`;
+    link.dataset.gameCss = name;
     link.addEventListener("load", resolve);
     link.addEventListener("error", resolve); // a missing sheet shouldn't wedge the game
     document.head.appendChild(link);
   });
 }
+
+const loadStyles = (entry) => Promise.all((entry.styles ?? [entry.id]).map(loadOneSheet));
 
 function loadGame(id) {
   const already = loadedGames.get(id);
@@ -65,7 +71,7 @@ function loadGame(id) {
   if (pending) return pending;
   const entry = entryFor(id);
   if (!entry) return Promise.resolve(null);
-  pending = Promise.all([import(`../games/${id}/client.js`), loadStyles(id)])
+  pending = Promise.all([import(`../games/${id}/client.js`), loadStyles(entry)])
     .then(([mod]) => {
       const game = mod[entry.export];
       if (game) loadedGames.set(id, game);
