@@ -353,7 +353,8 @@ const nextMode = () => MODES[(MODES.indexOf(modeState) + 1) % MODES.length];
 const slotLabel = () => `Slots: ${slotGatesState.length}`;
 // The count button just flips between the two sizes. Growing invents a gate for
 // the new slot — two stars above the dearest, which keeps the row a ladder —
-// and shrinking drops the dearest one.
+// and shrinking drops the dearest one. Gates live on the half-star grid, same
+// as ratings do.
 const nextSlotGates = () =>
   slotGatesState.length >= MAX_SLOTS
     ? slotGatesState.slice(0, MIN_SLOTS)
@@ -3218,10 +3219,12 @@ function renderControls() {
       const sel = document.createElement("select");
       sel.className = "ub-ai ub-gate";
       sel.dataset.slot = String(i);
-      for (let v = 0; v <= MAX_GATE; v += 1) {
+      // Half stars as well as whole ones: a rating moves in halves, so a gate
+      // sitting between two of them is a real setting.
+      for (let v = 0; v <= MAX_GATE; v += 0.5) {
         const opt = document.createElement("option");
         opt.value = String(v);
-        opt.textContent = `${v}★`;
+        opt.textContent = `${num(v)}★`;
         if (v === gate) opt.selected = true;
         sel.appendChild(opt);
       }
@@ -3248,22 +3251,14 @@ function renderControls() {
     startWrap.append("Start ★");
     const stars = document.createElement("select");
     stars.className = "ub-ai ub-start-stars";
-    // Whole stars, 0 through 5 — the table picks where everyone opens.
-    for (let v = 0; v <= MAX_GATE; v += 1) {
+    // Half stars as well as whole ones, 0 through 5 — the table picks where
+    // everyone opens, and the server rounds to the same half steps.
+    for (let v = 0; v <= MAX_GATE; v += 0.5) {
       const opt = document.createElement("option");
       opt.value = String(v);
-      opt.textContent = `${v}★`;
+      opt.textContent = `${num(v)}★`;
       if (v === startStarsState) opt.selected = true;
       stars.appendChild(opt);
-    }
-    // A rating that isn't a whole star (a table mid-game, or a setting from
-    // before) still has to be selectable or the box would show the wrong number.
-    if (!Number.isInteger(startStarsState)) {
-      const odd = document.createElement("option");
-      odd.value = String(startStarsState);
-      odd.textContent = `${num(startStarsState)}★`;
-      odd.selected = true;
-      stars.appendChild(odd);
     }
     stars.title = "What every driver's rating opens on. Changing it re-deals the table.";
     stars.addEventListener("change", () => {
