@@ -56,7 +56,8 @@ const BONUS_NAME = { chill: "Chill", tip: "Tip", rush: "Rush" };
 // The queue modes' board: four seats, and three slots that want 0, 2 and 4
 // stars before they'll deal. (Server: STATIC_SLOTS / STATIC_PILE_RATING.)
 const STATIC_SLOTS = 4;
-const PRIORITY_STAR = 0.5; // only the fallback now — the table sets this
+const PRIORITY_STAR = 1;   // only the fallback now — the table sets this
+const START_STARS = 1;     // ditto: the rating everyone opens on
 const SKIP_STAR_STEP = 0.5;
 const RED_STAR_COST = 1;
 
@@ -88,7 +89,7 @@ const MODE_BLURB = {
 const MIN_SLOTS = 2;
 const MAX_SLOTS = 3;
 const MAX_GATE = 5;
-const DEFAULT_SLOT_GATES = [0, 2, 4];
+const DEFAULT_SLOT_GATES = [0, 3];
 
 // Half stars want one decimal, whole ones none.
 const num = (v) => (Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
@@ -177,14 +178,14 @@ let pilesState = [];
 let modeState = "waiting";
 let slotsState = MAX_PASSENGERS;
 let deckLeftState = null; // waiting: tiles left in the shared deck
-let preTimeState = true; // table rule: the clock must be set BEFORE you act
+let preTimeState = false; // table rule: the clock must be set BEFORE you act
 let multiMoveState = false; // table rule: not even a drop-off ends the drive
 // Slot layout: "two-four" = three slots at 0/2/4 stars that slide down when one
 // is taken; "three" = two slots at 0 and 3 that don't slide, each refilled where
 // it stands.
 let slotGatesState = DEFAULT_SLOT_GATES.slice();
 let priorityStarState = PRIORITY_STAR; // what the front of the queue pays
-let startStarsState = 2;               // what everyone opens on
+let startStarsState = START_STARS;     // what everyone opens on
 let lastTollState = null; // static: the red-light bill for the turn just ended
 let lastTollSeq = -1;
 let lastRollState = null;
@@ -3777,7 +3778,7 @@ export const uberMania = {
       ? um.slotGates.slice()
       : DEFAULT_SLOT_GATES.slice();
     priorityStarState = Number.isFinite(um.priorityStar) ? um.priorityStar : PRIORITY_STAR;
-    startStarsState = Number.isFinite(um.startStars) ? um.startStars : 2;
+    startStarsState = Number.isFinite(um.startStars) ? um.startStars : START_STARS;
     // Waiting mode's stop signs have to be big enough to park a car on.
     document.body.classList.toggle("ub-waiting", modeState === "waiting");
     lastRollState = um.lastRoll ?? null;
@@ -3908,11 +3909,11 @@ export const uberMania = {
     modeState = "waiting";
     slotsState = STATIC_SLOTS;
     deckLeftState = null;
-    preTimeState = true;
+    preTimeState = false;
     multiMoveState = false;
     slotGatesState = DEFAULT_SLOT_GATES.slice();
     priorityStarState = PRIORITY_STAR;
-    startStarsState = 2;
+    startStarsState = START_STARS;
     winnerState = null;
     timeState = 1;
     sectionState = "morning";

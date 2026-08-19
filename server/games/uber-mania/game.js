@@ -220,9 +220,10 @@ const BOARD_NUMBERS = [2, 3, 4, 5];
 const FREE_NUMBER = 6;
 const MAX_PASSENGERS = BOARD_NUMBERS.length;
 
-// The star rating: whole and half stars, 0 to 5, opening on two.
+// The star rating: whole and half stars, 0 to 5, opening on one — the table can
+// set that to anything on the grid (`settings.startingRating`).
 const RATING_MAX = 5;
-const RATING_START = 2;
+const RATING_START = 1;
 const STAR_TILE_STEP = 1;    // a star passenger delivered
 const FUN_STAR_STEP = 0.5;   // the fun die's other face
 const FAIL_STAR_STEP = 0.5;  // per die that missed the board
@@ -256,8 +257,9 @@ const STATIC_PILE_RATING = [0, 2, 4];
 // one and the rest come down, so emptying the cheap slot is what feeds the dear
 // ones — while two slots don't, and whichever you take is refilled where it
 // stands. That's the two layouts this used to offer as fixed rules, now reached
-// by choosing their gates.
-const DEFAULT_SLOT_GATES = [0, 2, 4];
+// by choosing their gates. The default is the standing pair: one always open,
+// one that wants three stars.
+const DEFAULT_SLOT_GATES = [0, 3];
 const MIN_SLOTS = 2;
 const MAX_SLOTS = 3;
 const MAX_GATE = 5;
@@ -273,7 +275,7 @@ function normalizeGates(list) {
 const STATIC_TYPES = ["chill", "tip", "rush"];
 const CHILL_STONES = 6;      // paid the moment a chill passenger is taken
 const RED_STAR_COST = 1;     // a whole star per red light run — no dice, no mercy
-const PRIORITY_STAR = 0.5;   // delivering the far-left fare (settings.priorityStar)
+const PRIORITY_STAR = 1;     // delivering the far-left fare (settings.priorityStar)
 const SKIP_STAR_STEP = 0.5;  // per passenger you reached over to deliver
 const STATIC_RIDE_POINTS = 3;
 const STATIC_ALL_DISTRICTS_BONUS = 5;
@@ -300,8 +302,9 @@ const BASE_SETTINGS = {
   mode: "waiting",
   // PRE-TIME: when on, the clock is something you set BEFORE your turn rather
   // than during it — once you've driven or taken a passenger the hand is
-  // locked. A table rule, not part of any one ruleset.
-  preTime: true,
+  // locked. A table rule, not part of any one ruleset. Off by default, so a
+  // driver can pull over, move the hand and drive on in the same turn.
+  preTime: false,
   // MULTI-MOVE: when on, dropping someone off or running an errand no longer
   // ends the drive — only a red light does. Nothing else about them changes.
   multiMove: false,
