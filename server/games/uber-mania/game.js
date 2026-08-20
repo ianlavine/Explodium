@@ -92,6 +92,54 @@
 //     refill where they are.
 //   * One clock change a turn as ever — but here it can be spent on a turn you
 //     took a passenger, not just on one you drove.
+//
+// ---------------------------------------------------------------------------
+// STAR-RANK (`settings.scoring === "starRank"`) is a second way to SCORE
+// waiting mode — the ruleset above is unchanged, but what a star is FOR is not.
+// Under the standing rule (`"tipStar"`) your rating is a private multiplier you
+// cash at the very end, on the tip fares you delivered. Under star-rank it is a
+// race everyone can see:
+//
+//   * The meter runs to EIGHT stars and everybody opens on NOTHING — the table
+//     can't set the opening rating, because the whole point is a standing start.
+//   * At every day's end the table is PLACED by rating. Most stars takes two
+//     points; fewest gives two back, into the negatives if it comes to that. A
+//     shared place — a tie for first or for last — is worth one either way, so
+//     a table that all holds the same rating trades nothing. The placing waits
+//     until the driver who ended the day has finished their turn, so a last
+//     drop-off can still change where they finish.
+//   * Because the rating is scored every night, it may only move TWO ways: a
+//     whole star for delivering the FRONT of your queue, and half a star off
+//     for each passenger still aboard when you run an errand. Reaching over the
+//     queue is rude but free.
+//   * The end-of-game sheet is flatter, since the nights already paid: a fare
+//     is 2 points (a TIP fare 3 — a flat point more, no multiplier), all six
+//     districts is 3, each district you're a regular in is 3, and the errand
+//     ladder pays 1, 3, 5, 8, 11, 15 rather than climbing to 20.
+//   * These are the only points shown while the game runs. Every driver's
+//     nightly total sits beside their name; the rest is summed once, at the end.
+//
+// ---------------------------------------------------------------------------
+// RISING QUEUE (`settings.scoring === "risingQueue"`) is the third scoring, and
+// the only one with NO STAR RATING IN IT AT ALL — no meter, no gates on the
+// pickup slots, none of the three star dials in the settings bar. What's left
+// is the queue itself:
+//
+//   * THREE seats, not four. The SEAT a passenger is riding in is their fare:
+//     the front of the queue pays 4, then 3, then 2, and it's paid the moment
+//     they get out. So delivering in order isn't rewarded with a bonus, it just
+//     pays better — there's no penalty anywhere and nothing to lose.
+//   * Run an errand and everybody still aboard turns ANGRY: their tile slides
+//     down in its seat and STAYS down as the queue closes up in front of them,
+//     and an angry passenger pays a point less than the seat is worth (3/2/1).
+//     Somebody already angry can't get any angrier, so a car full of sulking
+//     riders is a free run at the rest of your errands.
+//   * Errands pay 2, 5, 8, 12, 16, 21 for one through six — steps of 2, 3, 3,
+//     4, 4, 5 — but unlike the fares they're cashed at the END. A tip fare is
+//     worth one more, also at the end, on top of the seat it rode in. All six
+//     districts is 5 and each district you're a regular in is 5.
+//   * The fares are the only points on screen while the game runs; every
+//     driver's running total sits beside their name.
 import {
   generateCityMap, randomizeOctagons, setBlankLights, deriveSpots, collectSegments
 } from "../traffic-time/map.js";
@@ -264,11 +312,12 @@ const MIN_SLOTS = 2;
 const MAX_SLOTS = 3;
 const MAX_GATE = 5;
 
-// A gate list off the wire: 2-3 slots, each a rating in half steps up to 5.
+// A gate list off the wire: 2-3 slots, each a rating in half steps up to the
+// table's ceiling (five stars normally, eight under star-rank scoring).
 // Returns null for anything that isn't one, so a bad message changes nothing.
-function normalizeGates(list) {
+function normalizeGates(list, cap = MAX_GATE) {
   if (!Array.isArray(list) || list.length < MIN_SLOTS || list.length > MAX_SLOTS) return null;
-  const out = list.map((v) => Math.max(0, Math.min(MAX_GATE, Math.round(Number(v) * 2) / 2)));
+  const out = list.map((v) => Math.max(0, Math.min(cap, Math.round(Number(v) * 2) / 2)));
   return out.every((v) => Number.isFinite(v)) ? out : null;
 }
 // The three kinds of passenger, in an even mix through the whole deck.
@@ -290,11 +339,55 @@ const ERRAND_ANNOY_STEP = 0.5;
 // steps grow (2, 3, 3, 3, 4, 5) so the set is worth committing to without the
 // last one being worth a third of the game the way squaring made it.
 const ERRAND_LADDER = [0, 2, 5, 8, 11, 15, 20];
-const errandLadder = (n) =>
-  ERRAND_LADDER[Math.max(0, Math.min(ERRAND_LADDER.length - 1, n))];
 // Time stones are far tighter here: the clock is the ONLY way to turn a red
 // green, and a red you can't turn green costs you a whole turn sitting on it.
 const WAITING_START_STONES = 4;
+
+// --- STAR-RANK scoring ------------------------------------------------------
+// The second way to score waiting mode (`settings.scoring`), and the deeper
+// change of the two: the rating stops being a private wage and becomes a RACE.
+// The meter runs to eight, everybody opens on nothing, and at every day's end
+// the table is PLACED by it — most stars is worth two points, fewest is two
+// off, and a shared place pays one either way. Points go negative freely.
+//
+// Because the rating is now scored every night, it may only move TWO ways: a
+// whole star for the front of the queue, and half a star off for each
+// passenger dragged through an errand. Reaching over somebody is free here,
+// and a tip no longer multiplies anything — it's simply worth a point more
+// than an ordinary fare when the game stops.
+// --- RISING QUEUE scoring ---------------------------------------------------
+// The third way to score waiting mode, and the one with no rating in it at all.
+// The SEAT a passenger is sitting in IS their fare: front of the queue pays 4,
+// then 3, then 2, and the money lands the moment you drop them off. There is no
+// meter to watch and nothing to lose — the punishment for a bad turn is simply
+// a smaller fare.
+//
+// Running an errand makes everybody still aboard ANGRY: their tile slides down
+// in its seat and stays down, even as the queue closes up in front of them, and
+// an angry passenger pays a point less than a happy one in the same seat
+// (3/2/1). So a full car doesn't forbid an errand, it just makes it dear.
+const RISE_SLOTS = 3;                // three seats in the car, not four
+const RISE_FARE = [4, 3, 2];         // what each seat pays, front of the queue first
+const RISE_ANGRY_STEP = 1;           // ...and what an angry passenger pays less
+// The errand ladder climbs by 2, 3, 3, 4, 4, 5 — the whole six is 21, and
+// unlike the fares it's cashed at the END.
+const RISE_ERRAND_LADDER = [0, 2, 5, 8, 12, 16, 21];
+const RISE_TIP_BONUS = 1;            // per tip fare, at the end
+const RISE_ALL_DISTRICTS_BONUS = 5;
+const RISE_REGULAR_BONUS = 5;
+
+const SCORINGS = ["tipStar", "starRank", "risingQueue"];
+const RANK_RATING_MAX = 8;
+const RANK_RATING_START = 0;   // forced: where everyone opens is not a dial here
+const RANK_DAY_POINTS = 2;     // most / fewest stars at a day's end
+const RANK_TIE_POINTS = 1;     // ...when the place is shared
+const RANK_RIDE_POINTS = 2;    // a fare delivered
+const RANK_TIP_POINTS = 3;     // a TIP fare instead of the 2 — no star multiplier
+const RANK_ALL_DISTRICTS_BONUS = 3;
+const RANK_REGULAR_BONUS = 3;
+// Flatter than tip-x-star's ladder: the whole six pays 15, not 20.
+const RANK_ERRAND_LADDER = [0, 1, 3, 5, 8, 11, 15];
+
 const MODES = ["dice", "static", "waiting"];
 
 const BASE_SETTINGS = {
@@ -308,6 +401,9 @@ const BASE_SETTINGS = {
   // MULTI-MOVE: when on, dropping someone off or running an errand no longer
   // ends the drive — only a red light does. Nothing else about them changes.
   multiMove: false,
+  // How waiting mode is SCORED: "tipStar" (tips multiply your final rating) or
+  // "starRank" (the rating is placed at every day's end). See SCORINGS.
+  scoring: "tipStar",
   // What waiting mode's pickup slots ask for, one entry per slot — see
   // normalizeGates.
   slotGates: DEFAULT_SLOT_GATES.slice(),
@@ -470,11 +566,15 @@ export function createUberManiaGame({ io, rooms }) {
   const isWaiting = (room) => modeOf(room) === "waiting";
   const queueMode = (room) => modeOf(room) !== "dice";
   const hasErrands = (room) => modeOf(room) !== "static";
-  const slotCount = (room) => (queueMode(room) ? STATIC_SLOTS : MAX_PASSENGERS);
+  // How many seats the car holds. Rising queue runs one short, because its
+  // fares are priced by seat and a fourth seat would be worth almost nothing.
+  const queueSeats = (room) => (isRise(room) ? RISE_SLOTS : STATIC_SLOTS);
+  const slotCount = (room) => (queueMode(room) ? queueSeats(room) : MAX_PASSENGERS);
   // What the piles ask of your rating, and — the other half of the same rule —
   // how many of them there are. Only waiting mode offers the choice; static's
   // three standing piles are cut from the deck and can't be re-laid.
-  const slotGates = (room) => normalizeGates(S(room).slotGates) ?? DEFAULT_SLOT_GATES.slice();
+  const slotGates = (room) =>
+    normalizeGates(S(room).slotGates, ratingCap(room)) ?? DEFAULT_SLOT_GATES.slice();
   const pileGates = (room) => (isWaiting(room) ? slotGates(room) : STATIC_PILE_RATING);
   // Does taking a slot pull the others down after it?
   // Three slots are a river; two stand still. See DEFAULT_SLOT_GATES.
@@ -482,7 +582,10 @@ export function createUberManiaGame({ io, rooms }) {
   // What everyone opens on, and what the front of the queue pays. Both are the
   // table's to set; the 3★ layout nudges the opening rating up to its gate when
   // it's dealt, rather than overriding the choice here.
-  const startingRating = (room) => clampRating(room, S(room).startingRating ?? RATING_START);
+  // STAR-RANK forces the opening rating to nothing: the whole point is that
+  // everybody's night is measured from the same standing start.
+  const startingRating = (room) =>
+    (isRank(room) ? RANK_RATING_START : clampRating(room, S(room).startingRating ?? RATING_START));
   const priorityStar = (room) => {
     const v = Number(S(room).priorityStar);
     return Number.isFinite(v) && v > 0 ? v : PRIORITY_STAR;
@@ -490,9 +593,37 @@ export function createUberManiaGame({ io, rooms }) {
   const clampRating = (room, v) => {
     const n = Number(v);
     if (!Number.isFinite(n)) return RATING_START;
-    const cap = S(room).ratingMax ?? RATING_MAX;
-    return Math.max(0, Math.min(cap, Math.round(n * 2) / 2));
+    return Math.max(0, Math.min(ratingCap(room), Math.round(n * 2) / 2));
   };
+
+  // --- Star-rank -----------------------------------------------------------
+  // A scoring rule, not a ruleset: it rides on top of waiting mode and says
+  // what a star is FOR. Under tip-x-star a star is a multiplier you cash at the
+  // end; under star-rank it's a place in a nightly race. Everything that reads
+  // differently between the two goes through one of these four.
+  const scoringOf = (room) => (SCORINGS.includes(S(room).scoring) ? S(room).scoring : "tipStar");
+  const isRank = (room) => isWaiting(room) && scoringOf(room) === "starRank";
+  const isRise = (room) => isWaiting(room) && scoringOf(room) === "risingQueue";
+  // RISING QUEUE has no rating at all: no meter, no gates, no star economy. It
+  // is the one predicate the pickup slots, the rating column and the three star
+  // dials in the settings bar all hang off.
+  const hasRating = (room) => !isRise(room);
+  // How high the meter runs. Star-rank's eight is the rule, not a dial — the
+  // rating has to have room to spread out if a table is to be placed by it.
+  const ratingCap = (room) =>
+    (isRank(room) ? RANK_RATING_MAX : S(room).ratingMax ?? RATING_MAX);
+  // What a finished set of errands pays, per scoring rule.
+  const ladderOf = (room, n) => {
+    const L = isRank(room) ? RANK_ERRAND_LADDER
+      : isRise(room) ? RISE_ERRAND_LADDER
+      : ERRAND_LADDER;
+    return L[Math.max(0, Math.min(L.length - 1, n))];
+  };
+  // What the seat a passenger is riding in pays, once they're angry or not.
+  // Only rising queue prices a fare this way.
+  const riseFare = (tile) =>
+    Math.max(0, (RISE_FARE[tile.slot] ?? RISE_FARE[RISE_FARE.length - 1]) -
+      (tile.angry ? RISE_ANGRY_STEP : 0));
 
   // May this player still move the hand? One change a turn either way; waiting
   // mode lets it share a turn with taking a passenger; and PRE-TIME, when on,
@@ -784,6 +915,8 @@ export function createUberManiaGame({ io, rooms }) {
         redsRun: 0,            // static: reds actually charged for, for the chart
         skipped: 0,            // queue modes: passengers reached over
         annoyed: 0,            // waiting: passengers dragged along on an errand
+        fares: 0,              // rising queue: what the seats have paid so far
+        angryDropped: 0,       // rising queue: angry passengers delivered
         redsWaited: 0,         // waiting: turns that ended sat at a red
         clockChanges: 0,       // times this driver moved the hand
         stonesSpent: 0         // stones burned on the clock, all game
@@ -820,6 +953,7 @@ export function createUberManiaGame({ io, rooms }) {
     room.uberMania.lastRoll = null;
     room.uberMania.lastToll = null;
     room.uberMania.funRoll = null;
+    room.uberMania.lastRank = null;
     room.uberMania.winner = null;
     room.uberMania.results = null;
     room.uberMania.aiGraph = null;
@@ -863,8 +997,10 @@ export function createUberManiaGame({ io, rooms }) {
 
   // A day's wages: a point per FULL star, and one more for sleeping in your
   // own district (the car parked at a home-district location). Waiting mode
-  // pays neither — your rating is worth points there only through tips.
+  // pays neither — a rating is worth points there only through tips, or, under
+  // star-rank, through the placing that `rankDay` hands out instead.
   function endOfDay(room) {
+    if (isRank(room)) return rankDay(room);
     if (isWaiting(room)) return;
     (room.uberMania.players ?? []).forEach((p, seat) => {
       p.points = (p.points ?? 0) + Math.floor(p.rating ?? 0);
@@ -880,6 +1016,35 @@ export function createUberManiaGame({ io, rooms }) {
       p.homeNights = (p.homeNights ?? 0) + 1;
       p.points += 1;
     });
+  }
+
+  // STAR-RANK's day's end: the table is PLACED by rating. Most stars takes two
+  // points, fewest gives two back, and a shared place is worth one either way —
+  // so a table that all holds the same rating trades nothing.
+  //
+  // This runs from `endTurnCore`, after that turn's deliveries have landed, so
+  // the driver whose clock change ended the day gets to finish it first and can
+  // still change their own place with the last drop-off of the night.
+  function rankDay(room) {
+    const players = room.uberMania.players ?? [];
+    if (!players.length) return;
+    const ratings = players.map((p) => p.rating ?? 0);
+    const top = Math.max(...ratings);
+    const bottom = Math.min(...ratings);
+    const firsts = ratings.filter((r) => r === top).length;
+    const lasts = ratings.filter((r) => r === bottom).length;
+    const board = [];
+    players.forEach((p, seat) => {
+      const r = ratings[seat];
+      let delta = 0;
+      if (r === top) delta += firsts > 1 ? RANK_TIE_POINTS : RANK_DAY_POINTS;
+      if (r === bottom) delta -= lasts > 1 ? RANK_TIE_POINTS : RANK_DAY_POINTS;
+      p.points = (p.points ?? 0) + delta;
+      if (delta) board.push({ player: seat, rating: r, delta });
+    });
+    // What the night paid, for the client to show once and then forget.
+    room.uberMania.rankSeq = (room.uberMania.rankSeq ?? 0) + 1;
+    room.uberMania.lastRank = { seq: room.uberMania.rankSeq, rows: board };
   }
 
   // ---- Passenger board -----------------------------------------------------
@@ -898,7 +1063,7 @@ export function createUberManiaGame({ io, rooms }) {
   // the back of it and the priority stays whoever has been waiting longest.
   function lowestFreeSlot(room, player) {
     const held = player.passengers ?? [];
-    if (queueMode(room)) return held.length < STATIC_SLOTS ? held.length : -1;
+    if (queueMode(room)) return held.length < queueSeats(room) ? held.length : -1;
     const used = new Set(held.map((t) => t.slot));
     for (let i = 0; i < MAX_PASSENGERS; i += 1) {
       if (!used.has(i)) return i;
@@ -909,7 +1074,8 @@ export function createUberManiaGame({ io, rooms }) {
   // Can this driver deal from this slot at all? The gates are whatever the
   // table set for each slot (dice mode has none).
   function pileLocked(room, player, pileIdx) {
-    if (!queueMode(room)) return false;
+    // No rating, no gate: rising queue deals every slot to everybody.
+    if (!queueMode(room) || !hasRating(room)) return false;
     return (player?.rating ?? 0) < (pileGates(room)[pileIdx] ?? 0);
   }
 
@@ -970,7 +1136,8 @@ export function createUberManiaGame({ io, rooms }) {
       district: tile.district,
       bonus: tile.bonus,
       loc: target.bid,
-      done: false
+      done: false,
+      angry: false   // rising queue: set by an errand run with them aboard
     });
     if (tile.bonus === "stones") {
       player.timeStones = (player.timeStones ?? 0) + (S(room).stoneTileReward ?? STONE_TILE_REWARD);
@@ -1012,12 +1179,25 @@ export function createUberManiaGame({ io, rooms }) {
       // exactly as rude as it sounds — half a star each. Counted AFTER the
       // deliveries above, so anyone you just dropped off here doesn't mind.
       if (isWaiting(room)) {
-        const riding = (player.passengers ?? []).filter((t) => !t.done).length;
-        if (riding > 0) {
-          const wanted = riding * ERRAND_ANNOY_STEP;
-          player.starsLost = (player.starsLost ?? 0) + Math.min(player.rating ?? 0, wanted);
-          player.rating = Math.max(0, (player.rating ?? 0) - wanted);
-          player.annoyed = (player.annoyed ?? 0) + riding;
+        const riders = (player.passengers ?? []).filter((t) => !t.done);
+        if (riders.length > 0) {
+          // RISING QUEUE marks the people themselves rather than charging the
+          // driver: every passenger who sat through this slides DOWN in their
+          // seat and stays down, all the way to the front of the queue, paying
+          // a point less than a happy fare in the same seat. Somebody already
+          // angry can't get any angrier.
+          if (isRise(room)) {
+            for (const t of riders) {
+              if (t.angry) continue;
+              t.angry = true;
+              player.annoyed = (player.annoyed ?? 0) + 1;
+            }
+          } else {
+            const wanted = riders.length * ERRAND_ANNOY_STEP;
+            player.starsLost = (player.starsLost ?? 0) + Math.min(player.rating ?? 0, wanted);
+            player.rating = Math.max(0, (player.rating ?? 0) - wanted);
+            player.annoyed = (player.annoyed ?? 0) + riders.length;
+          }
         }
       }
     }
@@ -1201,7 +1381,7 @@ export function createUberManiaGame({ io, rooms }) {
     if (face === "stones") {
       player.timeStones = (player.timeStones ?? 0) + (S(room).funStoneReward ?? FUN_STONE_REWARD);
     } else {
-      player.rating = Math.min(S(room).ratingMax ?? RATING_MAX, (player.rating ?? 0) + FUN_STAR_STEP);
+      player.rating = Math.min(ratingCap(room), (player.rating ?? 0) + FUN_STAR_STEP);
     }
     room.uberMania.funSeq = (room.uberMania.funSeq || 0) + 1;
     room.uberMania.funRoll = { seq: room.uberMania.funSeq, player: seat, face };
@@ -1215,7 +1395,9 @@ export function createUberManiaGame({ io, rooms }) {
     if (!player) return;
     const done = (player.passengers ?? []).filter((t) => t.done);
     if (!done.length) return;
-    const cap = S(room).ratingMax ?? RATING_MAX;
+    const cap = ratingCap(room);
+    const rank = isRank(room);
+    const rise = isRise(room);
     const stat = queueMode(room);
     // Left to right, so a turn that somehow finished two fares charges the
     // skips in the order the queue actually stands.
@@ -1229,17 +1411,33 @@ export function createUberManiaGame({ io, rooms }) {
         continue;
       }
       if (t.bonus === "tip") player.tipsDelivered = (player.tipsDelivered ?? 0) + 1;
+      // RISING QUEUE: the seat they were sitting in is the fare, and it's paid
+      // now rather than banked for the end. Two fares finished in one turn are
+      // both priced where they SAT — the queue doesn't close up until the loop
+      // below is done — so the front one is still the front one.
+      if (rise) {
+        const fare = riseFare(t);
+        player.points = (player.points ?? 0) + fare;
+        player.fares = (player.fares ?? 0) + fare;
+        if (t.angry) player.angryDropped = (player.angryDropped ?? 0) + 1;
+        continue;
+      }
       // Everyone still waiting to this fare's left is a passenger you reached
       // over: half a star each. Reach over nobody and you gain a whole one.
+      // Under STAR-RANK the reaching-over half is gone — a rating there moves
+      // in exactly two ways, and this isn't one of them — but the front of the
+      // queue still pays, so the queue still has an order worth minding.
       const skipped = (player.passengers ?? [])
         .filter((o) => !o.done && o.slot < t.slot).length;
       if (skipped === 0) {
         player.rating = Math.min(cap, (player.rating ?? 0) + priorityStar(room));
       } else {
-        const wanted = skipped * SKIP_STAR_STEP;
-        player.starsLost = (player.starsLost ?? 0) + Math.min(player.rating ?? 0, wanted);
-        player.rating = Math.max(0, (player.rating ?? 0) - wanted);
         player.skipped = (player.skipped ?? 0) + skipped;
+        if (!rank) {
+          const wanted = skipped * SKIP_STAR_STEP;
+          player.starsLost = (player.starsLost ?? 0) + Math.min(player.rating ?? 0, wanted);
+          player.rating = Math.max(0, (player.rating ?? 0) - wanted);
+        }
       }
     }
     player.passengers = (player.passengers ?? []).filter((t) => !t.done);
@@ -1292,12 +1490,22 @@ export function createUberManiaGame({ io, rooms }) {
     const s = S(room);
     const q = queueMode(room);   // static + waiting share the scoring
     const wait = isWaiting(room);
+    // Star-rank pays a flatter game-end sheet, because the nightly placings are
+    // where its points really come from.
+    const rank = isRank(room);
+    // Rising queue pays nothing PER ride — the seat already paid, the moment
+    // they got out, and that money is sitting in `daily`.
+    const rise = isRise(room);
     const rating = p.rating ?? 0;
     const rides = p.ridesCompleted ?? 0;
-    const ridePoints = rides * (q ? STATIC_RIDE_POINTS : s.ridePoints ?? RIDE_POINTS);
+    const ridePoints = rise ? 0 : rides *
+      (rank ? RANK_RIDE_POINTS : q ? STATIC_RIDE_POINTS : s.ridePoints ?? RIDE_POINTS);
     const spread = (p.ridesByDistrict ?? []).filter((n) => n > 0).length;
     const allDistricts = spread >= DISTRICT_COUNT
-      ? (q ? STATIC_ALL_DISTRICTS_BONUS : s.allDistrictsBonus ?? ALL_DISTRICTS_BONUS)
+      ? (rank
+        ? RANK_ALL_DISTRICTS_BONUS
+        : rise ? RISE_ALL_DISTRICTS_BONUS
+        : q ? STATIC_ALL_DISTRICTS_BONUS : s.allDistrictsBonus ?? ALL_DISTRICTS_BONUS)
       : 0;
     // Being a regular counts everywhere in the queue modes — static has no home
     // district at all, and waiting mode doesn't waive yours.
@@ -1305,18 +1513,29 @@ export function createUberManiaGame({ io, rooms }) {
     (p.ridesByDistrict ?? []).forEach((n, d) => {
       if ((q || d !== p.home) && n >= REGULAR_RIDES) regulars += 1;
     });
-    const regularPoints = regulars * (q ? STATIC_REGULAR_BONUS : s.regularBonus ?? REGULAR_BONUS);
+    const regularPoints = regulars *
+      (rank ? RANK_REGULAR_BONUS
+        : rise ? RISE_REGULAR_BONUS
+        : q ? STATIC_REGULAR_BONUS : s.regularBonus ?? REGULAR_BONUS);
     const errandsDone = p.errandsDone ?? 0;
     const errandsLeft = isStatic(room) ? 0 : (p.errands ?? []).length;
     // Dice mode fines you for the ones left standing. Waiting mode pays for the
-    // ones you got, off the rising ladder: 2, 5, 8, 11, 15, 20.
+    // ones you got, off a rising ladder — which one depends on the scoring.
     const errandPenalty = wait ? 0 : errandsLeft * (s.errandPenalty ?? ERRAND_PENALTY);
-    const errandPoints = wait ? errandLadder(errandsDone) : 0;
+    const errandPoints = wait ? ladderOf(room, errandsDone) : 0;
     // A tip is only worth what your rating is worth when the game stops, so a
     // late run of reds costs you every tip you ever banked. FULL stars only,
     // same as the wages at each day's end.
+    //
+    // STAR-RANK cuts that cord — a rating is scored every night there, so
+    // multiplying by it again at the end would score it twice. A tip fare is
+    // simply worth a point more than an ordinary one, which is what this column
+    // holds: the EXTRA, on top of the ride it already scored above.
     const tips = q ? p.tipsDelivered ?? 0 : 0;
-    const tipPoints = tips * Math.floor(rating);
+    const tipPoints = rank
+      ? tips * (RANK_TIP_POINTS - RANK_RIDE_POINTS)
+      : rise ? tips * RISE_TIP_BONUS
+      : tips * Math.floor(rating);
     const daily = p.points ?? 0;
     return {
       seat,
@@ -1345,6 +1564,8 @@ export function createUberManiaGame({ io, rooms }) {
       errandsLeft,
       errandPenalty,
       errandPoints,
+      fares: p.fares ?? 0,
+      angryDropped: p.angryDropped ?? 0,
       starsLost: p.starsLost ?? 0,
       total: daily + ridePoints + allDistricts + regularPoints + tipPoints +
         errandPoints - errandPenalty
@@ -1390,6 +1611,15 @@ export function createUberManiaGame({ io, rooms }) {
         mode: modeOf(room),
         preTime: !!S(room).preTime,
         multiMove: !!S(room).multiMove,
+        scoring: scoringOf(room),
+        // Does this table have a star rating at all? Rising queue doesn't, and
+        // the meter, the slot gates and the three star dials all read this.
+        hasRating: hasRating(room),
+        seatFares: isRise(room) ? RISE_FARE.slice() : null,
+        // The meter's ceiling is the scoring rule's to set (8 under star-rank),
+        // so it rides on the wire rather than off `settings.ratingMax`.
+        ratingMax: ratingCap(room),
+        lastRank: room.uberMania.lastRank ?? null,
         slotGates: slotGates(room),
         priorityStar: priorityStar(room),
         startStars: startingRating(room),
@@ -1400,7 +1630,7 @@ export function createUberManiaGame({ io, rooms }) {
         // In waiting mode each "pile" is one face-down slot off a shared deck.
         piles: (room.uberMania.piles ?? []).map((pile, i) => ({
           left: pile.length,
-          need: queueMode(room) ? pileGates(room)[i] ?? 0 : 0,
+          need: queueMode(room) && hasRating(room) ? pileGates(room)[i] ?? 0 : 0,
           top: pile.length ? { district: pile[0].district, bonus: pile[0].bonus } : null
         })),
         deckLeft: room.uberMania.deck?.length ?? null,
@@ -1847,15 +2077,28 @@ export function createUberManiaGame({ io, rooms }) {
     const days = S(room).days ?? 3;
     const left = Math.max(0, days - Math.floor((room.uberMania.elapsed ?? 0) / 24));
     if (isWaiting(room)) {
-      // No wages at day's end here. A star buys exactly two things: a point on
-      // every tip already banked, and the key to the deeper slots — and it's
-      // the slots that really bite. A driver who lets their rating slide under
-      // the 2★ gate is down to one slot to draw from and stops getting fares
-      // at all, so a star is worth most to whoever has least.
+      // No wage at day's end under tip-x-star. A star buys exactly two things
+      // there: a point on every tip already banked, and the key to the deeper
+      // slots — and it's the slots that really bite. A driver who lets their
+      // rating slide under the 2★ gate is down to one slot to draw from and
+      // stops getting fares at all, so a star is worth most to whoever has
+      // least. Star-rank keeps the slot half and replaces the other, below.
       const r = player?.rating ?? 0;
       const gates = pileGates(room);
       const shut = gates.filter((g) => r < g).length; // slots this rating can't open
       const gate = shut >= 2 ? 3 : shut === 1 ? 1.8 : 0.9;
+      if (isRank(room)) {
+        // Under star-rank a tip multiplies nothing — a star is worth the PLACE
+        // it buys. Every night still to come is four points between the top of
+        // the table and the bottom of it, and the drivers are usually half a
+        // star apart, so a star is dear while there are days left and dearest
+        // to whoever is propping the table up.
+        const rest = (room.uberMania.players ?? [])
+          .filter((p) => p !== player)
+          .map((p) => p.rating ?? 0);
+        const worst = rest.length ? Math.min(...rest) : r;
+        return gate + Math.max(1, left) * 1.2 + (r <= worst ? 1.6 : 0);
+      }
       return gate + (player?.tipsDelivered ?? 0) * 0.9;
     }
     if (queueMode(room)) {
@@ -1899,13 +2142,24 @@ export function createUberManiaGame({ io, rooms }) {
     const now = sectionOf(room.uberMania.time ?? START_TIME);
     const s = S(room);
     const stat = queueMode(room);
+    const rank = isRank(room);
+    const rise = isRise(room);
     const sv = starValue(room, player);
+    // What the sheet pays for a fare, the whole city and being a regular. Three
+    // scoring rules meet here, so read them once rather than at every fare.
+    const ridePts = rank ? RANK_RIDE_POINTS : stat ? STATIC_RIDE_POINTS : s.ridePoints ?? RIDE_POINTS;
+    const allPts = rank
+      ? RANK_ALL_DISTRICTS_BONUS
+      : stat ? STATIC_ALL_DISTRICTS_BONUS : s.allDistrictsBonus ?? ALL_DISTRICTS_BONUS;
+    const regPts = rank
+      ? RANK_REGULAR_BONUS
+      : stat ? STATIC_REGULAR_BONUS : s.regularBonus ?? REGULAR_BONUS;
     // A star you can't actually gain is worth nothing. Ratings sit at the cap
     // for long stretches — especially in waiting mode, where almost nothing
     // drains them — and pricing the priority bonus as if it always lands made
     // every fare look better than every errand, which is why the AI never ran
     // one. Value it by the headroom it would actually fill.
-    const cap = s.ratingMax ?? RATING_MAX;
+    const cap = ratingCap(room);
     const gain = Math.max(0, Math.min(priorityStar(room), cap - (player.rating ?? 0)));
     const priorityValue = gain * sv;
     const byBid = new Map();
@@ -1919,13 +2173,24 @@ export function createUberManiaGame({ io, rooms }) {
     const waiting = (player.passengers ?? []).filter((t) => !t.done);
     for (const t of player.passengers ?? []) {
       if (t.done) continue;
-      let v = stat ? STATIC_RIDE_POINTS : s.ridePoints ?? RIDE_POINTS;
-      if (stat) {
+      let v = ridePts;
+      if (rise) {
+        // No stars to weigh: the seat they're in is exactly what they pay, and
+        // it's paid now. Nothing else about a fare is worth anything here.
+        v = riseFare(t);
+        if (t.bonus === "tip") v += RISE_TIP_BONUS;
+        if (t.bonus === "rush") rushByBid.set(t.loc, (rushByBid.get(t.loc) ?? 0) + 1);
+      } else if (stat) {
         // The queue is the whole decision: the front fare pays a star, anyone
-        // further back costs half a star for each head you reach over.
+        // further back costs half a star for each head you reach over — except
+        // under star-rank, where reaching over is free and only the front of
+        // the queue is worth anything.
         const skipped = waiting.filter((o) => o.slot < t.slot).length;
-        v += skipped === 0 ? priorityValue : -skipped * SKIP_STAR_STEP * sv;
-        if (t.bonus === "tip") v += Math.max(1, Math.floor(player.rating ?? 0));
+        if (skipped === 0) v += priorityValue;
+        else if (!rank) v -= skipped * SKIP_STAR_STEP * sv;
+        if (t.bonus === "tip") {
+          v += rank ? RANK_TIP_POINTS - RANK_RIDE_POINTS : Math.max(1, Math.floor(player.rating ?? 0));
+        }
         if (t.bonus === "rush") rushByBid.set(t.loc, (rushByBid.get(t.loc) ?? 0) + 1);
       } else if (t.bonus === "star") {
         v += sv;
@@ -1935,11 +2200,10 @@ export function createUberManiaGame({ io, rooms }) {
       const ridesHere = player.ridesByDistrict?.[t.district] ?? 0;
       if (ridesHere === 0) {
         const spread = (player.ridesByDistrict ?? []).filter((n) => n > 0).length;
-        const allBonus = stat ? STATIC_ALL_DISTRICTS_BONUS : s.allDistrictsBonus ?? ALL_DISTRICTS_BONUS;
-        v += spread >= DISTRICT_COUNT - 1 ? allBonus : 0.35;
+        v += spread >= DISTRICT_COUNT - 1 ? allPts : 0.35;
       }
       if ((stat || t.district !== player.home) && ridesHere === REGULAR_RIDES - 1) {
-        v += stat ? STATIC_REGULAR_BONUS : s.regularBonus ?? REGULAR_BONUS;
+        v += regPts;
       }
       // A tile off the board is a number back on it — worth real points when
       // the car is full. (Dice mode only; static's board carries no numbers.)
@@ -1959,7 +2223,7 @@ export function createUberManiaGame({ io, rooms }) {
       // annoys everybody in it.
       const target = done + left;
       const perErrand = left > 0
-        ? (errandLadder(target) - errandLadder(done)) / left
+        ? (ladderOf(room, target) - ladderOf(room, done)) / left
         : 0;
       // Two thumbs on the scale, both of them real facts a human reads without
       // thinking. First, an errand is only collectable while its district's
@@ -1971,8 +2235,15 @@ export function createUberManiaGame({ io, rooms }) {
       // extreme. The annoyance counts at half face value for the same reason:
       // the alternative is a whole separate trip back with an empty car.
       const URGENCY = 1.35;
+      // What running one costs in fares depends on the ruleset. Under rising
+      // queue it's a plain number of points — one off every happy passenger
+      // still aboard — so it needs no fudge factor at all, unlike the star
+      // version, which prices a currency the AI can only guess the worth of.
+      const annoyCost = rise
+        ? waiting.filter((t) => !t.angry).length * RISE_ANGRY_STEP
+        : waiting.length * ERRAND_ANNOY_STEP * sv * 0.5;
       const errandValue = isWaiting(room)
-        ? perErrand * URGENCY - waiting.length * ERRAND_ANNOY_STEP * sv * 0.5
+        ? perErrand * URGENCY - annoyCost
         : s.errandPenalty ?? ERRAND_PENALTY;
       for (const bid of player.errands ?? []) {
         const b = buildingByBid(map, bid);
@@ -2050,7 +2321,11 @@ export function createUberManiaGame({ io, rooms }) {
       if (stat) {
         v = 0.4;
         if (top.bonus === "chill") v += (player.timeStones ?? 0) < 8 ? 1.5 : 0.3;
-        if (top.bonus === "tip") v += 0.4 * Math.max(1, Math.floor(player.rating ?? 0));
+        if (top.bonus === "tip") {
+          v += isRank(room) || isRise(room)
+            ? 0.4
+            : 0.4 * Math.max(1, Math.floor(player.rating ?? 0));
+        }
         if (top.bonus === "rush") v += 0.9;
       } else {
         v = top.bonus === "star" ? starValue(room) : 0.35;
@@ -2437,6 +2712,19 @@ export function createUberManiaGame({ io, rooms }) {
         emitState(roomId, room);
       });
 
+      // How waiting mode is SCORED. This one is the deal: star-rank runs the
+      // meter to eight and starts everybody on nothing, so the table is dealt
+      // again rather than switched under the players' feet.
+      socket.on("uber_mania_set_scoring", ({ roomId, scoring } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room || !SCORINGS.includes(scoring) || scoring === scoringOf(room)) return;
+        clearAiTimer(roomId);
+        room.uberMania.settings = { ...S(room), scoring };
+        setupBoard(room);
+        room.uberMania.map.seed = `${room.uberMania.map.seed}-sc${scoring}-${Date.now()}`;
+        emitState(roomId, room);
+      });
+
       // What the front of the queue pays. A payout rule, not a deal — it takes
       // effect on the next delivery and the table plays on.
       socket.on("uber_mania_set_priority_star", ({ roomId, value } = {}) => {
@@ -2498,6 +2786,9 @@ export function createUberManiaGame({ io, rooms }) {
         const prevRating = player.rating ?? 0;
         const prevStarsLost = player.starsLost ?? 0;
         const prevAnnoyed = player.annoyed ?? 0;
+        // Collecting an errand this way can turn the whole car angry, and the
+        // mood lives on the TILES — so the undo needs them, not just the counters.
+        const prevPassengers = (player.passengers ?? []).map((t) => ({ ...t }));
         spendClock(room, player, cost);
         for (const oct of room.uberMania.map.intersections) {
           if (oct.number === hour) oct.color = oct.color === "green" ? "red" : "green";
@@ -2513,7 +2804,8 @@ export function createUberManiaGame({ io, rooms }) {
         }
         ts.undo = {
           kind: "time", prevTime: t, hour, cost, prevPending, prevCarryOn,
-          prevErrands, prevErrandsDone, prevRating, prevStarsLost, prevAnnoyed
+          prevErrands, prevErrandsDone, prevRating, prevStarsLost, prevAnnoyed,
+          prevPassengers
         };
         emitState(roomId, room);
       });
@@ -2568,6 +2860,7 @@ export function createUberManiaGame({ io, rooms }) {
           if (undo.prevRating != null) player.rating = undo.prevRating;
           if (undo.prevStarsLost != null) player.starsLost = undo.prevStarsLost;
           if (undo.prevAnnoyed != null) player.annoyed = undo.prevAnnoyed;
+          if (undo.prevPassengers) player.passengers = undo.prevPassengers;
           // If the change collected an errand it also closed the driving, so
           // taking it back hands the rest of the turn over as well.
           if (undo.prevCarryOn != null) ts.carryOn = !!undo.prevCarryOn;

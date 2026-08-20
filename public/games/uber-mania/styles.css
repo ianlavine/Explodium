@@ -315,7 +315,51 @@ body.ub-waiting .tm-oct-num {
 /* A chip carries a name and an errand pile and nothing else. Points, rating,
    rides and tips all used to sit here; the rating column beside the clock
    already shows the stars, and the rest is bookkeeping that belongs one hover
-   away in .ub-peek rather than on the board at all times. */
+   away in .ub-peek rather than on the board at all times.
+
+   STAR-RANK is the exception: its points are handed out every night while the
+   game runs, so the standings ARE the board and they sit beside the name. */
+.ub-rank-pts {
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.3);
+  font-size: 11px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: help;
+}
+
+.ub-rank-pos {
+  color: #f0d68a;
+  border-color: rgba(240, 214, 138, 0.5);
+}
+
+.ub-rank-neg {
+  color: #ffb4a8;
+  border-color: rgba(255, 180, 168, 0.5);
+}
+
+/* A placing lands between turns, with nothing else on screen to announce it. */
+.ub-rank-up {
+  animation: ub-rank-flash-up 2.6s ease-out 1;
+}
+
+.ub-rank-down {
+  animation: ub-rank-flash-down 2.6s ease-out 1;
+}
+
+@keyframes ub-rank-flash-up {
+  0%, 60% { background: #f0d68a; color: #12161c; transform: scale(1.25); }
+  100% { background: rgba(0, 0, 0, 0.3); transform: scale(1); }
+}
+
+@keyframes ub-rank-flash-down {
+  0%, 60% { background: #962c20; color: #ffd9d2; transform: scale(1.25); }
+  100% { background: rgba(0, 0, 0, 0.3); transform: scale(1); }
+}
 
 /* The errand discs a driver has picked up, stacked in front of them. Open
    slots are the ones still out on the board. */
@@ -519,6 +563,15 @@ body.ub-waiting .tm-oct-num {
 
 .ub-stones-low {
   border-color: rgba(255, 180, 168, 0.5);
+}
+
+/* A table rule that isn't the table's to set: printed, not offered. */
+.ub-controls .ub-opt-note {
+  align-self: center;
+  padding: 0 4px;
+  font-size: 11px;
+  opacity: 0.65;
+  cursor: help;
 }
 
 /* An option that's switched ON wears it, so the settings bar reads at a glance. */
@@ -879,6 +932,49 @@ body.ub-waiting .tm-oct-num {
 .ub-queue-tag-bad {
   color: #ffd9d2;
   background: rgba(150, 44, 32, 0.92);
+}
+
+/* RISING QUEUE: a passenger who sat through one of your errands SLUMPS. The
+   tile drops in its seat and stays dropped as the queue closes up in front of
+   it, which is the whole tell — you can see at a glance who you've soured, and
+   they keep paying a point less wherever they end up.
+
+   The marker is a red −1, NOT an angry face: a RUSH fare already wears 😡 in
+   the very same corner and the two are indistinguishable at 12px. The number
+   also says the actual rule, which a face doesn't. It's drawn with the tile
+   rather than added to the markup so it can't push the address around. And no
+   dashed border here — an EMPTY seat is the dashed one. */
+.ub-queue-angry {
+  filter: saturate(0.5) brightness(0.78);
+}
+
+/* Only the picture sinks, not the address. Moving the whole stack down pushed
+   a two-line name ("Ice Cream Parlour") straight under the fare tag and cut it
+   in half — and the address is the one thing on the tile you actually have to
+   read. The slump, the drained colour and the red −1 together are plenty. */
+.ub-queue-angry .ub-slot-emoji {
+  transform: translateY(7px);
+}
+
+.ub-queue-angry::after {
+  content: "−1";
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: rgba(150, 44, 32, 0.95);
+  color: #ffd9d2;
+  font-size: 9.5px;
+  font-weight: 900;
+  line-height: 1.35;
+  filter: saturate(2) brightness(1.25);
+}
+
+/* Costs nothing, pays nothing — star-rank's queue behind the front seat. */
+.ub-queue-tag-flat {
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(0, 0, 0, 0.35);
 }
 
 .ub-queue-slot .ub-slot-emoji {

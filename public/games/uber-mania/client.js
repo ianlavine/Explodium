@@ -35,7 +35,7 @@ const CAR_SPEED = 200; // px per second — keep in sync with the server
 const BOARD_NUMBERS = [2, 3, 4, 5];
 const FREE_NUMBER = 6;
 const MAX_PASSENGERS = BOARD_NUMBERS.length;
-const RATING_MAX = 5;
+const RATING_MAX = 5;   // the fallback ceiling — the scoring rule sets the real one
 // One seat per district — a player's color IS their home. (Server: MAX_SEATS.)
 const MAX_SEATS = 6;
 
@@ -52,6 +52,15 @@ const BONUS_TEXT = {
   rush: "one red light free on the turn you drop them off"
 };
 const BONUS_NAME = { chill: "Chill", tip: "Tip", rush: "Rush" };
+// A tip's promise is the one that changes with the scoring rule: a multiplier
+// on your final rating under tip-x-star, a flat point more than an ordinary
+// fare under star-rank.
+const bonusText = (kind) => {
+  if (kind !== "tip") return BONUS_TEXT[kind] ?? "";
+  if (isRank()) return "worth 3 points at the end instead of the usual 2";
+  if (isRise()) return "a point more at the end, on top of whatever seat they rode in";
+  return BONUS_TEXT.tip;
+};
 
 // The queue modes' board: four seats, and three slots that want 0, 2 and 4
 // stars before they'll deal. (Server: STATIC_SLOTS / STATIC_PILE_RATING.)
@@ -74,6 +83,26 @@ const sectionOf = (t) => (t >= 1 && t <= 8 ? "morning" : t >= 9 && t <= 16 ? "wo
 // shapes — SECTION_META's landscapes turn to mush at that size.
 const SECTION_TOKEN = { morning: "☀️", work: "💼", evening: "🌙" };
 
+// How waiting mode is SCORED — a rule on top of the ruleset, not a ruleset of
+// its own. (Server: SCORINGS and the RANK_* constants — keep in sync.)
+const SCORINGS = ["tipStar", "starRank", "risingQueue"];
+const SCORING_NAME = { tipStar: "Tip ×★", starRank: "Star rank", risingQueue: "Rising queue" };
+const SCORING_BLURB = {
+  tipStar: "Tip ×★: your rating is a multiplier you cash in at the end — every tip fare you delivered is worth your full stars. Reaching over somebody in the queue costs half a star.",
+  starRank: "Star rank: the meter runs to EIGHT, everybody opens on nothing, and at every day's end the table is placed by it — most stars takes 2 points, fewest gives 2 back, a shared place is worth 1 either way. Your rating only moves two ways: a star for the front of the queue, half a star off per passenger you drag through an errand.",
+  risingQueue: "Rising queue: NO star rating at all. Three seats, and the seat a passenger is riding in IS their fare — 4 for the front of the queue, then 3, then 2, paid the moment they get out. Run an errand and everybody still aboard slides down ANGRY: they stay angry all the way to the front, and an angry fare pays a point less."
+};
+const RANK_RATING_MAX = 8;
+const ERRAND_LADDER_RANK = [0, 1, 3, 5, 8, 11, 15];
+// RISING QUEUE. What each seat pays, front of the queue first; an angry
+// passenger pays one less wherever they're sitting. The SEAT COUNT isn't here
+// on purpose — it comes over the wire as `um.slots`, so it can't drift.
+// (Server: RISE_FARE / RISE_ANGRY_STEP / RISE_ERRAND_LADDER.)
+const RISE_FARE = [4, 3, 2];
+const RISE_ANGRY_STEP = 1;
+const ERRAND_LADDER_RISE = [0, 2, 5, 8, 12, 16, 21];
+const RISE_TIP_BONUS = 1;
+
 // The three rulesets, in the order the Mode button walks through them.
 // (Server: MODES — keep in sync.)
 const MODES = ["dice", "static", "waiting"];
@@ -81,14 +110,13 @@ const MODE_NAME = { dice: "Dice", static: "Static", waiting: "Waiting" };
 const MODE_BLURB = {
   dice: "Dice: passengers sit on numbered squares, and every red light you run throws a die against the numbers still showing.",
   static: "Static: no dice. Four passengers in a queue — deliver the left-hand one for a star, or pay half a star per head you reach over. Every red is a whole star.",
-  waiting: "Waiting: you cannot pass a red at all — you stop and sit on it, and drive through on a later turn. A rushing fare buys you one red, but only on the way to them. Dropping somebody off ends the drive. Errands are back — one in every district — and the set pays 2, 5, 8, 11, 15, 20."
+  waiting: "Waiting: you cannot pass a red at all — you stop and sit on it, and drive through on a later turn. A rushing fare buys you one red, but only on the way to them. Dropping somebody off ends the drive. Errands are back — one in every district — and the set pays off a rising ladder."
 };
 
 // Waiting mode's pickup slots: how many fares are on offer, and the rating each
 // one asks for. The table sets both. (Server: slotGates / normalizeGates.)
 const MIN_SLOTS = 2;
 const MAX_SLOTS = 3;
-const MAX_GATE = 5;
 const DEFAULT_SLOT_GATES = [0, 3];
 
 // Half stars want one decimal, whole ones none.
@@ -186,6 +214,12 @@ let multiMoveState = false; // table rule: not even a drop-off ends the drive
 let slotGatesState = DEFAULT_SLOT_GATES.slice();
 let priorityStarState = PRIORITY_STAR; // what the front of the queue pays
 let startStarsState = START_STARS;     // what everyone opens on
+let scoringState = "tipStar";          // what a star is FOR — see SCORING_BLURB
+let ratingMaxState = RATING_MAX;       // the meter's ceiling, set by the scoring
+let lastRankState = null;              // the night's placings, for the flash
+let lastRankSeen = -1;                 // the last placing this client has shown
+let rankFlashSeq = -1;                 // ...and the one it's flashing right now
+let rankFlashTimer = null;
 let lastTollState = null; // static: the red-light bill for the turn just ended
 let lastTollSeq = -1;
 let lastRollState = null;
@@ -320,15 +354,28 @@ function districtOf(id) {
 
 const isStatic = () => modeState === "static";
 const isWaiting = () => modeState === "waiting";
+// Star-rank rides on waiting mode alone, same as the server's isRank.
+const isRank = () => isWaiting() && scoringState === "starRank";
+const isRise = () => isWaiting() && scoringState === "risingQueue";
+// Is there a star rating on this table at all? Rising queue has none, and the
+// meter, the slot gates and the three star dials all read this one predicate.
+const hasRating = () => !isRise();
+const ratingCap = () => (isRank() ? RANK_RATING_MAX : ratingMaxState || RATING_MAX);
 // Static + waiting share the four-deep queue, the three kinds and the scoring.
 const queueMode = () => modeState !== "dice";
 // Dice + waiting share the errands.
 const hasErrands = () => modeState !== "static";
 // What a finished set of errands pays in waiting mode, indexed by how many you
-// collected — the whole six is 20. (Server: ERRAND_LADDER.)
+// collected. Tip-x-star's whole six is 20; star-rank's is 15, off a flatter
+// ladder. (Server: ERRAND_LADDER / RANK_ERRAND_LADDER.)
 const ERRAND_LADDER = [0, 2, 5, 8, 11, 15, 20];
-const errandLadder = (n) =>
-  ERRAND_LADDER[Math.max(0, Math.min(ERRAND_LADDER.length - 1, n))];
+const errandLadder = (n) => {
+  const L = isRank() ? ERRAND_LADDER_RANK : isRise() ? ERRAND_LADDER_RISE : ERRAND_LADDER;
+  return L[Math.max(0, Math.min(L.length - 1, n))];
+};
+// Rising queue: what the seat at `slot` pays, given the rider's mood.
+const seatFare = (slot, angry) =>
+  Math.max(0, (RISE_FARE[slot] ?? RISE_FARE[RISE_FARE.length - 1]) - (angry ? RISE_ANGRY_STEP : 0));
 const maxPassengers = () => slotsState || (queueMode() ? STATIC_SLOTS : MAX_PASSENGERS);
 
 // Waiting mode parks cars ON the stop signs, so they have to be big enough to
@@ -346,12 +393,19 @@ const LIGHT_NOSE = () => octRadius() + 14;
 // Static mode: what delivering the fare in this slot does to your rating —
 // a whole star for the one at the front, half a star off per head behind it.
 function slotStarDelta(slot) {
-  return slot === 0 ? priorityStarState : -slot * SKIP_STAR_STEP;
+  if (slot === 0) return priorityStarState;
+  // Star-rank charges nothing for reaching over — the rating moves in exactly
+  // two ways there, and the queue's order is a carrot rather than a stick.
+  return isRank() ? 0 : -slot * SKIP_STAR_STEP;
 }
 
 const starDeltaText = (d) => (d >= 0 ? `+${num(d)}★` : `−${num(-d)}★`);
 
 const nextMode = () => MODES[(MODES.indexOf(modeState) + 1) % MODES.length];
+const nextScoring = () => SCORINGS[(SCORINGS.indexOf(scoringState) + 1) % SCORINGS.length];
+const scoringLabel = () => `Scoring: ${SCORING_NAME[scoringState] ?? "Tip ×★"}`;
+const SCORING_BLURB_FOR = () =>
+  `${SCORING_BLURB[scoringState] ?? ""}\n\nClick to switch to ${SCORING_NAME[nextScoring()]} — which re-deals the table.`;
 const slotLabel = () => `Slots: ${slotGatesState.length}`;
 // The count button just flips between the two sizes. Growing invents a gate for
 // the new slot — two stars above the dearest, which keeps the row a ladder —
@@ -360,7 +414,7 @@ const slotLabel = () => `Slots: ${slotGatesState.length}`;
 const nextSlotGates = () =>
   slotGatesState.length >= MAX_SLOTS
     ? slotGatesState.slice(0, MIN_SLOTS)
-    : slotGatesState.concat(Math.min(MAX_GATE, (slotGatesState[slotGatesState.length - 1] ?? 0) + 2));
+    : slotGatesState.concat(Math.min(ratingCap(), (slotGatesState[slotGatesState.length - 1] ?? 0) + 2));
 const SLOT_BLURB = () =>
   slotGatesState.length > MIN_SLOTS
     ? "Three fares on offer, and they're a river: take one and the ones above it slide down, so emptying the cheap slot is what feeds the dear ones.\n\nClick for two."
@@ -373,7 +427,7 @@ const emitSlotGates = (gates) => {
 const nextTopFare = () => (priorityStarState === 1 ? 0.5 : 1);
 const topFareLabel = () => `Top fare: ${priorityStarState === 1 ? "1★" : "½★"}`;
 const TOP_FARE_BLURB = () =>
-  `Delivering the fare at the FRONT of your queue is worth ${priorityStarState === 1 ? "a whole star" : "half a star"}. Reaching over anybody still costs half a star a head either way.\n\nClick for ${nextTopFare() === 1 ? "a whole star" : "half a star"}.`;
+  `Delivering the fare at the FRONT of your queue is worth ${priorityStarState === 1 ? "a whole star" : "half a star"}. ${isRank() ? "Reaching over anybody costs nothing under star-rank." : "Reaching over anybody still costs half a star a head either way."}\n\nClick for ${nextTopFare() === 1 ? "a whole star" : "half a star"}.`;
 
 // The numbers still visible on a player's board (server sends them, but the
 // tray recomputes locally so a hover preview can be honest).
@@ -986,7 +1040,11 @@ function renderRatingBar() {
   const slot = railSlot("meters");
   slot.querySelector(".ub-rating")?.remove();
   if (!playersState.length) return;
-  const max = Math.max(1, settingsState?.ratingMax ?? RATING_MAX);
+  // Rising queue has no star rating at all, so there is no column to draw.
+  if (!hasRating()) return;
+  // The ceiling belongs to the scoring rule, not the settings blob: star-rank
+  // runs the meter to eight so a table has room to spread out along it.
+  const max = Math.max(1, ratingCap());
   const wrap = document.createElement("div");
   wrap.className = "ub-rating";
   const title = document.createElement("div");
@@ -1054,9 +1112,12 @@ function renderRatingBar() {
       class: i === myIndex() ? "ub-rating-dot ub-rating-dot-mine" : "ub-rating-dot"
     }, g);
     dot.style.fill = p.color;
-    // Waiting mode pays no wage at a day's end, so don't promise one: there a
-    // rating is worth the tips it multiplies and the slots it opens.
-    svgEl("title", {}, g).textContent = isWaiting()
+    // What a star is actually FOR depends on the rules in play, so say so
+    // rather than promising a wage: waiting mode pays none at a day's end, and
+    // under star-rank a rating buys a PLACE in the nightly table instead.
+    svgEl("title", {}, g).textContent = isRank()
+      ? `${seatName(i)} — ${num(r)} star${r === 1 ? "" : "s"}: the most at the table each night is worth 2 points, the fewest is 2 off`
+      : isWaiting()
       ? `${seatName(i)} — ${num(r)} star${r === 1 ? "" : "s"}: every tip they've delivered is worth ${Math.floor(r)} at the end`
       : `${seatName(i)} — ${num(r)} star${r === 1 ? "" : "s"}, worth ${Math.floor(r)} a day`;
   });
@@ -2408,10 +2469,15 @@ function renderScoreboard() {
     nm.textContent = p.name ?? seatName(i);
     chip.appendChild(nm);
 
-    // A chip says WHO, and how their errands are going. Points, rating, rides
-    // and tips are all deliberately absent: the rating column beside the clock
+    // A chip says WHO, and how their errands are going. Rides, tips and the
+    // rating are deliberately absent: the rating column beside the clock
     // already carries the stars, and the rest is running-total bookkeeping that
     // nobody needs at a glance. It's all still one hover away, in the peek card.
+    //
+    // The exceptions are the two scorings that pay WHILE the game runs —
+    // star-rank's nightly placings and rising queue's fares — where the
+    // standings are the game, so they sit right next to the name.
+    if (isRank() || isRise()) chip.appendChild(rankBadge(p, i));
     if (hasErrands()) chip.appendChild(errandPile(p, i));
 
     chip.appendChild(playerPeek(p, i));
@@ -2431,6 +2497,30 @@ function renderScoreboard() {
     bar.appendChild(chip);
   });
   slot.appendChild(bar);
+}
+
+// What this driver has banked SO FAR — the only points either of the two
+// running scorings shows while the game is on. Under star-rank it's the nightly
+// placings (and it flashes the night it moves, because a placing happens
+// between turns and is otherwise easy to miss); under rising queue it's the
+// fares their seats have paid. Everything else is summed once, at the end.
+function rankBadge(p, seat) {
+  const pts = p.points ?? 0;
+  const badge = document.createElement("span");
+  badge.className = `ub-rank-pts${pts > 0 ? " ub-rank-pos" : pts < 0 ? " ub-rank-neg" : ""}`;
+  badge.textContent = pts > 0 ? `+${pts}` : String(pts);
+  if (isRise()) {
+    badge.title = `${seatName(seat)}: ${pts} point${Math.abs(pts) === 1 ? "" : "s"} in fares, paid as each passenger got out. Errands, tips and the bonuses are all summed at the end.`;
+    return badge;
+  }
+  const last = (lastRankState?.rows ?? []).find((r) => r.player === seat);
+  badge.title = last
+    ? `${seatName(seat)}: ${pts} point${Math.abs(pts) === 1 ? "" : "s"} from the nightly star rankings — ${last.delta > 0 ? `+${last.delta}` : last.delta} last night on ${num(last.rating)}★. Everything else is summed at the end.`
+    : `${seatName(seat)}: ${pts} point${Math.abs(pts) === 1 ? "" : "s"} from the nightly star rankings. Everything else is summed at the end.`;
+  if (last && lastRankState && lastRankState.seq === rankFlashSeq) {
+    badge.classList.add(last.delta > 0 ? "ub-rank-up" : "ub-rank-down");
+  }
+  return badge;
 }
 
 // The errand discs a driver has picked up off the board, stacked in front of
@@ -2489,13 +2579,14 @@ function playerPeek(p, seat) {
 
   // The chips themselves only carry a name and an errand pile now, so this card
   // is where every running total lives.
-  const rows = [
-    ["Time stones", `⬟ ${p.timeStones ?? 0}`],
-    ["Rating", `${num(p.rating ?? 0)} ★`],
-    ["Day points", String(p.points ?? 0)],
+  const rows = [["Time stones", `⬟ ${p.timeStones ?? 0}`]];
+  if (hasRating()) rows.push(["Rating", `${num(p.rating ?? 0)} ★`]);
+  rows.push(
+    [isRise() ? "Fares" : isRank() ? "Rank points" : "Day points", String(p.points ?? 0)],
     ["Passengers", `${(p.passengers ?? []).length}/${maxPassengers()}`],
     ["Rides done", String(p.ridesCompleted ?? 0)]
-  ];
+  );
+  if (isRise()) rows.push(["Angry aboard", String((p.passengers ?? []).filter((t) => t.angry && !t.done).length)]);
   if (queueMode()) rows.push(["Tips banked", String(p.tipsDelivered ?? 0)]);
   rows.push(hasErrands()
     ? ["Errands left", String((p.errands ?? []).length)]
@@ -2631,7 +2722,11 @@ function deliveryPeek(player) {
     tips.className = "ub-mine-tips";
     const n = player?.tipsDelivered ?? 0;
     tips.textContent = n
-      ? `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — ${n} × your full stars at the end`
+      ? isRank()
+        ? `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — worth 3 each at the end instead of 2`
+        : isRise()
+        ? `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — ${n * RISE_TIP_BONUS} more at the end, on top of the seats they rode in`
+        : `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — ${n} × your full stars at the end`
       : `${BONUS_ICON.tip} No tip fares delivered yet`;
     card.appendChild(tips);
   }
@@ -2705,7 +2800,7 @@ function renderTray() {
       const kind = BONUS_NAME[pile.top.bonus];
       btn.title = locked
         ? `${kind ?? "A fare"} into ${d?.name ?? "a district"} — but this slot only deals at ${num(pile.need)} stars, and you have ${num(myPlayer()?.rating ?? 0)}.`
-        : `Top of pile ${i + 1}: ${kind ? `a ${kind.toLowerCase()} fare` : "a fare"} into ${d?.name ?? "a district"} — ${BONUS_TEXT[pile.top.bonus] ?? ""}. Taking it is your whole turn.`;
+        : `Top of pile ${i + 1}: ${kind ? `a ${kind.toLowerCase()} fare` : "a fare"} into ${d?.name ?? "a district"} — ${bonusText(pile.top.bonus)}. Taking it is your whole turn.`;
     } else {
       btn.classList.add("ub-pile-empty");
       btn.textContent = "empty";
@@ -2857,19 +2952,35 @@ function buildQueue(board, player) {
     name.className = "ub-slot-dest";
     name.textContent = dest?.name ?? "…";
 
-    const delta = slotStarDelta(i);
     const tag = document.createElement("div");
-    tag.className = `ub-queue-tag${delta >= 0 ? " ub-queue-tag-good" : " ub-queue-tag-bad"}`;
-    tag.textContent = starDeltaText(delta);
+    if (isRise()) {
+      // The seat is the fare, so the tile just wears its price. An angry rider
+      // SLUMPS — the tile sits low in its seat and keeps sitting low as the
+      // queue closes up in front of them, which is the whole tell.
+      const fare = seatFare(i, tile.angry);
+      tag.className = `ub-queue-tag${tile.angry ? " ub-queue-tag-bad" : " ub-queue-tag-good"}`;
+      tag.textContent = `+${fare}`;
+      if (tile.angry) cell.classList.add("ub-queue-angry");
+    } else {
+      const delta = slotStarDelta(i);
+      // Zero is its own case: under star-rank everyone behind the front of the
+      // queue is simply free, and "+0★" reads like a bug.
+      tag.className = `ub-queue-tag${delta > 0 ? " ub-queue-tag-good" : delta < 0 ? " ub-queue-tag-bad" : " ub-queue-tag-flat"}`;
+      tag.textContent = delta === 0 ? "—★" : starDeltaText(delta);
+    }
     cell.append(kindIcon, pic, name, tag);
 
     const kind = BONUS_NAME[tile.bonus];
-    const reach = i === 0
+    const reach = isRise()
+      ? `Seat ${i + 1} of the queue pays ${seatFare(i, tile.angry)}${tile.angry ? " — they're angry, so a point less than the seat is worth" : ""}. It's paid the moment they get out.`
+      : i === 0
       ? `They're at the front of the queue, so dropping them off is ${priorityStarState === 1 ? "a whole star" : "half a star"}.`
+      : isRank()
+      ? `Dropping them off means reaching over ${i} passenger${i === 1 ? "" : "s"} — rude, but it costs nothing here. Only the front of the queue pays a star.`
       : `Dropping them off means reaching over ${i} passenger${i === 1 ? "" : "s"} — ${num(i * SKIP_STAR_STEP)} stars off.`;
     cell.title = tile.done
       ? `Delivered — ${dest?.name ?? ""}. The queue closes up when you end your turn.`
-      : `${kind ?? "Fare"} to ${dest?.name ?? "?"} in ${d?.name ?? "?"} — ${BONUS_TEXT[tile.bonus] ?? ""}. ${reach}`;
+      : `${kind ?? "Fare"} to ${dest?.name ?? "?"} in ${d?.name ?? "?"} — ${bonusText(tile.bonus)}. ${reach}`;
     row.appendChild(cell);
   }
   board.appendChild(row);
@@ -2881,12 +2992,25 @@ function buildQueue(board, player) {
   if (isWaiting()) {
     // Nothing is billed in waiting mode — the two things that can cost you a
     // star are the queue and an errand run with a full car.
-    hint.textContent = riding
+    // Rising queue costs POINTS, not stars — and only the riders who aren't
+    // already sulking have anything left to lose.
+    const sour = held.filter((t) => !t.done && !t.angry).length;
+    hint.textContent = isRise()
+      ? sour
+        ? `An errand now costs ${sour} point${sour === 1 ? "" : "s"} — ${sour} still happy aboard`
+        : riding
+        ? "Everyone aboard is already angry — an errand costs nothing more"
+        : "Empty car: errands are free right now"
+      : riding
       ? `An errand now costs ${num(riding * SKIP_STAR_STEP)}★ — ${riding} aboard`
       : "Empty car: errands are free right now";
-    hint.title = "Running one of your errands annoys everybody still riding: half a star each. Red lights cost nothing here — they just stop you.";
-    if (riding >= 3) hint.classList.add("ub-board-hint-hot");
-    else if (!riding) hint.classList.add("ub-board-hint-good");
+    hint.title = isRise()
+      ? "Running one of your errands makes everybody still riding ANGRY: they slide down in their seat, stay down all the way to the front of the queue, and pay a point less than that seat is worth. Somebody already angry can't get any angrier. Red lights cost nothing here — they just stop you."
+      : isRank()
+      ? "Running one of your errands annoys everybody still riding: half a star each — one of only two things that move your rating. Red lights cost nothing here; they just stop you."
+      : "Running one of your errands annoys everybody still riding: half a star each. Red lights cost nothing here — they just stop you.";
+    if (isRise() ? sour >= 2 : riding >= 3) hint.classList.add("ub-board-hint-hot");
+    else if (isRise() ? !sour : !riding) hint.classList.add("ub-board-hint-good");
     board.appendChild(hint);
     return;
   }
@@ -3213,62 +3337,86 @@ function renderControls() {
 
     // One select per slot: what that slot asks for before it will deal. A gate
     // is not part of the deal, so changing one leaves the table exactly as it
-    // is — only adding or dropping a slot deals the row again.
-    const gateWrap = document.createElement("label");
-    gateWrap.className = "ub-ai-wrap ub-gates";
-    gateWrap.append("Needs");
-    slotGatesState.forEach((gate, i) => {
-      const sel = document.createElement("select");
-      sel.className = "ub-ai ub-gate";
-      sel.dataset.slot = String(i);
-      // Half stars as well as whole ones: a rating moves in halves, so a gate
-      // sitting between two of them is a real setting.
-      for (let v = 0; v <= MAX_GATE; v += 0.5) {
-        const opt = document.createElement("option");
-        opt.value = String(v);
-        opt.textContent = `${num(v)}★`;
-        if (v === gate) opt.selected = true;
-        sel.appendChild(opt);
-      }
-      sel.title = `What slot ${i + 1} asks of your rating before it will deal. Changing it doesn't re-deal the table.`;
-      sel.addEventListener("change", () => {
-        const next = slotGatesState.slice();
-        next[i] = Number(sel.value);
-        emitSlotGates(next);
+    // is — only adding or dropping a slot deals the row again. Rising queue has
+    // no rating to gate on, so the whole row of them stands down.
+    if (hasRating()) {
+      const gateWrap = document.createElement("label");
+      gateWrap.className = "ub-ai-wrap ub-gates";
+      gateWrap.append("Needs");
+      slotGatesState.forEach((gate, i) => {
+        const sel = document.createElement("select");
+        sel.className = "ub-ai ub-gate";
+        sel.dataset.slot = String(i);
+        // Half stars as well as whole ones: a rating moves in halves, so a gate
+        // sitting between two of them is a real setting. It runs to the METER's
+        // ceiling — eight under star-rank, five otherwise — since a gate above
+        // that could never be opened.
+        for (let v = 0; v <= ratingCap(); v += 0.5) {
+          const opt = document.createElement("option");
+          opt.value = String(v);
+          opt.textContent = `${num(v)}★`;
+          if (v === gate) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        sel.title = `What slot ${i + 1} asks of your rating before it will deal. Changing it doesn't re-deal the table.`;
+        sel.addEventListener("change", () => {
+          const next = slotGatesState.slice();
+          next[i] = Number(sel.value);
+          emitSlotGates(next);
+        });
+        gateWrap.appendChild(sel);
       });
-      gateWrap.appendChild(sel);
-    });
-    bar.appendChild(gateWrap);
+      bar.appendChild(gateWrap);
+    }
+  }
+
+  // What waiting mode's stars are FOR. It changes the meter's height and where
+  // everyone opens on it, so it belongs beside the rest of the star economy.
+  if (isWaiting()) {
+    const sc = button(scoringLabel(), "scoring");
+    sc.title = SCORING_BLURB_FOR();
+    if (isRank()) sc.classList.add("ub-opt-on");
+    bar.appendChild(sc);
   }
 
   // What the front of the queue pays, and what everyone opens on. Both belong
-  // to the queue's star economy, so both ride with it.
-  if (queueMode()) {
+  // to the queue's star economy, so both ride with it. Star-rank owns the
+  // opening rating itself — everyone starts on nothing there — so the picker
+  // stands down rather than offering a choice the rules will overrule.
+  if (queueMode() && hasRating()) {
     const top = button(topFareLabel(), "topfare");
     top.title = TOP_FARE_BLURB();
     bar.appendChild(top);
 
-    const startWrap = document.createElement("label");
-    startWrap.className = "ub-ai-wrap";
-    startWrap.append("Start ★");
-    const stars = document.createElement("select");
-    stars.className = "ub-ai ub-start-stars";
-    // Half stars as well as whole ones, 0 through 5 — the table picks where
-    // everyone opens, and the server rounds to the same half steps.
-    for (let v = 0; v <= MAX_GATE; v += 0.5) {
-      const opt = document.createElement("option");
-      opt.value = String(v);
-      opt.textContent = `${num(v)}★`;
-      if (v === startStarsState) opt.selected = true;
-      stars.appendChild(opt);
+    if (isRank()) {
+      const fixed = document.createElement("span");
+      fixed.className = "ub-opt-note";
+      fixed.textContent = "Start 0★";
+      fixed.title = "Star rank starts everybody on nothing — the night is measured from a standing start, so it isn't the table's to set.";
+      bar.appendChild(fixed);
+    } else {
+      const startWrap = document.createElement("label");
+      startWrap.className = "ub-ai-wrap";
+      startWrap.append("Start ★");
+      const stars = document.createElement("select");
+      stars.className = "ub-ai ub-start-stars";
+      // Half stars as well as whole ones — the table picks where everyone
+      // opens, and the server rounds to the same half steps.
+      for (let v = 0; v <= ratingCap(); v += 0.5) {
+        const opt = document.createElement("option");
+        opt.value = String(v);
+        opt.textContent = `${num(v)}★`;
+        if (v === startStarsState) opt.selected = true;
+        stars.appendChild(opt);
+      }
+      stars.title = "What every driver's rating opens on. Changing it re-deals the table.";
+      stars.addEventListener("change", () => {
+        if (!app.roomId) return;
+        socket.emit("uber_mania_set_start_stars", { roomId: app.roomId, stars: Number(stars.value) });
+      });
+      startWrap.appendChild(stars);
+      bar.appendChild(startWrap);
     }
-    stars.title = "What every driver's rating opens on. Changing it re-deals the table.";
-    stars.addEventListener("change", () => {
-      if (!app.roomId) return;
-      socket.emit("uber_mania_set_start_stars", { roomId: app.roomId, stars: Number(stars.value) });
-    });
-    startWrap.appendChild(stars);
-    bar.appendChild(startWrap);
   }
 
   const rules = button(`Mode: ${MODE_NAME[modeState] ?? "Dice"}`, "rules");
@@ -3343,6 +3491,9 @@ function renderControls() {
     if (btn.dataset.action === "rules") {
       socket.emit("uber_mania_set_mode", { roomId: app.roomId, mode: nextMode() });
     }
+    if (btn.dataset.action === "scoring") {
+      socket.emit("uber_mania_set_scoring", { roomId: app.roomId, scoring: nextScoring() });
+    }
     if (btn.dataset.action === "mode") {
       moveMode = moveMode === "build" ? "auto" : "build";
       localStorage.setItem("ubMoveMode", moveMode);
@@ -3395,6 +3546,12 @@ function syncControlLabels() {
   if (stars && Number(stars.value) !== startStarsState) stars.value = String(startStarsState);
   const rules = els.gameBoard.querySelector('.ub-controls [data-action="rules"]');
   if (rules) rules.textContent = `Mode: ${MODE_NAME[modeState] ?? "Dice"}`;
+  const sc = els.gameBoard.querySelector('.ub-controls [data-action="scoring"]');
+  if (sc) {
+    sc.textContent = scoringLabel();
+    sc.title = SCORING_BLURB_FOR();
+    sc.classList.toggle("ub-opt-on", isRank());
+  }
 }
 
 function updateTurnControls() {
@@ -3455,8 +3612,32 @@ const WAITING_RESULT_COLUMNS = [
   ["regularPoints", "Regular", "Five for every district you finished three rides in"]
 ];
 
+// STAR-RANK. The rating column is back at the front and it's the biggest number
+// on the sheet — it's the only thing scored while the game is still going.
+const RANK_RESULT_COLUMNS = [
+  ["daily", "Rank", "Banked at every day's end: 2 for the most stars at the table, −2 for the fewest, 1 either way when the place was shared"],
+  ["ridePoints", "Rides", "Two points per fare delivered"],
+  ["tipPoints", "Tips", "One more for each tip fare — they're worth 3 apiece instead of 2"],
+  ["errandPoints", "Errands", "What your finished errands pay: 1, 3, 5, 8, 11, 15 for one through six"],
+  ["allDistricts", "All six", "Three for having driven a fare into every district"],
+  ["regularPoints", "Regular", "Three for every district you finished three rides in"]
+];
+
+// RISING QUEUE. The fares were paid seat by seat as the game went, so they come
+// first and everything after them is the end-of-game reckoning.
+const RISE_RESULT_COLUMNS = [
+  ["daily", "Fares", "Paid as each passenger got out: 4 for the front of the queue, then 3, then 2 — one less apiece if they were angry"],
+  ["errandPoints", "Errands", "What your finished errands pay: 2, 5, 8, 12, 16, 21 for one through six"],
+  ["tipPoints", "Tips", "One more for every tip fare delivered, on top of the seat they rode in"],
+  ["allDistricts", "All six", "Five for having driven a fare into every district"],
+  ["regularPoints", "Regular", "Five for every district you finished three rides in"]
+];
+
 const resultColumns = () =>
-  (isWaiting() ? WAITING_RESULT_COLUMNS : isStatic() ? STATIC_RESULT_COLUMNS : RESULT_COLUMNS);
+  (isRank()
+    ? RANK_RESULT_COLUMNS
+    : isRise() ? RISE_RESULT_COLUMNS
+    : isWaiting() ? WAITING_RESULT_COLUMNS : isStatic() ? STATIC_RESULT_COLUMNS : RESULT_COLUMNS);
 
 // How the night actually went, under the scoring: none of it is worth points,
 // which is exactly why it's a separate table — reading it next to the totals is
@@ -3560,7 +3741,18 @@ function renderResults() {
       const v = row[key] ?? 0;
       td.textContent = key === "errandPenalty" ? (v ? `−${v}` : "0") : String(v);
       if (key === "errandPenalty" && v) td.className = "ub-results-neg";
-      if (key === "tipPoints") td.title = `${row.tips ?? 0} tip fares × ${Math.floor(row.rating ?? 0)} stars`;
+      // Star-rank is the one column that can come back negative on its own.
+      if (key === "daily" && v < 0) td.className = "ub-results-neg";
+      if (key === "tipPoints") {
+        td.title = isRank()
+          ? `${row.tips ?? 0} tip fares, worth one point more each than an ordinary fare`
+          : isRise()
+          ? `${row.tips ?? 0} tip fares, a point each on top of their seat`
+          : `${row.tips ?? 0} tip fares × ${Math.floor(row.rating ?? 0)} stars`;
+      }
+      if (key === "daily" && isRise()) {
+        td.title = `${row.rides ?? 0} fares delivered${row.angryDropped ? `, ${row.angryDropped} of them angry` : ""}`;
+      }
       tr.appendChild(td);
     });
     const total = document.createElement("td");
@@ -3710,11 +3902,19 @@ function setTurnStatus() {
         `Dropped off at ${b?.name ?? "the address"} — end your turn to throw the dice`;
       return;
     }
+    // Rising queue pays in points, and every fare dropped this turn is priced
+    // where they were SITTING, so a double drop-off adds up.
+    const paid = dropped.reduce((n, t) => n + seatFare(t.slot, t.angry), 0);
     const delta = slotStarDelta(Math.min(...dropped.map((t) => t.slot)));
+    const rating = isRise()
+      ? `+${paid} point${paid === 1 ? "" : "s"} when you end your turn`
+      : delta === 0
+      ? "no change to your rating"
+      : `${starDeltaText(delta)} when you end your turn`;
     const where = atLight ? "stopped at the red" : `parked at ${b?.name ?? "the address"}`;
     els.turnStatus.textContent = isWaiting()
-      ? `Dropped ${dropped.length} off, ${where} — ${starDeltaText(delta)} when you end your turn`
-      : `Dropped off at ${b?.name ?? "the address"} — ${starDeltaText(delta)} when you end your turn`;
+      ? `Dropped ${dropped.length} off, ${where} — ${rating}`
+      : `Dropped off at ${b?.name ?? "the address"} — ${rating}`;
     return;
   }
   const car = myCar();
@@ -3770,6 +3970,7 @@ export const uberMania = {
     districtsState = um.districts ?? [];
     pilesState = um.piles ?? [];
     modeState = um.mode ?? "dice";
+    // The car's seat count is the server's to say — rising queue runs three.
     slotsState = um.slots ?? (modeState === "dice" ? MAX_PASSENGERS : STATIC_SLOTS);
     deckLeftState = um.deckLeft ?? null;
     preTimeState = !!um.preTime;
@@ -3779,6 +3980,21 @@ export const uberMania = {
       : DEFAULT_SLOT_GATES.slice();
     priorityStarState = Number.isFinite(um.priorityStar) ? um.priorityStar : PRIORITY_STAR;
     startStarsState = Number.isFinite(um.startStars) ? um.startStars : START_STARS;
+    scoringState = SCORINGS.includes(um.scoring) ? um.scoring : "tipStar";
+    ratingMaxState = Number.isFinite(um.ratingMax) ? um.ratingMax : RATING_MAX;
+    lastRankState = um.lastRank ?? null;
+    // A placing happens BETWEEN turns, with nothing on screen to announce it —
+    // so the chips that moved flash once, and the badge's tooltip keeps the
+    // detail for anyone who looks after the fact.
+    if (lastRankState && lastRankState.seq !== lastRankSeen) {
+      lastRankSeen = lastRankState.seq;
+      rankFlashSeq = lastRankState.seq;
+      clearTimeout(rankFlashTimer);
+      rankFlashTimer = setTimeout(() => {
+        rankFlashSeq = -1;
+        renderScoreboard();
+      }, 2600);
+    }
     // Waiting mode's stop signs have to be big enough to park a car on.
     document.body.classList.toggle("ub-waiting", modeState === "waiting");
     lastRollState = um.lastRoll ?? null;
@@ -3914,6 +4130,12 @@ export const uberMania = {
     slotGatesState = DEFAULT_SLOT_GATES.slice();
     priorityStarState = PRIORITY_STAR;
     startStarsState = START_STARS;
+    scoringState = "tipStar";
+    ratingMaxState = RATING_MAX;
+    lastRankState = null;
+    lastRankSeen = -1;
+    rankFlashSeq = -1;
+    clearTimeout(rankFlashTimer);
     winnerState = null;
     timeState = 1;
     sectionState = "morning";
