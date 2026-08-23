@@ -1335,3 +1335,104 @@ body.ub-mode .tm-scoreboard .tm-score-turn {
     width: 148px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   The POINTS WINDOW — every number Rising Queue pays, in one editable table.
+   It borrows the results overlay's shape (a dark card floated over the board)
+   but sits BELOW it in the stack: if a game finishes with this window open, the
+   final score is the thing you want to be looking at.
+   --------------------------------------------------------------------------- */
+.ub-points {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 9, 14, 0.72);
+}
+
+.ub-points-card {
+  width: min(94vw, 460px);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 20px 24px 18px;
+  border-radius: 16px;
+  background: rgba(14, 18, 25, 0.99);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.ub-points-card h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.ub-pts-sub {
+  margin: 0 0 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(240, 244, 250, 0.55);
+}
+
+.ub-pts-title {
+  margin: 16px 0 7px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  color: rgba(240, 214, 138, 0.8);
+}
+
+/* Label + box on the left, what it's for on the right. The label carries the
+   input so clicking anywhere on it focuses the number. */
+/* A FIXED label column, not `auto`: each section is its own grid, so an auto
+   column let the three of them size independently and the number boxes came out
+   in three different places down the card. */
+.ub-pts-grid {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  gap: 5px 12px;
+  align-items: center;
+}
+
+.ub-pts-k {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ub-pts-input {
+  width: 52px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.35);
+  color: #f0f4fa;
+  font: inherit;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.ub-pts-input:focus {
+  outline: none;
+  border-color: #f0d68a;
+  box-shadow: 0 0 0 2px rgba(240, 214, 138, 0.25);
+}
+
+.ub-pts-note {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: rgba(240, 244, 250, 0.5);
+}
+
+.ub-pts-foot {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+}

@@ -140,6 +140,8 @@
 //     districts is 5 and each district you're a regular in is 5.
 //   * The fares are the only points on screen while the game runs; every
 //     driver's running total sits beside their name.
+import fs from "fs";
+import { fileURLToPath } from "url";
 import {
   generateCityMap, randomizeOctagons, setBlankLights, deriveSpots, collectSegments
 } from "../traffic-time/map.js";
@@ -339,9 +341,38 @@ const ERRAND_ANNOY_STEP = 0.5;
 // steps grow (2, 3, 3, 3, 4, 5) so the set is worth committing to without the
 // last one being worth a third of the game the way squaring made it.
 const ERRAND_LADDER = [0, 2, 5, 8, 11, 15, 20];
-// Time stones are far tighter here: the clock is the ONLY way to turn a red
-// green, and a red you can't turn green costs you a whole turn sitting on it.
-const WAITING_START_STONES = 4;
+// TIME STONES, the clock's currency, and where waiting mode's supply of them
+// comes from. All three are the table's (`settings.stones`, edited in the Points
+// window) because the whole ruleset is downstream of them: an hour costs a stone
+// and the hour is the only thing that turns a red green, so a table that is
+// short of stones is a table that cannot move.
+//
+// WAIT is the one worth thinking about. Sitting at a red is a turn you didn't
+// drive, and paying for it turns dead time into the very currency that opens
+// the light — so a driver stuck at a red is saving up to get through it.
+const STONES_DEFAULT = {
+  start: 4,   // what everyone opens with (waiting mode; the others use settings.startingTimeStones)
+  chill: 6,   // a chill fare, the moment you take them
+  wait: 1     // per drive that ends stopped at a red
+};
+const STONES_MAX = { start: 40, chill: 20, wait: 10 };
+
+// One stones table off the wire, merged over `base` so a partial or malformed
+// message can only change the fields it got right — same contract as
+// normalizeRisePoints, and for the same reason.
+function normalizeStones(raw, base = STONES_DEFAULT) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const b = base && typeof base === "object" ? base : STONES_DEFAULT;
+  const whole = (k) => {
+    const n = Math.round(Number(src[k]));
+    const fallback = b[k] !== undefined ? b[k] : STONES_DEFAULT[k];
+    return Number.isFinite(n) ? Math.max(0, Math.min(STONES_MAX[k], n)) : fallback;
+  };
+  return { start: whole("start"), chill: whole("chill"), wait: whole("wait") };
+}
+
+// Kept for the older rulesets, which don't offer the setting.
+const WAITING_START_STONES = STONES_DEFAULT.start;
 
 // --- STAR-RANK scoring ------------------------------------------------------
 // The second way to score waiting mode (`settings.scoring`), and the deeper
@@ -367,14 +398,67 @@ const WAITING_START_STONES = 4;
 // an angry passenger pays a point less than a happy one in the same seat
 // (3/2/1). So a full car doesn't forbid an errand, it just makes it dear.
 const RISE_SLOTS = 3;                // three seats in the car, not four
-const RISE_FARE = [4, 3, 2];         // what each seat pays, front of the queue first
-const RISE_ANGRY_STEP = 1;           // ...and what an angry passenger pays less
-// The errand ladder climbs by 2, 3, 3, 4, 4, 5 — the whole six is 21, and
-// unlike the fares it's cashed at the END.
-const RISE_ERRAND_LADDER = [0, 2, 5, 8, 12, 16, 21];
-const RISE_TIP_BONUS = 1;            // per tip fare, at the end
-const RISE_ALL_DISTRICTS_BONUS = 5;
-const RISE_REGULAR_BONUS = 5;
+
+// EVERY NUMBER RISING QUEUE PAYS, in one place, because the table owns all of
+// them (`settings.risePoints`, edited through the Points window). These are the
+// defaults, not the rules — nothing outside `risePoints(room)` should read them.
+//
+// None of it is part of the DEAL: a fare already delivered keeps what it paid,
+// and everything else is cashed at the end, so changing any of these takes
+// effect where the table sits and the game plays on.
+const RISE_POINTS_DEFAULT = {
+  // What each seat pays, front of the queue first. One entry per seat.
+  fares: [4, 3, 2],
+  // What an angry passenger pays LESS, wherever they're sitting.
+  angry: 1,
+  // What a finished set of errands pays, for one through six. Climbs by
+  // 2, 3, 3, 4, 4, 5 — cashed at the END, unlike the fares.
+  errands: [2, 5, 8, 12, 16, 21],
+  tip: 1,             // per tip fare delivered, at the end
+  allDistricts: 5,    // a fare into every district
+  regular: 5,         // per district you're a regular in
+  regularRides: 3     // ...and how many rides there makes you one
+};
+// What the Points window may set each of them to. A ceiling only, so a slip of
+// the keyboard can't put a fare in the thousands.
+const RISE_POINTS_MAX = {
+  fares: 20, angry: 10, errands: 99, tip: 20,
+  allDistricts: 50, regular: 50, regularRides: 10
+};
+
+// One editable points table off the wire, merged over `base` so a partial or
+// malformed message can only ever change the fields it got right. Whole numbers
+// throughout — this is a board game, and half a point isn't a thing.
+//
+// BASE MATTERS. Reading the stored setting, it's the defaults, which fill in
+// anything the table never set. Handling a MESSAGE it must be what the table is
+// playing with right now, or a stale client sending one bad field would quietly
+// wipe the rest of somebody's tuning back to standard.
+function normalizeRisePoints(raw, base = RISE_POINTS_DEFAULT) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const b = base && typeof base === "object" ? base : RISE_POINTS_DEFAULT;
+  const whole = (v, max, fallback) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : fallback;
+  };
+  const list = (v, fallback, max) => {
+    if (!Array.isArray(v) || v.length !== fallback.length) return fallback.slice();
+    return v.map((x, i) => whole(x, max, fallback[i]));
+  };
+  const fall = (k) => (b[k] !== undefined ? b[k] : RISE_POINTS_DEFAULT[k]);
+  const out = {
+    fares: list(src.fares, fall("fares"), RISE_POINTS_MAX.fares),
+    errands: list(src.errands, fall("errands"), RISE_POINTS_MAX.errands),
+    angry: whole(src.angry, RISE_POINTS_MAX.angry, fall("angry")),
+    tip: whole(src.tip, RISE_POINTS_MAX.tip, fall("tip")),
+    allDistricts: whole(src.allDistricts, RISE_POINTS_MAX.allDistricts, fall("allDistricts")),
+    regular: whole(src.regular, RISE_POINTS_MAX.regular, fall("regular")),
+    regularRides: whole(src.regularRides, RISE_POINTS_MAX.regularRides, fall("regularRides"))
+  };
+  // A regular has to be at least one ride, or every district counts for free.
+  out.regularRides = Math.max(1, out.regularRides);
+  return out;
+}
 
 const SCORINGS = ["tipStar", "starRank", "risingQueue"];
 const RANK_RATING_MAX = 8;
@@ -401,9 +485,15 @@ const BASE_SETTINGS = {
   // MULTI-MOVE: when on, dropping someone off or running an errand no longer
   // ends the drive — only a red light does. Nothing else about them changes.
   multiMove: false,
-  // How waiting mode is SCORED: "tipStar" (tips multiply your final rating) or
-  // "starRank" (the rating is placed at every day's end). See SCORINGS.
-  scoring: "tipStar",
+  // How waiting mode is SCORED — see SCORINGS. Rising queue is the ruleset in
+  // play (user's call, 2026-08-20); the two star scorings are behind the button.
+  scoring: "risingQueue",
+  // Every number rising queue pays, all of it the table's to set through the
+  // Points window. Null means "the defaults" — see RISE_POINTS_DEFAULT.
+  risePoints: null,
+  // Where waiting mode's time stones come from. Null means "the defaults" —
+  // see STONES_DEFAULT.
+  stones: null,
   // What waiting mode's pickup slots ask for, one entry per slot — see
   // normalizeGates.
   slotGates: DEFAULT_SLOT_GATES.slice(),
@@ -424,6 +514,51 @@ const BASE_SETTINGS = {
 };
 
 const cloneSettings = (s) => JSON.parse(JSON.stringify(s));
+
+// ---------------------------------------------------------------------------
+// SAVED DEFAULTS. A table tuned on a local run can be kept: the whole settings
+// object is written next to this file and becomes what every new table opens
+// with. Saving is for LOCAL playtesting only — a hosted instance has an
+// ephemeral disk, so the button would be a lie. Render sets RENDER in every
+// service; UBER_MANIA_SAVES=on/off forces it either way.
+const SETTINGS_FILE = fileURLToPath(new URL("./saved-settings.json", import.meta.url));
+const savingEnabled = process.env.UBER_MANIA_SAVES === "on" ||
+  (process.env.UBER_MANIA_SAVES !== "off" && !process.env.RENDER);
+
+// Only keys the game actually has, so a stale or hand-edited file can't smuggle
+// anything in, and the shape of each one is re-derived rather than trusted.
+function sanitizeSettings(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const out = {};
+  for (const key of Object.keys(BASE_SETTINGS)) {
+    if (raw[key] !== undefined) out[key] = raw[key];
+  }
+  if (!MODES.includes(out.mode)) delete out.mode;
+  if (!SCORINGS.includes(out.scoring)) delete out.scoring;
+  if (out.slotGates !== undefined) {
+    const gates = normalizeGates(out.slotGates);
+    if (gates) out.slotGates = gates; else delete out.slotGates;
+  }
+  if (out.risePoints != null) out.risePoints = normalizeRisePoints(out.risePoints);
+  if (out.stones != null) out.stones = normalizeStones(out.stones);
+  return out;
+}
+
+// Reading is always on: a tuned file committed to the repo is what the hosted
+// game should open with too. Only WRITING is local-only.
+function loadSavedDefaults() {
+  try {
+    return sanitizeSettings(JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8")));
+  } catch {
+    return null; // no file, or a broken one: the built-in numbers stand
+  }
+}
+
+// What a new table opens with: the built-in numbers, with any saved ones over
+// the top. Reassigned by the save and forget handlers so a table dealt after
+// one picks the change up without a restart.
+let tableDefaults = { ...cloneSettings(BASE_SETTINGS), ...(loadSavedDefaults() ?? {}) };
+let defaultsSaved = loadSavedDefaults() != null;
 
 function shuffle(arr) {
   const a = arr.slice();
@@ -613,17 +748,29 @@ export function createUberManiaGame({ io, rooms }) {
   const ratingCap = (room) =>
     (isRank(room) ? RANK_RATING_MAX : S(room).ratingMax ?? RATING_MAX);
   // What a finished set of errands pays, per scoring rule.
+  // Every number rising queue pays, as this table has set them. The ONE way to
+  // read them — nothing should touch RISE_POINTS_DEFAULT directly.
+  const risePoints = (room) => normalizeRisePoints(S(room).risePoints);
+  // Where this table's time stones come from — the ONE way to read them.
+  const stoneRules = (room) => normalizeStones(S(room).stones);
   const ladderOf = (room, n) => {
     const L = isRank(room) ? RANK_ERRAND_LADDER
-      : isRise(room) ? RISE_ERRAND_LADDER
+      : isRise(room) ? [0, ...risePoints(room).errands]
       : ERRAND_LADDER;
     return L[Math.max(0, Math.min(L.length - 1, n))];
   };
-  // What the seat a passenger is riding in pays, once they're angry or not.
-  // Only rising queue prices a fare this way.
-  const riseFare = (tile) =>
-    Math.max(0, (RISE_FARE[tile.slot] ?? RISE_FARE[RISE_FARE.length - 1]) -
-      (tile.angry ? RISE_ANGRY_STEP : 0));
+  // What the seat a passenger is riding in pays, angry or not. Only rising
+  // queue prices a fare this way. A seat past the end of the list — which the
+  // table can't make happen, but a stale tile could — pays the last one.
+  const riseFare = (room, tile) => {
+    const pts = risePoints(room);
+    const seat = pts.fares[tile.slot] ?? pts.fares[pts.fares.length - 1] ?? 0;
+    return Math.max(0, seat - (tile.angry ? pts.angry : 0));
+  };
+  // How many rides in one district make you a regular there. Only rising queue
+  // lets the table move it.
+  const regularRides = (room) =>
+    (isRise(room) ? risePoints(room).regularRides : REGULAR_RIDES);
 
   // May this player still move the hand? One change a turn either way; waiting
   // mode lets it share a turn with taking a passenger; and PRE-TIME, when on,
@@ -901,7 +1048,7 @@ export function createUberManiaGame({ io, rooms }) {
         color: room.uberMania.districts[home].color,
         name: i >= humans ? `AI ${i - humans + 1}` : humans === 1 ? "You" : `P${i + 1}`,
         isAI: i >= humans,
-        timeStones: isWaiting(room) ? WAITING_START_STONES : settings.startingTimeStones,
+        timeStones: isWaiting(room) ? stoneRules(room).start : settings.startingTimeStones,
         rating: startingRating(room),
         points: 0,             // banked at each day's end
         passengers: [],        // { id, slot, district, bonus, loc, done }
@@ -918,6 +1065,7 @@ export function createUberManiaGame({ io, rooms }) {
         fares: 0,              // rising queue: what the seats have paid so far
         angryDropped: 0,       // rising queue: angry passengers delivered
         redsWaited: 0,         // waiting: turns that ended sat at a red
+        stonesWaited: 0,       // ...and the stones that sitting there paid
         clockChanges: 0,       // times this driver moved the hand
         stonesSpent: 0         // stones burned on the clock, all game
       };
@@ -1142,7 +1290,9 @@ export function createUberManiaGame({ io, rooms }) {
     if (tile.bonus === "stones") {
       player.timeStones = (player.timeStones ?? 0) + (S(room).stoneTileReward ?? STONE_TILE_REWARD);
     } else if (tile.bonus === "chill") {
-      player.timeStones = (player.timeStones ?? 0) + CHILL_STONES;
+      // Waiting mode's tables own this number; the older ones don't offer it.
+      player.timeStones = (player.timeStones ?? 0) +
+        (isWaiting(room) ? stoneRules(room).chill : CHILL_STONES);
     }
     if (isWaiting(room)) slideRiver(room, pileIdx);
     ts.acted = true;
@@ -1289,7 +1439,16 @@ export function createUberManiaGame({ io, rooms }) {
     // pulls away along it too. Nothing else on the board records it — a kerb
     // has its own angle — so if the mover didn't report one, keep the old.
     if (Number.isFinite(facing)) truck.facing = facing;
-    if (endLight != null && player) player.redsWaited = (player.redsWaited ?? 0) + 1;
+    if (endLight != null && player) {
+      player.redsWaited = (player.redsWaited ?? 0) + 1;
+      // WAITING PAYS. The turn you spend sitting at a red hands you stones,
+      // which are what will eventually turn it green.
+      const paid = stoneRules(room).wait;
+      if (paid) {
+        player.timeStones = (player.timeStones ?? 0) + paid;
+        player.stonesWaited = (player.stonesWaited ?? 0) + paid;
+      }
+    }
     ts.acted = true;
     // A TURN HOLDS AS MANY DRIVES AS YOU LIKE. Only two things close it: a red
     // light, because you are stopped there until a later turn drives through
@@ -1416,7 +1575,7 @@ export function createUberManiaGame({ io, rooms }) {
       // both priced where they SAT — the queue doesn't close up until the loop
       // below is done — so the front one is still the front one.
       if (rise) {
-        const fare = riseFare(t);
+        const fare = riseFare(room, t);
         player.points = (player.points ?? 0) + fare;
         player.fares = (player.fares ?? 0) + fare;
         if (t.angry) player.angryDropped = (player.angryDropped ?? 0) + 1;
@@ -1504,18 +1663,19 @@ export function createUberManiaGame({ io, rooms }) {
     const allDistricts = spread >= DISTRICT_COUNT
       ? (rank
         ? RANK_ALL_DISTRICTS_BONUS
-        : rise ? RISE_ALL_DISTRICTS_BONUS
+        : rise ? risePoints(room).allDistricts
         : q ? STATIC_ALL_DISTRICTS_BONUS : s.allDistrictsBonus ?? ALL_DISTRICTS_BONUS)
       : 0;
     // Being a regular counts everywhere in the queue modes — static has no home
     // district at all, and waiting mode doesn't waive yours.
     let regulars = 0;
+    const needRides = regularRides(room);
     (p.ridesByDistrict ?? []).forEach((n, d) => {
-      if ((q || d !== p.home) && n >= REGULAR_RIDES) regulars += 1;
+      if ((q || d !== p.home) && n >= needRides) regulars += 1;
     });
     const regularPoints = regulars *
       (rank ? RANK_REGULAR_BONUS
-        : rise ? RISE_REGULAR_BONUS
+        : rise ? risePoints(room).regular
         : q ? STATIC_REGULAR_BONUS : s.regularBonus ?? REGULAR_BONUS);
     const errandsDone = p.errandsDone ?? 0;
     const errandsLeft = isStatic(room) ? 0 : (p.errands ?? []).length;
@@ -1534,7 +1694,7 @@ export function createUberManiaGame({ io, rooms }) {
     const tips = q ? p.tipsDelivered ?? 0 : 0;
     const tipPoints = rank
       ? tips * (RANK_TIP_POINTS - RANK_RIDE_POINTS)
-      : rise ? tips * RISE_TIP_BONUS
+      : rise ? tips * risePoints(room).tip
       : tips * Math.floor(rating);
     const daily = p.points ?? 0;
     return {
@@ -1558,6 +1718,7 @@ export function createUberManiaGame({ io, rooms }) {
       skipped: p.skipped ?? 0,
       annoyed: p.annoyed ?? 0,
       redsWaited: p.redsWaited ?? 0,
+      stonesWaited: p.stonesWaited ?? 0,
       clockChanges: p.clockChanges ?? 0,
       stonesSpent: p.stonesSpent ?? 0,
       errandsDone,
@@ -1615,7 +1776,15 @@ export function createUberManiaGame({ io, rooms }) {
         // Does this table have a star rating at all? Rising queue doesn't, and
         // the meter, the slot gates and the three star dials all read this.
         hasRating: hasRating(room),
-        seatFares: isRise(room) ? RISE_FARE.slice() : null,
+        // The whole editable points table, so the client can label every tile,
+        // tag and column with what this table actually pays.
+        risePoints: isRise(room) ? risePoints(room) : null,
+        // Where the time stones come from, and whether this run can keep the
+        // table's numbers as the defaults for the next one.
+        stones: stoneRules(room),
+        canSave: savingEnabled,
+        defaultsSaved,
+        regularRides: regularRides(room),
         // The meter's ceiling is the scoring rule's to set (8 under star-rank),
         // so it rides on the wire rather than off `settings.ratingMax`.
         ratingMax: ratingCap(room),
@@ -2177,8 +2346,8 @@ export function createUberManiaGame({ io, rooms }) {
       if (rise) {
         // No stars to weigh: the seat they're in is exactly what they pay, and
         // it's paid now. Nothing else about a fare is worth anything here.
-        v = riseFare(t);
-        if (t.bonus === "tip") v += RISE_TIP_BONUS;
+        v = riseFare(room, t);
+        if (t.bonus === "tip") v += risePoints(room).tip;
         if (t.bonus === "rush") rushByBid.set(t.loc, (rushByBid.get(t.loc) ?? 0) + 1);
       } else if (stat) {
         // The queue is the whole decision: the front fare pays a star, anyone
@@ -2202,7 +2371,7 @@ export function createUberManiaGame({ io, rooms }) {
         const spread = (player.ridesByDistrict ?? []).filter((n) => n > 0).length;
         v += spread >= DISTRICT_COUNT - 1 ? allPts : 0.35;
       }
-      if ((stat || t.district !== player.home) && ridesHere === REGULAR_RIDES - 1) {
+      if ((stat || t.district !== player.home) && ridesHere === regularRides(room) - 1) {
         v += regPts;
       }
       // A tile off the board is a number back on it — worth real points when
@@ -2240,7 +2409,7 @@ export function createUberManiaGame({ io, rooms }) {
       // still aboard — so it needs no fudge factor at all, unlike the star
       // version, which prices a currency the AI can only guess the worth of.
       const annoyCost = rise
-        ? waiting.filter((t) => !t.angry).length * RISE_ANGRY_STEP
+        ? waiting.filter((t) => !t.angry).length * risePoints(room).angry
         : waiting.length * ERRAND_ANNOY_STEP * sv * 0.5;
       const errandValue = isWaiting(room)
         ? perErrand * URGENCY - annoyCost
@@ -2333,7 +2502,7 @@ export function createUberManiaGame({ io, rooms }) {
       }
       const rides = player.ridesByDistrict?.[top.district] ?? 0;
       if (rides === 0) v += 0.5;
-      if ((stat || top.district !== player.home) && rides === REGULAR_RIDES - 1) v += 0.8;
+      if ((stat || top.district !== player.home) && rides === regularRides(room) - 1) v += 0.8;
       if (!best || v > best.v) best = { i, v };
     });
     return best ? best.i : -1;
@@ -2517,7 +2686,8 @@ export function createUberManiaGame({ io, rooms }) {
     id: "uber-mania",
 
     createRoomState() {
-      const settings = cloneSettings(BASE_SETTINGS);
+      // Whatever a local run last saved, or the built-in numbers.
+      const settings = cloneSettings(tableDefaults);
       const state = {
         uberMania: {
           map: makeMap(),
@@ -2644,6 +2814,9 @@ export function createUberManiaGame({ io, rooms }) {
           // second must put the turn back to "already acted", not to untouched.
           prevActed: !!ts.acted,
           prevCarryOn: !!ts.carryOn,
+          // Stopping at a red PAYS now, so an undone drive has to unpay it.
+          prevStones: player?.timeStones ?? 0,
+          prevStonesWaited: player?.stonesWaited ?? 0,
           prevDicePool: ts.dicePool ?? 0,
           prevPassengers: (player?.passengers ?? []).map((t) => ({ ...t })),
           prevErrands: (player?.errands ?? []).slice(),
@@ -2722,6 +2895,67 @@ export function createUberManiaGame({ io, rooms }) {
         room.uberMania.settings = { ...S(room), scoring };
         setupBoard(room);
         room.uberMania.map.seed = `${room.uberMania.map.seed}-sc${scoring}-${Date.now()}`;
+        emitState(roomId, room);
+      });
+
+      // The stones half of the Points window. Only the OPENING count is part
+      // of the deal, and re-dealing the whole table to change it would throw
+      // away the game in progress — so this pays out where it stands too, and
+      // the new opening count lands on the next table.
+      socket.on("uber_mania_set_stones", ({ roomId, stones } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        const next = normalizeStones(stones, stoneRules(room));
+        if (JSON.stringify(next) === JSON.stringify(stoneRules(room))) return;
+        room.uberMania.settings = { ...S(room), stones: next };
+        emitState(roomId, room);
+      });
+
+      // Keep this table's numbers as what every new one opens with. Local runs
+      // only — see savingEnabled.
+      socket.on("uber_mania_save_defaults", ({ roomId } = {}) => {
+        if (!savingEnabled) return;
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        const next = sanitizeSettings(S(room));
+        if (!next) return;
+        try {
+          fs.writeFileSync(SETTINGS_FILE, JSON.stringify(next, null, 2));
+        } catch (err) {
+          console.error("uber-mania: failed to save defaults:", err.message);
+          return;
+        }
+        tableDefaults = { ...cloneSettings(BASE_SETTINGS), ...next };
+        defaultsSaved = true;
+        emitState(roomId, room);
+      });
+
+      // ...and put the built-in numbers back, so a bad save is never stuck.
+      socket.on("uber_mania_clear_defaults", ({ roomId } = {}) => {
+        if (!savingEnabled) return;
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        try {
+          fs.rmSync(SETTINGS_FILE, { force: true });
+        } catch (err) {
+          console.error("uber-mania: failed to clear defaults:", err.message);
+          return;
+        }
+        tableDefaults = cloneSettings(BASE_SETTINGS);
+        defaultsSaved = false;
+        emitState(roomId, room);
+      });
+
+      // The POINTS WINDOW: every number rising queue pays. None of it is part
+      // of the deal — a fare already delivered keeps what it paid and the rest
+      // is cashed at the end — so this never re-deals, whatever it changes.
+      socket.on("uber_mania_set_rise_points", ({ roomId, points } = {}) => {
+        const room = playerRoom(socket, roomId);
+        if (!room) return;
+        // Merged over what the table is playing with, not over the defaults.
+        const next = normalizeRisePoints(points, risePoints(room));
+        if (JSON.stringify(next) === JSON.stringify(risePoints(room))) return;
+        room.uberMania.settings = { ...S(room), risePoints: next };
         emitState(roomId, room);
       });
 
@@ -2838,6 +3072,8 @@ export function createUberManiaGame({ io, rooms }) {
           ts.acted = !!undo.prevActed;
           ts.carryOn = !!undo.prevCarryOn;
           ts.dicePool = undo.prevDicePool;
+          if (undo.prevStones != null) player.timeStones = undo.prevStones;
+          if (undo.prevStonesWaited != null) player.stonesWaited = undo.prevStonesWaited;
           player.passengers = undo.prevPassengers ?? player.passengers;
           player.errandsDone = undo.prevErrandsDone ?? player.errandsDone;
           if (undo.prevRating != null) player.rating = undo.prevRating;

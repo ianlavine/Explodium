@@ -56,9 +56,20 @@ const BONUS_NAME = { chill: "Chill", tip: "Tip", rush: "Rush" };
 // on your final rating under tip-x-star, a flat point more than an ordinary
 // fare under star-rank.
 const bonusText = (kind) => {
+  // A chill fare's stones are the table's now, so the promise has to read them
+  // rather than the number this file shipped with.
+  if (kind === "chill" && isWaiting()) {
+    const n = stonePts().chill;
+    return n ? `${n} time stone${n === 1 ? "" : "s"} the moment you take them` : "no time stones at this table";
+  }
   if (kind !== "tip") return BONUS_TEXT[kind] ?? "";
   if (isRank()) return "worth 3 points at the end instead of the usual 2";
-  if (isRise()) return "a point more at the end, on top of whatever seat they rode in";
+  if (isRise()) {
+    const t = risePointsState.tip ?? 0;
+    return t
+      ? `${t} more at the end, on top of whatever seat they rode in`
+      : "worth nothing extra at this table";
+  }
   return BONUS_TEXT.tip;
 };
 
@@ -94,14 +105,31 @@ const SCORING_BLURB = {
 };
 const RANK_RATING_MAX = 8;
 const ERRAND_LADDER_RANK = [0, 1, 3, 5, 8, 11, 15];
-// RISING QUEUE. What each seat pays, front of the queue first; an angry
-// passenger pays one less wherever they're sitting. The SEAT COUNT isn't here
-// on purpose — it comes over the wire as `um.slots`, so it can't drift.
-// (Server: RISE_FARE / RISE_ANGRY_STEP / RISE_ERRAND_LADDER.)
-const RISE_FARE = [4, 3, 2];
-const RISE_ANGRY_STEP = 1;
-const ERRAND_LADDER_RISE = [0, 2, 5, 8, 12, 16, 21];
-const RISE_TIP_BONUS = 1;
+// RISING QUEUE. Every number it pays is the TABLE's, set in the Points window
+// and sent down whole as `um.risePoints` — this is only the fallback for the
+// moment before the first state lands. The SEAT COUNT isn't here on purpose
+// either; it arrives as `um.slots`, so it can't drift.
+// (Server: RISE_POINTS_DEFAULT — keep in sync.)
+const RISE_POINTS_DEFAULT = {
+  fares: [4, 3, 2],
+  angry: 1,
+  errands: [2, 5, 8, 12, 16, 21],
+  tip: 1,
+  allDistricts: 5,
+  regular: 5,
+  regularRides: 3
+};
+// What each row of the Points window is called, in the order it's shown.
+// Seats and errands are lists, so they get a row apiece.
+const RISE_POINTS_MAX = {
+  fares: 20, angry: 10, errands: 99, tip: 20,
+  allDistricts: 50, regular: 50, regularRides: 10
+};
+
+// Where waiting mode's TIME STONES come from — the table's, set in the same
+// window. (Server: STONES_DEFAULT / STONES_MAX — keep in sync.)
+const STONES_DEFAULT = { start: 4, chill: 6, wait: 1 };
+const STONES_MAX = { start: 40, chill: 20, wait: 10 };
 
 // The three rulesets, in the order the Mode button walks through them.
 // (Server: MODES — keep in sync.)
@@ -214,7 +242,12 @@ let multiMoveState = false; // table rule: not even a drop-off ends the drive
 let slotGatesState = DEFAULT_SLOT_GATES.slice();
 let priorityStarState = PRIORITY_STAR; // what the front of the queue pays
 let startStarsState = START_STARS;     // what everyone opens on
-let scoringState = "tipStar";          // what a star is FOR — see SCORING_BLURB
+let scoringState = "risingQueue";      // how the table scores — see SCORING_BLURB
+let risePointsState = { ...RISE_POINTS_DEFAULT }; // what rising queue pays
+let stonesState = { ...STONES_DEFAULT };         // where time stones come from
+let canSaveState = false;                        // local run: the table can be kept
+let defaultsSavedState = false;                  // ...and something already is
+let regularRidesState = RISE_POINTS_DEFAULT.regularRides;
 let ratingMaxState = RATING_MAX;       // the meter's ceiling, set by the scoring
 let lastRankState = null;              // the night's placings, for the flash
 let lastRankSeen = -1;                 // the last placing this client has shown
@@ -370,12 +403,16 @@ const hasErrands = () => modeState !== "static";
 // ladder. (Server: ERRAND_LADDER / RANK_ERRAND_LADDER.)
 const ERRAND_LADDER = [0, 2, 5, 8, 11, 15, 20];
 const errandLadder = (n) => {
-  const L = isRank() ? ERRAND_LADDER_RANK : isRise() ? ERRAND_LADDER_RISE : ERRAND_LADDER;
+  const L = isRank() ? ERRAND_LADDER_RANK
+    : isRise() ? [0, ...(risePointsState.errands ?? RISE_POINTS_DEFAULT.errands)]
+    : ERRAND_LADDER;
   return L[Math.max(0, Math.min(L.length - 1, n))];
 };
-// Rising queue: what the seat at `slot` pays, given the rider's mood.
-const seatFare = (slot, angry) =>
-  Math.max(0, (RISE_FARE[slot] ?? RISE_FARE[RISE_FARE.length - 1]) - (angry ? RISE_ANGRY_STEP : 0));
+// Rising queue: what the seat at `slot` pays this table, given the rider's mood.
+const seatFare = (slot, angry) => {
+  const f = risePointsState.fares ?? RISE_POINTS_DEFAULT.fares;
+  return Math.max(0, (f[slot] ?? f[f.length - 1] ?? 0) - (angry ? risePointsState.angry ?? 0 : 0));
+};
 const maxPassengers = () => slotsState || (queueMode() ? STATIC_SLOTS : MAX_PASSENGERS);
 
 // Waiting mode parks cars ON the stop signs, so they have to be big enough to
@@ -2619,7 +2656,7 @@ function playerPeek(p, seat) {
     const isHome = hasErrands() && d.id === p.home;
     const counts = queueMode() || d.id !== p.home;
     if (n > 0) cell.classList.add("ub-peek-cell-on");
-    if (counts && n >= 3) cell.classList.add("ub-peek-cell-regular");
+    if (counts && n >= regularRidesState) cell.classList.add("ub-peek-cell-regular");
     if (isHome) cell.classList.add("ub-peek-cell-home");
     cell.title = `${d.name}${isHome ? " (home)" : ""} — ${n} ride${n === 1 ? "" : "s"}`;
     spread.appendChild(cell);
@@ -2706,13 +2743,13 @@ function deliveryPeek(player) {
       s.style.background = d.color;
       dots.appendChild(s);
     }
-    // The regular bonus wants three, so show what's still missing.
-    for (let i = n; i < 3; i += 1) {
+    // The regular bonus wants a set number of rides, so show what's missing.
+    for (let i = n; i < regularRidesState; i += 1) {
       const s = document.createElement("span");
       s.className = "ub-mine-dot ub-mine-dot-open";
       dots.appendChild(s);
     }
-    if (n >= 3) dots.classList.add("ub-mine-regular");
+    if (n >= regularRidesState) dots.classList.add("ub-mine-regular");
     grid.append(name, dots);
   });
   card.appendChild(grid);
@@ -2725,7 +2762,7 @@ function deliveryPeek(player) {
       ? isRank()
         ? `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — worth 3 each at the end instead of 2`
         : isRise()
-        ? `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — ${n * RISE_TIP_BONUS} more at the end, on top of the seats they rode in`
+        ? `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — ${n * (risePointsState.tip ?? 0)} more at the end, on top of the seats they rode in`
         : `${BONUS_ICON.tip} ${n} tip${n === 1 ? "" : "s"} — ${n} × your full stars at the end`
       : `${BONUS_ICON.tip} No tip fares delivered yet`;
     card.appendChild(tips);
@@ -3303,6 +3340,194 @@ function removeActionBar() {
   document.querySelector(".game-footer .ub-actions")?.remove();
 }
 
+// ---------------------------------------------------------------------------
+// The POINTS WINDOW: every number rising queue pays, in one editable table.
+//
+// It's a window rather than more buttons on the settings bar because there are
+// eleven of them and they only make sense read together — the seat ladder
+// against the anger it loses to, the errand ladder against a night's fares.
+// Nothing in here re-deals: a fare already delivered keeps what it paid, and
+// everything else is cashed at the end, so an edit lands where the table sits.
+// ---------------------------------------------------------------------------
+
+let pointsWindowOpen = false;
+
+// One row: a label, a number box, and the note that says what it's for.
+function pointsRow(grid, label, value, note, max, onChange) {
+  const k = document.createElement("label");
+  k.className = "ub-pts-k";
+  k.textContent = label;
+  const wrap = document.createElement("span");
+  wrap.className = "ub-pts-v";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.className = "ub-pts-input";
+  input.min = "0";
+  input.max = String(max);
+  input.step = "1";
+  input.value = String(value);
+  // Commit on change, not on every keystroke: typing "12" over a "4" goes
+  // through "1" on its way, and a table shouldn't flicker through it.
+  input.addEventListener("change", () => {
+    const n = Math.max(0, Math.min(max, Math.round(Number(input.value))));
+    input.value = String(Number.isFinite(n) ? n : value);
+    onChange(Number(input.value));
+  });
+  wrap.appendChild(input);
+  k.appendChild(wrap);
+  const n = document.createElement("span");
+  n.className = "ub-pts-note";
+  n.textContent = note;
+  grid.append(k, n);
+  return input;
+}
+
+function emitRisePoints(next) {
+  if (!app.roomId) return;
+  risePointsState = next;          // paint it now; the server confirms in a beat
+  socket.emit("uber_mania_set_rise_points", { roomId: app.roomId, points: next });
+  renderPointsWindow();
+}
+
+const risePts = () => ({ ...RISE_POINTS_DEFAULT, ...risePointsState });
+const stonePts = () => ({ ...STONES_DEFAULT, ...stonesState });
+
+function emitStones(next) {
+  if (!app.roomId) return;
+  stonesState = next;              // paint it now; the server confirms in a beat
+  socket.emit("uber_mania_set_stones", { roomId: app.roomId, stones: next });
+  renderPointsWindow();
+}
+
+function renderPointsWindow() {
+  els.gameBoard.querySelector(".ub-points")?.remove();
+  // Switching scoring closes it for good, rather than leaving it armed to pop
+  // open again the moment somebody switches back.
+  if (!isRise()) pointsWindowOpen = false;
+  if (!pointsWindowOpen) return;
+  const pts = risePts();
+
+  const overlay = document.createElement("div");
+  overlay.className = "ub-points";
+  const card = document.createElement("div");
+  card.className = "ub-points-card";
+
+  const h = document.createElement("h3");
+  h.textContent = "What this table pays";
+  card.appendChild(h);
+  const sub = document.createElement("p");
+  sub.className = "ub-pts-sub";
+  sub.textContent = "Every point Rising Queue pays, and where the time stones come from. Changing one takes effect now — fares already banked keep what they paid.";
+  card.appendChild(sub);
+
+  // --- the seats ---
+  card.appendChild(sectionTitle("THE QUEUE — paid as they get out"));
+  const seats = document.createElement("div");
+  seats.className = "ub-pts-grid";
+  pts.fares.forEach((v, i) => {
+    pointsRow(seats, i === 0 ? "Front seat" : `Seat ${i + 1}`, v,
+      i === 0 ? "The longest wait — the fare you want to be delivering"
+        : `${pts.angry ? `${Math.max(0, v - pts.angry)} if they're angry` : "same when angry"}`,
+      RISE_POINTS_MAX.fares,
+      (n) => { const f = pts.fares.slice(); f[i] = n; emitRisePoints({ ...pts, fares: f }); });
+  });
+  pointsRow(seats, "Angry costs", pts.angry,
+    "Off every fare who sat through one of your errands",
+    RISE_POINTS_MAX.angry, (n) => emitRisePoints({ ...pts, angry: n }));
+  card.appendChild(seats);
+
+  // --- the errands ---
+  card.appendChild(sectionTitle("ERRANDS — cashed at the end"));
+  const chores = document.createElement("div");
+  chores.className = "ub-pts-grid";
+  pts.errands.forEach((v, i) => {
+    const step = v - (i === 0 ? 0 : pts.errands[i - 1]);
+    pointsRow(chores, `${i + 1} errand${i ? "s" : ""}`, v,
+      i === 0 ? "The first one on its own" : `${step >= 0 ? "+" : ""}${step} on the one before`,
+      RISE_POINTS_MAX.errands,
+      (n) => { const e = pts.errands.slice(); e[i] = n; emitRisePoints({ ...pts, errands: e }); });
+  });
+  card.appendChild(chores);
+
+  // --- everything else ---
+  card.appendChild(sectionTitle("THE REST — cashed at the end"));
+  const rest = document.createElement("div");
+  rest.className = "ub-pts-grid";
+  pointsRow(rest, "Tip fare", pts.tip, `${BONUS_ICON.tip} each one delivered, on top of its seat`,
+    RISE_POINTS_MAX.tip, (n) => emitRisePoints({ ...pts, tip: n }));
+  pointsRow(rest, "All six districts", pts.allDistricts, "A fare delivered into every one",
+    RISE_POINTS_MAX.allDistricts, (n) => emitRisePoints({ ...pts, allDistricts: n }));
+  pointsRow(rest, "Regular", pts.regular, "Per district you're a regular in",
+    RISE_POINTS_MAX.regular, (n) => emitRisePoints({ ...pts, regular: n }));
+  pointsRow(rest, "...rides to be one", pts.regularRides, "How many fares into a district makes you a regular",
+    RISE_POINTS_MAX.regularRides, (n) => emitRisePoints({ ...pts, regularRides: Math.max(1, n) }));
+  card.appendChild(rest);
+
+  // --- the stones ---
+  // Not points at all, but the same kind of dial and the same window: an hour
+  // costs a stone, and the hour is the only thing that turns a red green.
+  const st = stonePts();
+  card.appendChild(sectionTitle("TIME STONES — the clock's money"));
+  const stones = document.createElement("div");
+  stones.className = "ub-pts-grid";
+  pointsRow(stones, "Everyone starts with", st.start,
+    "Lands on the next table dealt — this one keeps what it has",
+    STONES_MAX.start, (n) => emitStones({ ...st, start: n }));
+  pointsRow(stones, `${BONUS_ICON.chill} Chill fare pays`, st.chill,
+    "The moment you take them, not when they get out",
+    STONES_MAX.chill, (n) => emitStones({ ...st, chill: n }));
+  pointsRow(stones, "Waiting at a red pays", st.wait,
+    "Every drive that ends stopped at a stop light",
+    STONES_MAX.wait, (n) => emitStones({ ...st, wait: n }));
+  card.appendChild(stones);
+
+  const foot = document.createElement("div");
+  foot.className = "ub-pts-foot";
+  const reset = button("Reset to standard", "", "ghost-btn");
+  reset.addEventListener("click", () => {
+    emitStones({ ...STONES_DEFAULT });
+    emitRisePoints({ ...RISE_POINTS_DEFAULT });
+  });
+  // Local runs can keep the whole table — every setting, not just this window —
+  // as what the next game opens with.
+  if (canSaveState) {
+    const save = button("Save as default", "", "ghost-btn");
+    save.title = "Write this table's settings next to the game on disk, so every new game opens with them. Local runs only.";
+    save.addEventListener("click", () => {
+      if (!app.roomId) return;
+      socket.emit("uber_mania_save_defaults", { roomId: app.roomId });
+      save.textContent = "Saved";
+    });
+    foot.appendChild(save);
+    if (defaultsSavedState) {
+      const forget = button("Forget saved", "", "ghost-btn");
+      forget.title = "Throw the saved file away — new games go back to the numbers the game ships with.";
+      forget.addEventListener("click", () => {
+        if (!app.roomId) return;
+        socket.emit("uber_mania_clear_defaults", { roomId: app.roomId });
+      });
+      foot.appendChild(forget);
+    }
+  }
+  const close = button("Done", "", "ghost-btn");
+  close.addEventListener("click", () => { pointsWindowOpen = false; renderPointsWindow(); });
+  foot.append(reset, close);
+  card.appendChild(foot);
+
+  overlay.appendChild(card);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) { pointsWindowOpen = false; renderPointsWindow(); }
+  });
+  els.gameBoard.appendChild(overlay);
+}
+
+function sectionTitle(text) {
+  const t = document.createElement("div");
+  t.className = "ub-pts-title";
+  t.textContent = text;
+  return t;
+}
+
 // The settings bar, top of the right rail: a new city, a reshuffle of the
 // lights, how many AI share the table, and the animation speed.
 function renderControls() {
@@ -3377,6 +3602,14 @@ function renderControls() {
     sc.title = SCORING_BLURB_FOR();
     if (isRank()) sc.classList.add("ub-opt-on");
     bar.appendChild(sc);
+
+    // Rising queue is the only scoring whose numbers are the table's, so it's
+    // the only one with a Points window to open.
+    if (isRise()) {
+      const pts = button("Points…", "points");
+      pts.title = "Open the points table: what each seat in the queue pays, what an angry fare costs, and what errands, tips and the bonuses are worth. Nothing in there re-deals.";
+      bar.appendChild(pts);
+    }
   }
 
   // What the front of the queue pays, and what everyone opens on. Both belong
@@ -3493,6 +3726,10 @@ function renderControls() {
     }
     if (btn.dataset.action === "scoring") {
       socket.emit("uber_mania_set_scoring", { roomId: app.roomId, scoring: nextScoring() });
+    }
+    if (btn.dataset.action === "points") {
+      pointsWindowOpen = true;
+      renderPointsWindow();
     }
     if (btn.dataset.action === "mode") {
       moveMode = moveMode === "build" ? "auto" : "build";
@@ -3624,19 +3861,23 @@ const RANK_RESULT_COLUMNS = [
 ];
 
 // RISING QUEUE. The fares were paid seat by seat as the game went, so they come
-// first and everything after them is the end-of-game reckoning.
-const RISE_RESULT_COLUMNS = [
-  ["daily", "Fares", "Paid as each passenger got out: 4 for the front of the queue, then 3, then 2 — one less apiece if they were angry"],
-  ["errandPoints", "Errands", "What your finished errands pay: 2, 5, 8, 12, 16, 21 for one through six"],
-  ["tipPoints", "Tips", "One more for every tip fare delivered, on top of the seat they rode in"],
-  ["allDistricts", "All six", "Five for having driven a fare into every district"],
-  ["regularPoints", "Regular", "Five for every district you finished three rides in"]
-];
+// first and everything after them is the end-of-game reckoning. Built fresh
+// rather than declared, because every number in it is the table's to set.
+function riseResultColumns() {
+  const p = risePts();
+  return [
+    ["daily", "Fares", `Paid as each passenger got out: ${p.fares.join(", ")} by seat, front of the queue first${p.angry ? ` — ${p.angry} less apiece if they were angry` : ""}`],
+    ["errandPoints", "Errands", `What your finished errands pay: ${p.errands.join(", ")} for one through six`],
+    ["tipPoints", "Tips", `${p.tip} more for every tip fare delivered, on top of the seat they rode in`],
+    ["allDistricts", "All six", `${p.allDistricts} for having driven a fare into every district`],
+    ["regularPoints", "Regular", `${p.regular} for every district you finished ${p.regularRides} rides in`]
+  ];
+}
 
 const resultColumns = () =>
   (isRank()
     ? RANK_RESULT_COLUMNS
-    : isRise() ? RISE_RESULT_COLUMNS
+    : isRise() ? riseResultColumns()
     : isWaiting() ? WAITING_RESULT_COLUMNS : isStatic() ? STATIC_RESULT_COLUMNS : RESULT_COLUMNS);
 
 // How the night actually went, under the scoring: none of it is worth points,
@@ -3652,11 +3893,12 @@ function driveLog() {
 
   const cols = [
     ["redsWaited", "Reds waited at", "Turns that ended sat at a red light, going nowhere"],
+    ["stonesWaited", "Stones from waiting", "Time stones the waiting itself paid out"],
     ["clockChanges", "Clock changes", "Times this driver pushed the hand round"],
     ["stonesSpent", "Stones spent", "Time stones burned on the clock, all game"]
   ];
   // Only waiting mode makes you sit at reds; the others charge for them instead.
-  const live = isWaiting() ? cols : cols.slice(1);
+  const live = isWaiting() ? cols : cols.slice(2);
 
   const table = document.createElement("table");
   table.className = "ub-results-table ub-log-table";
@@ -3892,8 +4134,13 @@ function setTurnStatus() {
       return;
     }
     if (!dropped.length) {
+      // Waiting pays, so say what the wait was worth rather than only that it
+      // happened — it's the reason to be glad about a red.
+      const paid = isWaiting() ? stonePts().wait : 0;
       els.turnStatus.textContent = atLight
-        ? "Stopped at the red — end your turn and drive through it on your next one"
+        ? paid
+          ? `Stopped at the red — +${paid}⬟ for the wait; drive through it on your next turn`
+          : "Stopped at the red — end your turn and drive through it on your next one"
         : "Parked — end your turn";
       return;
     }
@@ -3980,7 +4227,14 @@ export const uberMania = {
       : DEFAULT_SLOT_GATES.slice();
     priorityStarState = Number.isFinite(um.priorityStar) ? um.priorityStar : PRIORITY_STAR;
     startStarsState = Number.isFinite(um.startStars) ? um.startStars : START_STARS;
-    scoringState = SCORINGS.includes(um.scoring) ? um.scoring : "tipStar";
+    scoringState = SCORINGS.includes(um.scoring) ? um.scoring : "risingQueue";
+    risePointsState = um.risePoints ?? { ...RISE_POINTS_DEFAULT };
+    stonesState = um.stones ?? { ...STONES_DEFAULT };
+    canSaveState = !!um.canSave;
+    defaultsSavedState = !!um.defaultsSaved;
+    regularRidesState = Number.isFinite(um.regularRides)
+      ? um.regularRides
+      : RISE_POINTS_DEFAULT.regularRides;
     ratingMaxState = Number.isFinite(um.ratingMax) ? um.ratingMax : RATING_MAX;
     lastRankState = um.lastRank ?? null;
     // A placing happens BETWEEN turns, with nothing on screen to announce it —
@@ -4065,6 +4319,7 @@ export const uberMania = {
       }
       syncCars(um.trucks);
       syncControlLabels();
+      renderPointsWindow();
       renderScoreboard();
       renderTray();
       renderDice();
@@ -4130,7 +4385,13 @@ export const uberMania = {
     slotGatesState = DEFAULT_SLOT_GATES.slice();
     priorityStarState = PRIORITY_STAR;
     startStarsState = START_STARS;
-    scoringState = "tipStar";
+    scoringState = "risingQueue";
+    risePointsState = { ...RISE_POINTS_DEFAULT };
+    stonesState = { ...STONES_DEFAULT };
+    canSaveState = false;
+    defaultsSavedState = false;
+    regularRidesState = RISE_POINTS_DEFAULT.regularRides;
+    pointsWindowOpen = false;
     ratingMaxState = RATING_MAX;
     lastRankState = null;
     lastRankSeen = -1;
