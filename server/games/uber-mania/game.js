@@ -575,6 +575,9 @@ const freshTurnState = () => ({
   changedTime: false, // the clock moves once a turn
   drew: false,        // the turn was spent taking a passenger tile
   truck: null,        // the car locked in as this turn's mover
+  // How the turn's driving finished, for the turn log: "light" | "dropoff" |
+  // "errand" | "parked". The LAST drive wins, since a turn can hold several.
+  endKind: null,
   dicePool: 0,        // a die per red light crossed, rolled when the turn ends
   // One-step undo: the turn's latest still-revocable action.
   undo: null
@@ -1066,6 +1069,17 @@ export function createUberManiaGame({ io, rooms }) {
         angryDropped: 0,       // rising queue: angry passengers delivered
         redsWaited: 0,         // waiting: turns that ended sat at a red
         stonesWaited: 0,       // ...and the stones that sitting there paid
+        // THE TURN LOG. What every turn this driver took was actually spent on,
+        // and — for the ones spent driving — what stopped the car in the end.
+        // Nothing here is worth a point; it's here to be read.
+        turnsTaken: 0,
+        turnsMoved: 0,         // ...spent driving
+        turnsDrew: 0,          // ...spent taking a passenger
+        turnsNothing: 0,       // ...spent on neither (the clock alone, or a pass)
+        endLight: 0,           // of the driving turns: stopped at a red
+        endDropoff: 0,         // ...closed by dropping somebody off
+        endErrand: 0,          // ...closed by running an errand
+        endParked: 0,          // ...just pulled over
         clockChanges: 0,       // times this driver moved the hand
         stonesSpent: 0         // stones burned on the clock, all game
       };
@@ -1388,7 +1402,14 @@ export function createUberManiaGame({ io, rooms }) {
     ts.acted = true;
     ts.truck = truck.id;
     room.uberMania.lastRoll = null;
-    if (player) resolveArrival(room, truck, player, seat);
+    if (player) {
+      const doneBefore = (player.passengers ?? []).filter((t) => t.done).length;
+      const choresBefore = player.errandsDone ?? 0;
+      resolveArrival(room, truck, player, seat);
+      ts.endKind = (player.passengers ?? []).filter((t) => t.done).length > doneBefore
+        ? "dropoff"
+        : (player.errandsDone ?? 0) > choresBefore ? "errand" : "parked";
+    }
   }
 
   // Waiting mode's drive. A route can call at addresses on the way — stopping to
@@ -1410,6 +1431,7 @@ export function createUberManiaGame({ io, rooms }) {
     // Did the place the car actually STOPPED at complete something? Under
     // multi-move that's what buys another move this turn.
     let finished = false;
+    let finishKind = null;   // what the car actually stopped FOR
     if (player) {
       for (const idx of calls) {
         const s = (map.spots ?? [])[idx];
@@ -1421,6 +1443,7 @@ export function createUberManiaGame({ io, rooms }) {
         const ranErrand = (player.errandsDone ?? 0) > errandsBefore;
         const did = drops || ranErrand;
         finished = did && idx === calls[calls.length - 1];
+        if (did) finishKind = drops ? "dropoff" : "errand";
         // Under multi-move a stop is never the end of anything: the route runs
         // to wherever the driver aimed it and every call along the way lands.
         if (did && !S(room).multiMove) {
@@ -1458,6 +1481,9 @@ export function createUberManiaGame({ io, rooms }) {
     // drive on. MULTI-MOVE takes away even the completion rule, so a drive can
     // run through a drop-off and keep going.
     ts.carryOn = endLight == null && (!finished || !!S(room).multiMove);
+    // For the turn log: a red beats everything, then whatever the car stopped
+    // for, and otherwise the driver simply pulled over.
+    ts.endKind = endLight != null ? "light" : (finished && finishKind) || "parked";
     ts.truck = truck.id;
     room.uberMania.lastRoll = null;
   }
@@ -1612,10 +1638,31 @@ export function createUberManiaGame({ io, rooms }) {
   // dice — or the fun die when a driving turn banked none — drop the delivered
   // fares, cash in any day the clock rolled past, then score the game or pass
   // the turn on.
+  // THE TURN LOG. Counted here, where a turn is unarguably over, so an undone
+  // drive or a re-planned route can't leave a tally behind.
+  function logTurn(room, seat) {
+    const p = room.uberMania.players?.[seat];
+    const ts = room.uberMania.turnState;
+    if (!p || !ts) return;
+    p.turnsTaken = (p.turnsTaken ?? 0) + 1;
+    if (ts.drew) {
+      p.turnsDrew = (p.turnsDrew ?? 0) + 1;
+    } else if (ts.truck != null) {
+      p.turnsMoved = (p.turnsMoved ?? 0) + 1;
+      const key = { light: "endLight", dropoff: "endDropoff", errand: "endErrand" }[ts.endKind]
+        ?? "endParked";
+      p[key] = (p[key] ?? 0) + 1;
+    } else {
+      // The clock on its own, or nothing at all.
+      p.turnsNothing = (p.turnsNothing ?? 0) + 1;
+    }
+  }
+
   function endTurnCore(roomId, seat) {
     const room = rooms.get(roomId);
     if (!room || room.gameId !== "uber-mania") return;
     const ts = room.uberMania.turnState;
+    logTurn(room, seat);
     room.uberMania.funRoll = null;
     let rollMs = 0;
     if (queueMode(room)) {
@@ -1719,6 +1766,21 @@ export function createUberManiaGame({ io, rooms }) {
       annoyed: p.annoyed ?? 0,
       redsWaited: p.redsWaited ?? 0,
       stonesWaited: p.stonesWaited ?? 0,
+      // The turn log, plus the one number that can't be read off it: how big a
+      // clock change is when somebody makes one. A driver who buys three hours
+      // on a third of their turns burns the day just as fast as one who buys an
+      // hour on every turn, and the two play nothing alike.
+      turnsTaken: p.turnsTaken ?? 0,
+      turnsMoved: p.turnsMoved ?? 0,
+      turnsDrew: p.turnsDrew ?? 0,
+      turnsNothing: p.turnsNothing ?? 0,
+      endLight: p.endLight ?? 0,
+      endDropoff: p.endDropoff ?? 0,
+      endErrand: p.endErrand ?? 0,
+      endParked: p.endParked ?? 0,
+      stonesPerChange: (p.clockChanges ?? 0)
+        ? Math.round(((p.stonesSpent ?? 0) / p.clockChanges) * 10) / 10
+        : 0,
       clockChanges: p.clockChanges ?? 0,
       stonesSpent: p.stonesSpent ?? 0,
       errandsDone,
@@ -2814,6 +2876,7 @@ export function createUberManiaGame({ io, rooms }) {
           // second must put the turn back to "already acted", not to untouched.
           prevActed: !!ts.acted,
           prevCarryOn: !!ts.carryOn,
+          prevEndKind: ts.endKind ?? null,
           // Stopping at a red PAYS now, so an undone drive has to unpay it.
           prevStones: player?.timeStones ?? 0,
           prevStonesWaited: player?.stonesWaited ?? 0,
@@ -3035,6 +3098,8 @@ export function createUberManiaGame({ io, rooms }) {
         // it would have done on arrival.
         if ((player.errandsDone ?? 0) > prevErrandsDone && !S(room).multiMove) {
           ts.carryOn = false;
+          // It closed the driving, so the turn log should say what closed it.
+          if (ts.truck != null) ts.endKind = "errand";
         }
         ts.undo = {
           kind: "time", prevTime: t, hour, cost, prevPending, prevCarryOn,
@@ -3071,6 +3136,7 @@ export function createUberManiaGame({ io, rooms }) {
           ts.truck = undo.prevTurnTruck;
           ts.acted = !!undo.prevActed;
           ts.carryOn = !!undo.prevCarryOn;
+          ts.endKind = undo.prevEndKind ?? null;
           ts.dicePool = undo.prevDicePool;
           if (undo.prevStones != null) player.timeStones = undo.prevStones;
           if (undo.prevStonesWaited != null) player.stonesWaited = undo.prevStonesWaited;

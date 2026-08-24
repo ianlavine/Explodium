@@ -2628,6 +2628,27 @@ function playerPeek(p, seat) {
   rows.push(hasErrands()
     ? ["Errands left", String((p.errands ?? []).length)]
     : ["Reached over", String(p.skipped ?? 0)]);
+  // THE TURN LOG, live. The results screen lays it out properly at the end;
+  // this is the running version, because a game is 70-odd turns long and
+  // waiting for the final table to find out how they're being spent is no way
+  // to tune anything.
+  const took = p.turnsTaken ?? 0;
+  if (took) {
+    const ends = [
+      (p.endLight ?? 0) && `${p.endLight} at a red`,
+      (p.endDropoff ?? 0) && `${p.endDropoff} on a drop-off`,
+      (p.endErrand ?? 0) && `${p.endErrand} on an errand`,
+      (p.endParked ?? 0) && `${p.endParked} parked up`
+    ].filter(Boolean);
+    rows.push(["Turns taken", String(took)]);
+    rows.push(["…driving / fare / neither",
+      `${p.turnsMoved ?? 0} / ${p.turnsDrew ?? 0} / ${p.turnsNothing ?? 0}`]);
+    if (ends.length) rows.push(["…the driving ended", ends.join(", ")]);
+    const changes = p.clockChanges ?? 0;
+    rows.push(["Clock changes", changes
+      ? `${changes} — ${Math.round(((p.stonesSpent ?? 0) / changes) * 10) / 10}h a change, ${p.stonesSpent ?? 0}h in all`
+      : "none yet"]);
+  }
   const grid = document.createElement("div");
   grid.className = "ub-peek-grid";
   rows.forEach(([k, v]) => {
@@ -3881,24 +3902,42 @@ const resultColumns = () =>
     : isWaiting() ? WAITING_RESULT_COLUMNS : isStatic() ? STATIC_RESULT_COLUMNS : RESULT_COLUMNS);
 
 // How the night actually went, under the scoring: none of it is worth points,
-// which is exactly why it's a separate table — reading it next to the totals is
-// how you find out whether the winner drove well or just got a clean run.
+// which is exactly why these are separate tables — reading them next to the
+// totals is how you find out whether the winner drove well or just got a clean
+// run, and how the game's length was actually spent.
 function driveLog() {
+  const wrap = document.createElement("div");
+  const clock = [
+    ["redsWaited", "Reds waited at", "Turns that ended sat at a red light, going nowhere"],
+    ["stonesWaited", "Stones from waiting", "Time stones the waiting itself paid out"],
+    ["clockChanges", "Clock changes", "Turns this driver moved the hand — one change a turn, so this is turns, not sweeps"],
+    ["stonesSpent", "Stones spent", "Time stones burned on the clock, all game — and an hour off the game's length for each one"],
+    ["stonesPerChange", "Hours a change", "Average size of a clock change, counting only the turns that made one"]
+  ];
+  // Only waiting mode makes you sit at reds; the others charge for them instead.
+  wrap.appendChild(logTable("ALONG THE WAY", isWaiting() ? clock : clock.slice(2)));
+
+  const turns = [
+    ["turnsTaken", "Turns", "Every turn this driver took"],
+    ["turnsMoved", "Drove", "Turns spent on the road"],
+    ["turnsDrew", "Took a fare", "Turns spent taking a passenger — the whole turn, either way"],
+    ["turnsNothing", "Neither", "Turns spent on the clock alone, or passed"],
+    ["endLight", "…at a red", "Driving turns that ended stopped at a stop light"],
+    ["endDropoff", "…on a drop-off", "Driving turns that ended by letting somebody out"],
+    ["endErrand", "…on an errand", "Driving turns that ended by running one of your own"],
+    ["endParked", "…parked up", "Driving turns that ended nowhere in particular"]
+  ];
+  wrap.appendChild(logTable("WHERE THE TURNS WENT", turns));
+  return wrap;
+}
+
+function logTable(title, live) {
   const wrap = document.createElement("div");
   wrap.className = "ub-log";
   const h = document.createElement("div");
   h.className = "ub-log-title";
-  h.textContent = "ALONG THE WAY";
+  h.textContent = title;
   wrap.appendChild(h);
-
-  const cols = [
-    ["redsWaited", "Reds waited at", "Turns that ended sat at a red light, going nowhere"],
-    ["stonesWaited", "Stones from waiting", "Time stones the waiting itself paid out"],
-    ["clockChanges", "Clock changes", "Times this driver pushed the hand round"],
-    ["stonesSpent", "Stones spent", "Time stones burned on the clock, all game"]
-  ];
-  // Only waiting mode makes you sit at reds; the others charge for them instead.
-  const live = isWaiting() ? cols : cols.slice(2);
 
   const table = document.createElement("table");
   table.className = "ub-results-table ub-log-table";
