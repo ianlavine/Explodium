@@ -33,7 +33,8 @@ const GAMES = [
   { id: "landmark-mania", name: "Landmark Mania", export: "landmarkMania", state: "landmarkMania", hidden: true, styles: ["truck-mania", "landmark-mania"] },
   { id: "lino", name: "Lino", export: "lino", state: "lino", hidden: true },
   { id: "downstream", name: "Downstream", export: "downstream", state: "downstream", hidden: true },
-  { id: "only-3", name: "Only 3", export: "only3", state: "only3", hidden: true }
+  { id: "only-3", name: "Only 3", export: "only3", state: "only3", hidden: true },
+  { id: "second-best", name: "Second Best", export: "secondBest", state: "secondBest" }
 ];
 
 const entryFor = (id) => GAMES.find((g) => g.id === id);

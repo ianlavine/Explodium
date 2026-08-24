@@ -16,6 +16,7 @@ import { createUberManiaGame } from "./games/uber-mania/game.js";
 import { createLinoGame } from "./games/lino/game.js";
 import { createDownstreamGame } from "./games/downstream/game.js";
 import { createOnly3Game } from "./games/only-3/game.js";
+import { createSecondBestGame } from "./games/second-best/game.js";
 
 export function createLobby(io) {
   const queueByGame = new Map(); // queueKey -> [socketId]
@@ -34,7 +35,8 @@ export function createLobby(io) {
     createUberManiaGame(ctx),
     createLinoGame(ctx),
     createDownstreamGame(ctx),
-    createOnly3Game(ctx)
+    createOnly3Game(ctx),
+    createSecondBestGame(ctx)
   ];
   const gamesById = new Map(games.map((game) => [game.id, game]));
 

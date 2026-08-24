@@ -1,0 +1,422 @@
+/* Second Best: the 5x5 lattice, the two-color palette and the score panel. */
+
+.second-best-board {
+  --sb-blue: #2f7cf6;
+  --sb-red: #e23b3b;
+  --sb-neutral: #1a1d24;
+  --sb-pick: var(--sb-blue);
+  --sb-cols: 6;
+  position: relative;
+  display: grid;
+  /* One track per column, so 5x5 squares are bigger than 6x6 ones. */
+  grid-template-columns: repeat(var(--sb-cols), minmax(44px, 78px));
+  gap: 0;
+  width: fit-content;
+  max-width: calc(100vw - 64px);
+  margin: 18px 0 32px;
+  padding: 6px;
+  border-radius: 18px;
+  background: rgba(12, 16, 23, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+}
+
+/* Gapless cells: groups are read by adjacency, so pieces that touch should
+   look like they touch. */
+.sb-cell {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 9%;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  border-radius: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.sb-cell:disabled {
+  cursor: default;
+}
+
+.sb-cell:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.sb-cell.last-move {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+}
+
+.sb-piece {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: transparent;
+  transition: box-shadow 0.16s ease;
+}
+
+.sb-piece.blue {
+  background: var(--sb-blue);
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.35), 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+.sb-piece.red {
+  background: var(--sb-red);
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.35), 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+/* Neutrals score for nobody, so they read as a hole in the board rather than
+   as a third player: near-black, with just enough rim to be a piece. */
+.sb-piece.neutral {
+  background: var(--sb-neutral);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 3px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* The largest group is faintly ringed; the SECOND-largest — the one that
+   scores — gets the bright ring. Everything else is unmarked. */
+.sb-piece.top {
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.35), 0 0 0 2px rgba(255, 255, 255, 0.22);
+}
+
+.sb-piece.scoring {
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.35), 0 0 0 3px #fff,
+    0 0 12px rgba(255, 255, 255, 0.55);
+}
+
+/* Ghost of the currently selected color under the cursor. */
+.sb-cell:not(:disabled):hover .sb-piece:not(.blue):not(.red) {
+  background: var(--sb-pick);
+  opacity: 0.32;
+}
+
+/* --- Side panel ---------------------------------------------------------- */
+
+.second-best-panel {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  max-width: 340px;
+}
+
+.sb-scores {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sb-score {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "dot score"
+    "ladder ladder"
+    "sub sub";
+  align-items: center;
+  gap: 4px 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(16, 21, 29, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sb-score.leading {
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.sb-score-dot {
+  grid-area: dot;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.sb-score.blue .sb-score-dot {
+  background: #2f7cf6;
+}
+
+.sb-score.red .sb-score-dot {
+  background: #e23b3b;
+}
+
+.sb-score strong {
+  grid-area: score;
+  font-size: 26px;
+  line-height: 1;
+}
+
+/* Every group size, largest first, with the scoring one picked out. */
+.sb-ladder {
+  grid-area: ladder;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.sb-ladder b {
+  color: #fff;
+  font-weight: 800;
+}
+
+.sb-ladder em {
+  font-style: normal;
+  opacity: 0.7;
+}
+
+.sb-score small {
+  grid-area: sub;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.sb-palette {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.sb-palette.three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.sb-swatch {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 11px 6px;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(16, 21, 29, 0.9);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.14s ease, transform 0.14s ease;
+}
+
+.sb-swatch:not(:disabled):hover {
+  transform: translateY(-2px);
+}
+
+.sb-swatch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sb-swatch.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 138, 0, 0.2);
+}
+
+.sb-swatch-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+}
+
+.sb-swatch.blue .sb-swatch-dot {
+  background: #2f7cf6;
+}
+
+.sb-swatch.red .sb-swatch-dot {
+  background: #e23b3b;
+}
+
+.sb-swatch.neutral .sb-swatch-dot {
+  background: #1a1d24;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.sb-swatch-name {
+  font-weight: 700;
+  font-size: 13px;
+  text-transform: capitalize;
+}
+
+.sb-swatch small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sb-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.sb-winner {
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.sb-winner.blue {
+  border-color: rgba(47, 124, 246, 0.6);
+}
+
+.sb-winner.red {
+  border-color: rgba(226, 59, 59, 0.6);
+}
+
+.sb-again,
+.sb-undo {
+  justify-self: start;
+}
+
+/* --- Setup modal --------------------------------------------------------- */
+
+.sb-setup-card {
+  max-width: 460px;
+  text-align: left;
+}
+
+.sb-setup-rows {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 18px;
+}
+
+.sb-setup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: rgba(16, 21, 29, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sb-setup-label {
+  display: grid;
+  gap: 3px;
+}
+
+.sb-setup-label strong {
+  font-size: 14px;
+}
+
+.sb-setup-label small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.sb-segmented {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.sb-seg {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sb-seg.selected {
+  background: var(--accent);
+  color: #10131a;
+}
+
+.sb-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sb-step {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.3);
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sb-step:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.sb-step-value {
+  min-width: 26px;
+  text-align: center;
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.sb-opponents {
+  display: grid;
+  gap: 7px;
+}
+
+.sb-play-btn {
+  display: grid;
+  gap: 2px;
+  padding: 10px 13px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(16, 21, 29, 0.9);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, transform 0.14s ease;
+}
+
+.sb-play-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.sb-play-btn small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sb-play-btn.primary {
+  border-color: var(--accent);
+  text-align: center;
+}
+
+@media (max-width: 600px) {
+  .second-best-board {
+    grid-template-columns: repeat(var(--sb-cols), minmax(36px, 1fr));
+    width: 100%;
+  }
+
+  .sb-setup-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .second-best-panel {
+    max-width: none;
+  }
+}
