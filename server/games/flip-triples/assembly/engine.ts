@@ -25,9 +25,16 @@ const MAX_MOVES: i32 = 640;
 const MAX_CELLS: i32 = 32;
 const MAX_LINES: i32 = 128;
 
-const TT_BITS: i32 = 21;
-const TT_SIZE: i32 = 1 << TT_BITS;
-const TT_MASK: i32 = TT_SIZE - 1;
+// Transposition table size, in entries = 1 << ttBits. Runtime-sized rather than
+// a compile-time constant: long analysis searches want a far bigger table than
+// the live bot can afford in memory, and one binary with setTTBits() beats
+// maintaining a separate build per size. 21 is the live default (~25 MB across
+// the three arrays); each extra bit doubles that.
+const TT_BITS_MIN: i32 = 16;
+const TT_BITS_MAX: i32 = 26;
+let ttBits: i32 = 21;
+let ttSize: i32 = 1 << 21;
+let ttMask: i32 = (1 << 21) - 1;
 const TT_EXACT: i32 = 0;
 const TT_LOWER: i32 = 1;
 const TT_UPPER: i32 = 2;
@@ -43,6 +50,7 @@ let uniqueSwap: bool = true;
 let staticNeutrals: bool = false;
 let blockedCenter: i32 = -1; // cell index or -1
 let phase: i32 = 1;
+let exactMode: bool = false;
 let noTiebreak: bool = false;
 let carryDiff: i32 = 0;
 let centerIdx: i32 = -1;
@@ -55,11 +63,21 @@ const cellOfBit = new StaticArray<i32>(MAX_CELLS);
 const dirsP = new StaticArray<i32>(8);
 let lineCount: i32 = 0;
 const lineMasksP = new StaticArray<i32>(MAX_LINES);
+// Per line: the in-bounds cells just off each end, as a padded mask. In Exact
+// Mode a line scores only when neither of these reads as the same color —
+// otherwise the "triple" is really part of a 4+ run and is worth nothing.
+const lineExtMasksP = new StaticArray<i32>(MAX_LINES);
 // lines through each cell: offsets into a flat id list
 const ltOff = new StaticArray<i32>(MAX_CELLS + 1);
 const ltIds = new StaticArray<i32>(MAX_LINES * 3);
 // "other two cells" masks per (cell, line-through) entry, aligned with ltIds
 const ltOthers = new StaticArray<i32>(MAX_LINES * 3);
+// ext mask per (cell, line-through) entry, aligned with ltIds/ltOthers
+const ltExt = new StaticArray<i32>(MAX_LINES * 3);
+// Exact Mode widens a moved cell's blast radius: it must revisit every line it
+// sits on OR extends. Same layout as ltOff/ltIds, over that larger set.
+const ltxOff = new StaticArray<i32>(MAX_CELLS + 1);
+const ltxIds = new StaticArray<i32>(MAX_LINES * 5);
 
 // Zobrist
 const zob1 = new StaticArray<u32>(MAX_CELLS * 14);
@@ -89,10 +107,33 @@ let whiteBlue: i32 = 0;
 // Search tables
 // ---------------------------------------------------------------------------
 
-const ttKey = new StaticArray<u32>(TT_SIZE);
-const ttVal = new StaticArray<i32>(TT_SIZE);
-const ttMeta = new StaticArray<i32>(TT_SIZE);
+let ttKey = new StaticArray<u32>(ttSize);
+let ttVal = new StaticArray<i32>(ttSize);
+let ttMeta = new StaticArray<i32>(ttSize);
 let ttGen: i32 = 0;
+
+// Resize the transposition table. Call before init(); the table is cleared
+// either way. Under --runtime stub there is no collector, so the old arrays are
+// abandoned — hence the "only on a real change" guard: this is a setup knob,
+// not something to call per search.
+export function setTTBits(bits: i32): i32 {
+  let b = bits;
+  if (b < TT_BITS_MIN) b = TT_BITS_MIN;
+  if (b > TT_BITS_MAX) b = TT_BITS_MAX;
+  if (b == ttBits) return ttBits;
+  ttBits = b;
+  ttSize = 1 << b;
+  ttMask = ttSize - 1;
+  ttKey = new StaticArray<u32>(ttSize);
+  ttVal = new StaticArray<i32>(ttSize);
+  ttMeta = new StaticArray<i32>(ttSize);
+  ttGen = 0;
+  return ttBits;
+}
+
+export function getTTBits(): i32 {
+  return ttBits;
+}
 
 const moveBuf = new StaticArray<i32>(MAX_PLY * MAX_MOVES);
 const scoreBuf = new StaticArray<i32>(MAX_PLY * MAX_MOVES);
@@ -145,7 +186,8 @@ export function init(
   blocked: i32,
   ph: i32,
   noTb: i32,
-  carry: i32
+  carry: i32,
+  exact: i32
 ): i32 {
   rows = r;
   cols = c;
@@ -154,6 +196,7 @@ export function init(
   staticNeutrals = statNeu != 0;
   blockedCenter = blocked;
   phase = ph;
+  exactMode = exact != 0;
   noTiebreak = noTb != 0;
   carryDiff = carry;
   const padCols = c + 1;
@@ -190,8 +233,14 @@ export function init(
   lineCount = 0;
   // temporary per-cell counts
   const tmpCount = new StaticArray<i32>(MAX_CELLS);
-  for (let i = 0; i < cells; i++) unchecked(tmpCount[i] = 0);
+  const tmpCountX = new StaticArray<i32>(MAX_CELLS);
+  for (let i = 0; i < cells; i++) {
+    unchecked(tmpCount[i] = 0);
+    unchecked(tmpCountX[i] = 0);
+  }
   const lineCellsFlat = new StaticArray<i32>(MAX_LINES * 3);
+  // ext cells per line, -1 padded (a line at the board edge has 0 or 1)
+  const lineExtFlat = new StaticArray<i32>(MAX_LINES * 2);
   for (let rr = 0; rr < rows; rr++) {
     for (let cc = 0; cc < cols; cc++) {
       for (let d = 0; d < 4; d++) {
@@ -215,25 +264,65 @@ export function init(
         unchecked(tmpCount[x] += 1);
         unchecked(tmpCount[y] += 1);
         unchecked(tmpCount[z] += 1);
+        unchecked(tmpCountX[x] += 1);
+        unchecked(tmpCountX[y] += 1);
+        unchecked(tmpCountX[z] += 1);
+        // the two cells that would stretch this line into a 4-run
+        let extMask = 0;
+        unchecked(lineExtFlat[lineCount * 2] = -1);
+        unchecked(lineExtFlat[lineCount * 2 + 1] = -1);
+        const rb = rr - dr;
+        const cb = cc - dc;
+        if (rb >= 0 && rb < rows && cb >= 0 && cb < cols) {
+          const e = rb * cols + cb;
+          extMask |= 1 << unchecked(padBit[e]);
+          unchecked(lineExtFlat[lineCount * 2] = e);
+          unchecked(tmpCountX[e] += 1);
+        }
+        const ra = rr + 3 * dr;
+        const ca = cc + 3 * dc;
+        if (ra >= 0 && ra < rows && ca >= 0 && ca < cols) {
+          const e = ra * cols + ca;
+          extMask |= 1 << unchecked(padBit[e]);
+          unchecked(lineExtFlat[lineCount * 2 + 1] = e);
+          unchecked(tmpCountX[e] += 1);
+        }
+        unchecked(lineExtMasksP[lineCount] = extMask);
         lineCount++;
       }
     }
   }
   // prefix offsets
   let acc = 0;
+  let accX = 0;
   for (let i = 0; i < cells; i++) {
     unchecked(ltOff[i] = acc);
     acc += unchecked(tmpCount[i]);
     unchecked(tmpCount[i] = 0);
+    unchecked(ltxOff[i] = accX);
+    accX += unchecked(tmpCountX[i]);
+    unchecked(tmpCountX[i] = 0);
   }
   unchecked(ltOff[cells] = acc);
+  unchecked(ltxOff[cells] = accX);
   for (let l = 0; l < lineCount; l++) {
     for (let k = 0; k < 3; k++) {
       const cell = unchecked(lineCellsFlat[l * 3 + k]);
       const pos = unchecked(ltOff[cell]) + unchecked(tmpCount[cell]);
       unchecked(ltIds[pos] = l);
       unchecked(ltOthers[pos] = unchecked(lineMasksP[l]) & ~(1 << unchecked(padBit[cell])));
+      unchecked(ltExt[pos] = unchecked(lineExtMasksP[l]));
       unchecked(tmpCount[cell] += 1);
+      const posX = unchecked(ltxOff[cell]) + unchecked(tmpCountX[cell]);
+      unchecked(ltxIds[posX] = l);
+      unchecked(tmpCountX[cell] += 1);
+    }
+    for (let k = 0; k < 2; k++) {
+      const cell = unchecked(lineExtFlat[l * 2 + k]);
+      if (cell < 0) continue;
+      const posX = unchecked(ltxOff[cell]) + unchecked(tmpCountX[cell]);
+      unchecked(ltxIds[posX] = l);
+      unchecked(tmpCountX[cell] += 1);
     }
   }
 
@@ -249,8 +338,16 @@ export function init(
   unchecked(sideKey2[1] = rngNext());
 
   // Clear TT + history
-  for (let i = 0; i < TT_SIZE; i++) unchecked(ttMeta[i] = 0);
+  for (let i = 0; i < ttSize; i++) unchecked(ttMeta[i] = 0);
   ttGen = 0;
+  return 1;
+}
+
+// Capability probe. A wasm export called with more arguments than it declares
+// silently drops the extras, so an older binary would take the exactMode flag
+// and score classic triples without complaint. The facade checks for this
+// export instead of assuming whatever build it loaded understands the flag.
+export function supportsExactMode(): i32 {
   return 1;
 }
 
@@ -284,10 +381,11 @@ export function beginPosition(): void {
   const lockedM = (phase == 1 ? mFlip : ~mFlip) & boardMaskP;
   for (let l = 0; l < lineCount; l++) {
     const L = unchecked(lineMasksP[l]);
-    if ((L & mRed) == L) {
+    const X = exactMode ? unchecked(lineExtMasksP[l]) : 0;
+    if ((L & mRed) == L && (X & mRed) == 0) {
       cntAllRed++;
       if ((L & lockedM) == L) cntLockedRed++;
-    } else if ((L & mBlue) == L) {
+    } else if ((L & mBlue) == L && (X & mBlue) == 0) {
       cntAllBlue++;
       if ((L & lockedM) == L) cntLockedBlue++;
     }
@@ -394,13 +492,17 @@ function adjustContrib(a: i32, b: i32, sign: i32): void {
   if (sign < 0) {
     lineSeenGen++;
     affectedN = 0;
-    for (let p = unchecked(ltOff[a]); p < unchecked(ltOff[a + 1]); p++) {
-      const id = unchecked(ltIds[p]);
+    // Exact Mode reads a line's two neighbour cells too, so a moved cell can
+    // change the score of a line it merely extends — walk the wider list.
+    const offs = exactMode ? ltxOff : ltOff;
+    const ids = exactMode ? ltxIds : ltIds;
+    for (let p = unchecked(offs[a]); p < unchecked(offs[a + 1]); p++) {
+      const id = unchecked(ids[p]);
       unchecked(lineSeen[id] = lineSeenGen);
       unchecked(affected[affectedN++] = id);
     }
-    for (let p = unchecked(ltOff[b]); p < unchecked(ltOff[b + 1]); p++) {
-      const id = unchecked(ltIds[p]);
+    for (let p = unchecked(offs[b]); p < unchecked(offs[b + 1]); p++) {
+      const id = unchecked(ids[p]);
       if (unchecked(lineSeen[id]) != lineSeenGen) {
         unchecked(lineSeen[id] = lineSeenGen);
         unchecked(affected[affectedN++] = id);
@@ -409,11 +511,13 @@ function adjustContrib(a: i32, b: i32, sign: i32): void {
   }
   const lockedM = (phase == 1 ? mFlip : ~mFlip) & boardMaskP;
   for (let i = 0; i < affectedN; i++) {
-    const L = unchecked(lineMasksP[unchecked(affected[i])]);
-    if ((L & mRed) == L) {
+    const id = unchecked(affected[i]);
+    const L = unchecked(lineMasksP[id]);
+    const X = exactMode ? unchecked(lineExtMasksP[id]) : 0;
+    if ((L & mRed) == L && (X & mRed) == 0) {
       cntAllRed += sign;
       if ((L & lockedM) == L) cntLockedRed += sign;
-    } else if ((L & mBlue) == L) {
+    } else if ((L & mBlue) == L && (X & mBlue) == 0) {
       cntAllBlue += sign;
       if ((L & lockedM) == L) cntLockedBlue += sign;
     }
@@ -536,7 +640,7 @@ export function setEvalMode(m: i32): void {
 // Empty the TT (for A/B fairness: a shared table must not let one eval read the
 // other's entries; also makes fixed-depth verification deterministic).
 export function clearTT(): void {
-  for (let i = 0; i < TT_SIZE; i++) unchecked(ttMeta[i] = 0);
+  for (let i = 0; i < ttSize; i++) unchecked(ttMeta[i] = 0);
   ttGen = 0;
 }
 
@@ -596,9 +700,10 @@ function frozenEval(): i32 {
   let permBlue = 0;
   for (let l = 0; l < lineCount; l++) {
     const L = unchecked(lineMasksP[l]);
-    if ((L & mRed) == L) {
+    const X = exactMode ? unchecked(lineExtMasksP[l]) : 0;
+    if ((L & mRed) == L && (X & mRed) == 0) {
       if ((L & perm) == L) permRed++;
-    } else if ((L & mBlue) == L) {
+    } else if ((L & mBlue) == L && (X & mBlue) == 0) {
       if ((L & perm) == L) permBlue++;
     }
   }
@@ -613,7 +718,11 @@ function frozenEval(): i32 {
     candR &= candR - 1;
     for (let p = unchecked(ltOff[cell]); p < unchecked(ltOff[cell + 1]); p++) {
       const others = unchecked(ltOthers[p]);
-      if ((others & mRed) == others && (others & perm) == others) compRed++;
+      if ((others & mRed) != others || (others & perm) != others) continue;
+      // Exact Mode: filling this cell would make a 4-run, not a triple, if a
+      // neighbour cell already reads red — so it is not a threat at all.
+      if (exactMode && (unchecked(ltExt[p]) & mRed) != 0) continue;
+      compRed++;
     }
   }
   let candB = M & ~mBlue & dilateP(mBlue & M);
@@ -622,7 +731,9 @@ function frozenEval(): i32 {
     candB &= candB - 1;
     for (let p = unchecked(ltOff[cell]); p < unchecked(ltOff[cell + 1]); p++) {
       const others = unchecked(ltOthers[p]);
-      if ((others & mBlue) == others && (others & perm) == others) compBlue++;
+      if ((others & mBlue) != others || (others & perm) != others) continue;
+      if (exactMode && (unchecked(ltExt[p]) & mBlue) != 0) continue;
+      compBlue++;
     }
   }
   return (
@@ -743,7 +854,7 @@ function negamax(side: i32, depth: i32, alphaIn: i32, betaIn: i32, ply: i32): i3
 
   const key1 = h1 ^ unchecked(sideKey1[side]);
   const key2v = h2 ^ unchecked(sideKey2[side]);
-  const slot = <i32>(key1 & <u32>TT_MASK);
+  const slot = <i32>(key1 & <u32>ttMask);
   let ttMove = -1;
   const meta = unchecked(ttMeta[slot]);
   if (meta != 0 && unchecked(ttKey[slot]) == key2v) {
