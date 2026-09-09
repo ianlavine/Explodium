@@ -2,6 +2,7 @@
 // phase 2 banner, score panel, and the undo button.
 import { socket, els, app, setBotThinking, prefersReducedMotion } from "../../shared/context.js";
 import { openPlayground } from "./playground.js";
+import { FLIP_BOT_LEVELS, formatThinkTime, describeLevel } from "./bot-levels.js";
 
 const flipPhaseIndicator = document.getElementById("flip-phase-indicator");
 const flipSetup = document.getElementById("flip-setup");
@@ -39,6 +40,51 @@ function isActive() {
 // other boards have a single fixed piece count.
 const FLIP_SIX_PIECE_CHOICES = [14, 13];
 
+// Group variants: the game plays exactly the same, but the win condition drops
+// triples and measures each color's orthogonally-connected groups. Purple, as
+// always, counts for both colors. Server side: FLIP_GROUP_RULES in game.js.
+const FLIP_GROUP_RULES = [
+  {
+    key: "none",
+    label: "Triples",
+    blurb: "The classic win condition: score your three-in-a-rows"
+  },
+  {
+    key: "most",
+    label: "Most groups",
+    blurb: "Score the number of separate groups you have — split up"
+  },
+  {
+    key: "biggest",
+    label: "Biggest group",
+    blurb: "Score the size of your largest group — build one blob"
+  },
+  {
+    key: "second",
+    label: "Second biggest",
+    blurb: "Score the size of your second largest group — a single group scores nothing"
+  },
+  {
+    key: "smallest",
+    label: "Smallest group",
+    blurb: "Score the size of your smallest group, and bigger still wins — leave no stragglers"
+  },
+  {
+    key: "product",
+    label: "Two biggest ×",
+    blurb: "Score your two largest groups multiplied — a single group scores nothing"
+  }
+];
+
+function flipGroupRule(key) {
+  return FLIP_GROUP_RULES.find((rule) => rule.key === key) ?? FLIP_GROUP_RULES[0];
+}
+
+function flipIsGroupGame(settings) {
+  const key = settings?.groupRule ?? "none";
+  return key !== "none" && FLIP_GROUP_RULES.some((rule) => rule.key === key);
+}
+
 function flipSixPieces(draft) {
   return FLIP_SIX_PIECE_CHOICES.includes(draft?.sixPieces) ? draft.sixPieces : 14;
 }
@@ -71,7 +117,8 @@ function flipDraftFromSettings(settings) {
     yellow: (settings.yellow ?? 0) > 0,
     rings: rings > 0,
     doubleMove: settings.doubleMove === true,
-    exactMode: settings.exactMode === true
+    exactMode: settings.exactMode === true,
+    groupRule: flipGroupRule(settings.groupRule).key
   };
 }
 
@@ -83,7 +130,8 @@ function defaultFlipSetupDraft() {
     yellow: false,
     rings: false,
     doubleMove: false,
-    exactMode: true
+    exactMode: true,
+    groupRule: "none"
   };
 }
 
@@ -91,9 +139,13 @@ function defaultFlipSetupDraft() {
 // toggles; everything else is fixed to the basic game (unique swap on). Purple
 // replaces a scoring piece per player; yellow only replaces a neutral.
 function flipDraftToOptions(draft) {
+  const groupRule = flipGroupRule(draft.groupRule).key;
+  const isGroup = groupRule !== "none";
   const purple = flipPurpleCount(draft);
-  const yellow = draft.yellow ? 1 : 0;
-  const rings = draft.rings ? 1 : 0; // one red + one blue ring
+  // Yellow and the rings are triple-scoring pieces; in a group game they would
+  // just be dead neutrals, so the setup card hides them and they stay off.
+  const yellow = !isGroup && draft.yellow ? 1 : 0;
+  const rings = !isGroup && draft.rings ? 1 : 0; // one red + one blue ring
   const preset = flipBoardPreset(draft.boardSize);
   return {
     boardSize: preset.boardSize,
@@ -110,7 +162,8 @@ function flipDraftToOptions(draft) {
     staticNeutrals: false,
     protectedMiddle: false,
     doubleMove: draft.doubleMove === true,
-    exactMode: draft.exactMode === true
+    exactMode: draft.exactMode === true,
+    groupRule
   };
 }
 
@@ -391,6 +444,16 @@ function renderFlipTriplesScore() {
   els.hand.classList.remove("player-0", "player-1", "toy-rack");
   els.hand.classList.add("flip-score");
 
+  const settings = flipTriplesState?.settings;
+  if (flipIsGroupGame(settings)) {
+    // A group score is a property of the board as it stands, so it runs live —
+    // label it, or the bare number says nothing about what is being counted.
+    const label = document.createElement("div");
+    label.className = "flip-score-caption";
+    label.textContent = flipGroupRule(settings.groupRule).label;
+    els.hand.appendChild(label);
+  }
+
   const scores = flipTriplesState?.scores ?? { red: 0, blue: 0 };
   const rows = [
     { side: "red", mark: "×", score: scores.red },
@@ -457,13 +520,11 @@ const FLIP_SHAPE_CHAR = {
   "blue-ring": "b"
 };
 
-const FLIP_BOT_LEVEL_NAMES = {
-  0: "Baby bot",
-  1: "Level 1 bot",
-  2: "Level 2 bot",
-  3: "Level 3 bot",
-  4: "God bot"
-};
+// In-game label for the opponent, e.g. "Level 4 (5 moves ahead)". Levels differ
+// only in how far the search looks, so that is the opponent's whole identity.
+const FLIP_BOT_LEVEL_NAMES = Object.fromEntries(
+  FLIP_BOT_LEVELS.map((level, i) => [i, `${level.name} (${describeLevel(level)})`])
+);
 
 function flipShapesToString(shapeRows) {
   return shapeRows.map((row) => row.map((shape) => FLIP_SHAPE_CHAR[shape] ?? "?").join("")).join("");
@@ -721,6 +782,37 @@ function renderFlipSetup() {
         ).join("")}
       </div>`
     : "";
+  const groupRule = flipGroupRule(draft.groupRule);
+  const isGroup = groupRule.key !== "none";
+  const winChoices = FLIP_GROUP_RULES.map(
+    (rule) => `
+      <button type="button" class="flip-win-btn${
+        rule.key === groupRule.key ? " active" : ""
+      }" data-group-rule="${rule.key}">
+        <span class="flip-option-title">${rule.label}</span>
+        <small>${rule.blurb}</small>
+      </button>`
+  ).join("");
+  // Yellow, the rings and Exact mode are all triple rules — a group game has no
+  // use for any of them, so they leave the card entirely.
+  const tripleToggles = isGroup
+    ? ""
+    : `
+        <button type="button" class="flip-option-toggle${draft.yellow ? " active" : ""}" data-toggle="yellow">
+          <span class="flip-option-title">Yellow</span>
+          <small>${base} scoring pieces each; one neutral becomes a yellow wildcard that costs a point in any triple</small>
+        </button>
+        <button type="button" class="flip-option-toggle${draft.rings ? " active" : ""}" data-toggle="rings">
+          <span class="flip-option-title">Ring pieces</span>
+          <small>Adds a red and a blue ring: neutral-cored pieces that make triples out of neutrals for their color, flippable only by that color</small>
+        </button>`;
+  const exactToggle = isGroup
+    ? ""
+    : `
+        <button type="button" class="flip-option-toggle${draft.exactMode ? " active" : ""}" data-toggle="exactMode">
+          <span class="flip-option-title">Exact mode</span>
+          <small>Only runs of exactly three score. Four, five or six in a row are no longer multiple triples — they are worth nothing at all</small>
+        </button>`;
   flipSetup.innerHTML = `
     <div class="flip-setup-card">
       <h3>Game setup</h3>
@@ -728,6 +820,11 @@ function renderFlipSetup() {
         ${boardChoices}
       </div>
       ${sixChoices}
+      <h4 class="flip-setup-heading">Win condition</h4>
+      <p class="flip-setup-note">Same moves either way. A group is a run of your tiles joined edge to edge (not diagonally); purple joins both colors' groups. A tie goes to whoever has more white pieces left.</p>
+      <div class="flip-win-choices" role="group" aria-label="Win condition">
+        ${winChoices}
+      </div>
       <div class="flip-option-toggles" role="group" aria-label="Optional pieces">
         <button type="button" class="flip-option-toggle${draft.purple ? " active" : ""}" data-toggle="purple">
           <span class="flip-option-title">Purple</span>
@@ -737,22 +834,12 @@ function renderFlipSetup() {
               : "one neutral becomes a purple wildcard"
           }</small>
         </button>
-        <button type="button" class="flip-option-toggle${draft.yellow ? " active" : ""}" data-toggle="yellow">
-          <span class="flip-option-title">Yellow</span>
-          <small>${base} scoring pieces each; one neutral becomes a yellow wildcard that costs a point in any triple</small>
-        </button>
-        <button type="button" class="flip-option-toggle${draft.rings ? " active" : ""}" data-toggle="rings">
-          <span class="flip-option-title">Ring pieces</span>
-          <small>Adds a red and a blue ring: neutral-cored pieces that make triples out of neutrals for their color, flippable only by that color</small>
-        </button>
+        ${tripleToggles}
         <button type="button" class="flip-option-toggle${draft.doubleMove ? " active" : ""}" data-toggle="doubleMove">
           <span class="flip-option-title">Double move</span>
           <small>Each player gets one Double: take two moves in a row, once per game</small>
         </button>
-        <button type="button" class="flip-option-toggle${draft.exactMode ? " active" : ""}" data-toggle="exactMode">
-          <span class="flip-option-title">Exact mode</span>
-          <small>Only runs of exactly three score. Four, five or six in a row are no longer multiple triples — they are worth nothing at all</small>
-        </button>
+        ${exactToggle}
       </div>
       <button type="button" class="primary-btn flip-start-btn">Start game</button>
       <button type="button" class="flip-load-btn">Load saved game…</button>
@@ -972,6 +1059,13 @@ flipSetup.addEventListener("click", (event) => {
     return;
   }
 
+  const winBtn = target.closest(".flip-win-btn[data-group-rule]");
+  if (winBtn) {
+    flipSetupDraft.groupRule = flipGroupRule(winBtn.dataset.groupRule).key;
+    renderFlipSetup();
+    return;
+  }
+
   const optionToggle = target.closest(".flip-option-toggle[data-toggle]");
   if (optionToggle) {
     const key = optionToggle.dataset.toggle;
@@ -1014,6 +1108,16 @@ export const flipTriples = {
   name: "Flip Triples",
   description: "",
   hasBots: true,
+  // Drives the solo picker. Same table the server hands the search, so what a
+  // player reads is what the bot gets. The headline is the search depth, since
+  // that is what actually separates the levels; the time cap is fine print
+  // because it only bites in wide openings.
+  botLevels: FLIP_BOT_LEVELS.map((level) => ({
+    name: level.name,
+    headline: describeLevel(level),
+    blurb: level.blurb,
+    note: `max ${formatThinkTime(level.capMs)}`
+  })),
   openPlayground,
 
   onMatchFound() {

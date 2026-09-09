@@ -758,6 +758,74 @@
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+/* Win condition picker: triples or one of the group variants. */
+.flip-setup-heading {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.flip-setup-note {
+  margin: -4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.flip-win-choices {
+  display: grid;
+  gap: 10px;
+}
+
+.flip-win-btn {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.flip-win-btn:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.flip-win-btn.active {
+  background: rgba(255, 196, 86, 0.16);
+  border-color: rgba(255, 196, 86, 0.45);
+  color: var(--text);
+}
+
+.flip-win-btn.active .flip-option-title {
+  color: var(--accent);
+}
+
+.flip-win-btn small {
+  color: inherit;
+  opacity: 0.85;
+  font-size: 12px;
+}
+
+/* Names the number in the live score panel during a group game. */
+.flip-score-caption {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--muted);
+}
+
 .flip-setup-summary {
   margin: 0;
   font-weight: 700;

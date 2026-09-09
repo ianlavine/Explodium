@@ -455,6 +455,20 @@ h2 {
 
 .solo-opt strong {
   font-size: 17px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* Whatever actually separates the levels (Flip Triples: how far ahead the bot
+   looks) sits on the row as a value, rather than hiding in the description. */
+.solo-opt-time {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  white-space: nowrap;
 }
 
 .solo-opt small {

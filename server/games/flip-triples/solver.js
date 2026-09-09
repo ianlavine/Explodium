@@ -69,8 +69,26 @@ const SHAPE_CODES = {
   "blue-ring": BLUE_RING
 };
 
+// Group variants (see game.js FLIP_GROUP_RULES): the moves are unchanged, but
+// the score stops counting triples and measures each color's orthogonally-
+// connected groups instead. GROUP_NONE keeps the triple rules.
+export const GROUP_NONE = 0;
+export const GROUP_MOST = 1;
+export const GROUP_BIGGEST = 2;
+export const GROUP_SMALLEST = 3;
+export const GROUP_PRODUCT = 4;
+export const GROUP_SECOND = 5;
+const GROUP_CODES = {
+  none: GROUP_NONE,
+  most: GROUP_MOST,
+  biggest: GROUP_BIGGEST,
+  smallest: GROUP_SMALLEST,
+  product: GROUP_PRODUCT,
+  second: GROUP_SECOND
+};
+
 const INF = 1e9;
-const TERMINAL_SCALE = 100000; // one triple of margin
+const TERMINAL_SCALE = 100000; // one point of margin
 const TIE_SCALE = 10; // white-piece / center tie-breaker unit
 const ABORT = Symbol("search-timeout");
 
@@ -408,7 +426,8 @@ export function createState({
   protectedMiddle = false,
   carryDiff = 0,
   noTiebreak = false, // rules-variant testing: equal triples = plain tie
-  exactMode = false // Exact Mode: only runs of exactly three score
+  exactMode = false, // Exact Mode: only runs of exactly three score
+  groupRule = GROUP_NONE // group variants: 0 = triples, see GROUP_* above
 }) {
   const geom = getGeom(rows, cols);
   const state = {
@@ -422,6 +441,7 @@ export function createState({
     carryDiff,
     noTiebreak: !!noTiebreak,
     exactMode: !!exactMode,
+    groupRule: groupRule | 0,
     hasHopper: false,
     simple: false,
     mRed: 0,
@@ -451,7 +471,8 @@ export function cloneState(state) {
     protectedMiddle: state.blockedCenter >= 0,
     carryDiff: state.carryDiff,
     noTiebreak: state.noTiebreak,
-    exactMode: state.exactMode
+    exactMode: state.exactMode,
+    groupRule: state.groupRule
   });
 }
 
@@ -493,6 +514,7 @@ export function stateFromGame(gameState) {
     staticNeutrals: settings.staticNeutrals === true,
     protectedMiddle: settings.protectedMiddle === true,
     exactMode: settings.exactMode === true,
+    groupRule: GROUP_CODES[settings.groupRule] ?? GROUP_NONE,
     carryDiff
   });
 }
@@ -1108,6 +1130,120 @@ export function countCompletionSpaces(state, target, perm = computePermanentMask
   return total;
 }
 
+// ---------------------------------------------------------------------------
+// Group scoring (the group variants). A group is a maximal set of orthogonally
+// connected cells belonging to one color; purple belongs to both colors, just
+// as it does in a triple, so it can knit red groups and blue groups together
+// at once. Every other shape is inert and blocks connection.
+// ---------------------------------------------------------------------------
+
+let _grpCells = -1;
+let _grpSeen, _grpStack;
+function ensureGroupScratch(cells) {
+  if (_grpCells === cells) return;
+  _grpCells = cells;
+  _grpSeen = new Uint8Array(cells);
+  _grpStack = new Int32Array(cells);
+}
+
+// Group sizes for `target`, written into `out` (unsorted); returns the count.
+function groupSizes(state, target, out) {
+  const g = state.geom;
+  const cells = g.cells;
+  const cols = g.cols;
+  const rows = g.rows;
+  const shapes = state.shapes;
+  ensureGroupScratch(cells);
+  const seen = _grpSeen;
+  const stack = _grpStack;
+  seen.fill(0);
+  let n = 0;
+  for (let start = 0; start < cells; start += 1) {
+    if (seen[start]) continue;
+    const s0 = shapes[start];
+    if (s0 !== target && s0 !== PURPLE) continue;
+    seen[start] = 1;
+    stack[0] = start;
+    let top = 1;
+    let size = 0;
+    while (top > 0) {
+      const i = stack[--top];
+      size += 1;
+      const r = g.rowOf[i];
+      const c = g.colOf[i];
+      if (r > 0) {
+        const j = i - cols;
+        if (!seen[j] && (shapes[j] === target || shapes[j] === PURPLE)) {
+          seen[j] = 1;
+          stack[top++] = j;
+        }
+      }
+      if (r < rows - 1) {
+        const j = i + cols;
+        if (!seen[j] && (shapes[j] === target || shapes[j] === PURPLE)) {
+          seen[j] = 1;
+          stack[top++] = j;
+        }
+      }
+      if (c > 0) {
+        const j = i - 1;
+        if (!seen[j] && (shapes[j] === target || shapes[j] === PURPLE)) {
+          seen[j] = 1;
+          stack[top++] = j;
+        }
+      }
+      if (c < cols - 1) {
+        const j = i + 1;
+        if (!seen[j] && (shapes[j] === target || shapes[j] === PURPLE)) {
+          seen[j] = 1;
+          stack[top++] = j;
+        }
+      }
+    }
+    out[n++] = size;
+  }
+  return n;
+}
+
+const _grpOut = new Int32Array(64);
+
+// The variant's score for one color. Mirrors flipGroupScore in game.js.
+export function countGroupScore(state, target) {
+  const n = groupSizes(state, target, _grpOut);
+  switch (state.groupRule) {
+    case GROUP_MOST:
+      return n;
+    case GROUP_BIGGEST: {
+      let best = 0;
+      for (let i = 0; i < n; i += 1) if (_grpOut[i] > best) best = _grpOut[i];
+      return best;
+    }
+    case GROUP_SMALLEST: {
+      if (n === 0) return 0;
+      let worst = _grpOut[0];
+      for (let i = 1; i < n; i += 1) if (_grpOut[i] < worst) worst = _grpOut[i];
+      return worst;
+    }
+    case GROUP_PRODUCT:
+    case GROUP_SECOND: {
+      let a = 0; // largest
+      let b = 0; // runner-up (0 when there is only one group)
+      for (let i = 0; i < n; i += 1) {
+        const v = _grpOut[i];
+        if (v > a) {
+          b = a;
+          a = v;
+        } else if (v > b) {
+          b = v;
+        }
+      }
+      return state.groupRule === GROUP_SECOND ? b : a * b;
+    }
+    default:
+      return 0;
+  }
+}
+
 function centerTiebreak(state) {
   // 5x5 rule: whoever holds the center loses the tie. Rings count as neutral
   // for control here (only real colored pieces hold the center).
@@ -1123,7 +1259,12 @@ function centerTiebreak(state) {
 function terminalEval(state) {
   let diff;
   let tb;
-  if (state.simple) {
+  if (state.groupRule !== GROUP_NONE) {
+    // Group variants always tie-break on white pieces, even on a board whose
+    // triple game would use the center cell (matches computeFlipWinner).
+    diff = countGroupScore(state, RED) - countGroupScore(state, BLUE) + state.carryDiff;
+    tb = state.simple ? state.whiteRed - state.whiteBlue : whiteDiffGeneric(state);
+  } else if (state.simple) {
     diff = state.cntAllRed - state.cntAllBlue + state.carryDiff;
     tb = state.geom.centerIdx >= 0 ? centerTiebreak(state) : state.whiteRed - state.whiteBlue;
   } else {
@@ -1332,7 +1473,20 @@ function netEval(state, side) {
   return Math.round(Math.tanh(out) * NET_VALUE_SCALE);
 }
 
+// Leaf weight for one point of group margin. Every cell is always occupied, so
+// a group variant's score is fully meaningful mid-game — the running margin is
+// the heuristic. Kept well under TERMINAL_SCALE (a "product" margin can reach
+// the high forties) so a heuristic leaf never outranks a proven win.
+const EVAL_GROUP = Number(process.env.EVAL_GROUP ?? 1000);
+
+function groupEval(state) {
+  const diff = countGroupScore(state, RED) - countGroupScore(state, BLUE) + state.carryDiff;
+  const white = state.simple ? state.whiteRed - state.whiteBlue : whiteDiffGeneric(state);
+  return diff * EVAL_GROUP + white * EVAL_WHITE;
+}
+
 function staticEval(state, side) {
+  if (state.groupRule !== GROUP_NONE) return groupEval(state);
   if (activeWeights) return weightedEval(state, side, activeWeights);
   if (netEnabled && state.simple && net.cells === state.geom.cells) {
     return netEval(state, side);
@@ -1354,8 +1508,12 @@ export function isPhaseOver(state) {
 // piece = 0.1 (whites max out at 0.9, so they can never outweigh a triple —
 // the same lexicographic order the real rules use).
 export function computeWinner(state) {
-  const red = countTriples(state, RED) + (state.carryDiff > 0 ? state.carryDiff : 0);
-  const blue = countTriples(state, BLUE) + (state.carryDiff < 0 ? -state.carryDiff : 0);
+  const scoreOf =
+    state.groupRule !== GROUP_NONE
+      ? (target) => countGroupScore(state, target)
+      : (target) => countTriples(state, target);
+  const red = scoreOf(RED) + (state.carryDiff > 0 ? state.carryDiff : 0);
+  const blue = scoreOf(BLUE) + (state.carryDiff < 0 ? -state.carryDiff : 0);
   let redWhite = 0;
   let blueWhite = 0;
   for (let i = 0; i < state.shapes.length; i += 1) {
@@ -1414,7 +1572,7 @@ export function clearTT() {
 
 function ttPrepare(state) {
   const g = state.geom;
-  const ctx = `${g.rows}x${g.cols}|${state.phase}|${state.uniqueSwap}|${state.staticNeutrals}|${state.blockedCenter}|${state.carryDiff}|${state.noTiebreak}|${state.exactMode}`;
+  const ctx = `${g.rows}x${g.cols}|${state.phase}|${state.uniqueSwap}|${state.staticNeutrals}|${state.blockedCenter}|${state.carryDiff}|${state.noTiebreak}|${state.exactMode}|${state.groupRule}`;
   if (ctx !== ttContext) {
     ttMeta.fill(0);
     ttContext = ctx;
@@ -1684,7 +1842,10 @@ function negamax(state, side, depth, alpha, beta, ply) {
   }
 
   if (count < 0) count = genSimpleInto(state, moveBuf, off);
-  if (simple) scoreMovesSimple(state, side, moveBuf, scoreBuf, off, count, stagedMove >= 0 ? -1 : ttMove, ply);
+  // scoreMovesSimple ranks moves by triple completions, which say nothing about
+  // groups — the group variants fall back to history/killer ordering.
+  if (simple && state.groupRule === GROUP_NONE)
+    scoreMovesSimple(state, side, moveBuf, scoreBuf, off, count, stagedMove >= 0 ? -1 : ttMove, ply);
   else scoreMovesGeneric(moveBuf, scoreBuf, off, count, ttMove, ply);
 
   for (let i = 0; i < count; i += 1) {

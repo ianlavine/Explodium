@@ -1,16 +1,20 @@
 // Bot search worker: runs chooseSolverMove off the server's main thread so a
-// long think (God bot: 4.5s) never blocks other sockets. Requests are handled
+// long think (top level: 10s) never blocks other sockets. Requests are handled
 // serially; each carries a per-room sequence number the server uses to drop
 // replies that a restart/undo has made stale.
+//
+// Every level plays its best move — difficulty is SEARCH DEPTH, with timeMs as
+// a cap so a wide opening cannot hang the game — so no pickWeights are passed.
+// The engine still supports them for the analysis tools.
 import { parentPort } from "worker_threads";
 // engine.js prefers the WASM core and falls back to the JS engine for
 // exotic pieces or if the wasm binary is missing.
 import { chooseSolverMove } from "./engine.js";
 
-parentPort.on("message", ({ seq, roomId, gameState, playerIndex, timeMs, pickWeights }) => {
+parentPort.on("message", ({ seq, roomId, gameState, playerIndex, timeMs, maxDepth }) => {
   let move = null;
   try {
-    move = chooseSolverMove(gameState, playerIndex, { timeMs, pickWeights });
+    move = chooseSolverMove(gameState, playerIndex, { timeMs, maxDepth });
   } catch (err) {
     console.error("bot worker search failed:", err);
   }

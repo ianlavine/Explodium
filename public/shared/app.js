@@ -213,6 +213,7 @@ function startSoloGame(selected, options = {}) {
   socket.emit("start_solo", { gameId: selected.id, options: app.activeGameOptions });
 }
 
+// Fallback names, for games that don't export a `botLevels` table of their own.
 const BOT_LEVEL_NAMES = { 0: "Baby bot", 1: "Level 1 bot", 2: "Level 2 bot", 3: "Level 3 bot", 4: "God bot" };
 
 function startBotGame(selected, botLevel, options = {}) {
@@ -225,16 +226,55 @@ function startBotGame(selected, botLevel, options = {}) {
   els.gameTitle.textContent = selected.name;
   resetGameUi();
   setScreen("lobby");
-  const label = selected.botName ?? BOT_LEVEL_NAMES[botLevel] ?? `Level ${botLevel} bot`;
+  const level = selected.botLevels?.[botLevel];
+  const label =
+    selected.botName ??
+    (level ? `${level.name} (${level.headline})` : BOT_LEVEL_NAMES[botLevel]) ??
+    `Level ${botLevel} bot`;
   els.lobbyStatus.textContent = `Starting game vs ${label}...`;
   els.playerStatus.textContent = `Vs ${label}`;
   els.playersNeeded.textContent = "0";
   socket.emit("start_bot", { gameId: selected.id, options: app.activeGameOptions, botLevel });
 }
 
+// The picker's bot buttons are static markup, which only fits a game whose
+// levels match them. A game module can instead export `botLevels` — {name,
+// headline, blurb, note} per rung — and the picker renders that, so the
+// difficulty copy comes from the game's own table rather than being duplicated
+// in index.html. `headline` is whatever actually defines the level (Flip
+// Triples: how far ahead it looks); `note` is the fine print, such as a time
+// cap. Games without the export keep the markup as authored.
+const staticBotOptions = [...els.soloPicker.querySelectorAll('.solo-opt:not([data-bot="none"])')].map(
+  (el) => el.outerHTML
+);
+
+function renderSoloOptions(levels) {
+  const container = els.soloPicker.querySelector(".solo-picker-options");
+  if (!container) return;
+  const html = levels
+    ? levels
+        .map(
+          (level, i) =>
+            `<button type="button" class="solo-opt" data-bot="${i}">` +
+            `<strong>${escapeHtml(level.name)}` +
+            `<span class="solo-opt-time">${escapeHtml(level.headline)}</span></strong>` +
+            `<small>${escapeHtml(level.blurb)}${level.note ? ` · ${escapeHtml(level.note)}` : ""}</small>` +
+            `</button>`
+        )
+        .join("")
+    : staticBotOptions.join("");
+  const none = container.querySelector('.solo-opt[data-bot="none"]');
+  container.innerHTML = (none ? none.outerHTML : "") + html;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
 function openSoloPicker(selected) {
   soloPickerGame = selected;
   if (els.soloPickerTitle) els.soloPickerTitle.textContent = `${selected.name} — Solo`;
+  renderSoloOptions(selected.botLevels ?? null);
   els.soloPicker.classList.remove("hidden");
 }
 

@@ -3,6 +3,12 @@
 // engine facade and a worker thread, see bot-worker.js).
 import { Worker } from "worker_threads";
 import { shuffle, clampInt } from "../../lib/util.js";
+// The difficulty ladder is shared with the browser so the picker cannot drift
+// from the budgets the search is actually handed.
+import {
+  FLIP_BOT_LEVELS as SHARED_BOT_LEVELS,
+  FLIP_BOT_DEFAULT_LEVEL
+} from "../../../public/games/flip-triples/bot-levels.js";
 
 // `defaultPieces` is the per-player scoring-piece count for a fresh deal; the
 // rest of the cells become neutrals (6x6: 14 + 14 + 8 neutral = 36).
@@ -10,6 +16,15 @@ const FLIP_BOARD_5X5 = { boardSize: "5x5", cols: 5, rows: 5, cells: 25, centerRo
 const FLIP_BOARD_4X6 = { boardSize: "4x6", cols: 4, rows: 6, cells: 24, centerRow: null, centerCol: null, defaultPieces: 9 };
 const FLIP_BOARD_6X6 = { boardSize: "6x6", cols: 6, rows: 6, cells: 36, centerRow: null, centerCol: null, defaultPieces: 14 };
 const FLIP_SCORING_SHAPES = ["red-x", "blue-o", "purple"];
+// Group variants: the play is unchanged, but the win condition stops counting
+// triples and looks at each color's orthogonally-connected groups instead.
+//   most     - number of separate groups
+//   biggest  - size of the largest group
+//   second   - size of the second largest group (a lone group scores 0)
+//   smallest - size of the smallest group (bigger still wins)
+//   product  - the two largest groups multiplied (a lone group scores 0)
+// All of them tie-break on remaining white pieces, whatever the board.
+const FLIP_GROUP_RULES = ["most", "biggest", "second", "smallest", "product"];
 // Ring pieces count with neutrals toward a triple for their color's player.
 const FLIP_RING_FOR_SHAPE = { "red-x": "red-ring", "blue-o": "blue-ring" };
 
@@ -18,20 +33,25 @@ const FLIP_RING_FOR_SHAPE = { "red-x": "red-ring", "blue-o": "blue-ring" };
 const FLIP_BOT_ID = "__flip_bot__";
 const FLIP_BOT_INDEX = 1;
 const FLIP_BOT_DELAY_MS = 300;
-// Difficulty levels: search budget per move (runs synchronously, so keep it
-// short enough not to stall the event loop) plus deliberate blunders —
-// pickWeights are the probabilities of playing the 1st/2nd/3rd/... ranked
-// move. The engine is strong even at tiny budgets, so the lower levels lean
-// on blunders to stay beatable: Baby bot (0) plays its best move only 15% of
-// the time; God bot (4) always plays its best move on a long think.
-const FLIP_BOT_LEVELS = {
-  0: { timeMs: 15, pickWeights: [0.15, 0.25, 0.25, 0.2, 0.15] },
-  1: { timeMs: 60, pickWeights: [0.5, 0.25, 0.15, 0.1] },
-  2: { timeMs: 200, pickWeights: [0.75, 0.17, 0.08] },
-  3: { timeMs: 800, pickWeights: null },
-  4: { timeMs: Number(process.env.FLIP_BOT_MS || 4500), pickWeights: null }
-};
-const FLIP_BOT_DEFAULT_LEVEL = 3;
+// Difficulty ladder. Every level plays the best move it can find; levels differ
+// in how far ahead they are allowed to look. The table lives in
+// public/games/flip-triples/bot-levels.js so the picker shows the same numbers
+// the search actually gets; see there for why depth beats a clock, and for the
+// measurements behind the spacing.
+//
+// The search runs in a worker thread (bot-worker.js), so a long think does not
+// block the event loop. It is one worker handling requests SERIALLY, though, so
+// concurrent games queue behind each other — which is why the deepest level
+// carries a 10s cap rather than being left to run.
+//
+// FLIP_BOT_MS overrides the top rung's CAP only (for a slower host, or tests).
+const FLIP_BOT_LEVELS = SHARED_BOT_LEVELS.map((level, i) => ({
+  maxDepth: level.depth,
+  timeMs:
+    i === SHARED_BOT_LEVELS.length - 1 && process.env.FLIP_BOT_MS
+      ? Number(process.env.FLIP_BOT_MS)
+      : level.capMs
+}));
 
 function flipBoardPreset(boardSize) {
   if (boardSize === "6x6") return FLIP_BOARD_6X6;
@@ -74,7 +94,10 @@ function normalizeFlipSettings(options = {}) {
   }
 
   const neutralPieces = preset.cells - total();
-  const mode = options.mode === "extended" ? "extended" : "basic";
+  // Group variants are single-phase: a two-phase score would add each phase's
+  // group count on top of the other, which means nothing.
+  const groupRule = FLIP_GROUP_RULES.includes(options.groupRule) ? options.groupRule : "none";
+  const mode = options.mode === "extended" && groupRule === "none" ? "extended" : "basic";
   const extendedRule = ["none", "ring", "swap"].includes(options.extendedRule)
     ? options.extendedRule
     : "none";
@@ -102,7 +125,8 @@ function normalizeFlipSettings(options = {}) {
     staticNeutrals,
     protectedMiddle,
     doubleMove,
-    exactMode
+    exactMode,
+    groupRule
   };
 }
 
@@ -408,7 +432,72 @@ function countFlipTriples(board, shape, exactMode = false) {
   return score;
 }
 
+// Sizes of a color's orthogonally-connected groups, largest first. Purple is a
+// wildcard here exactly as it is in a triple: it belongs to both colors, so it
+// can join up red groups and blue groups at the same time. Every other shape
+// (neutral, yellow, rings, hoppers) is inert and blocks connection.
+function flipGroupSizes(board, shape) {
+  const { rows, cols } = flipBoardDimsFromBoard(board);
+  const mine = (r, c) => {
+    const s = board[r]?.[c]?.shape;
+    return s === shape || s === "purple";
+  };
+  const seen = new Set();
+  const sizes = [];
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const key = row * cols + col;
+      if (seen.has(key) || !mine(row, col)) continue;
+      let size = 0;
+      const stack = [key];
+      seen.add(key);
+      while (stack.length) {
+        const cur = stack.pop();
+        const r = Math.floor(cur / cols);
+        const c = cur % cols;
+        size += 1;
+        [[r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]].forEach(([nr, nc]) => {
+          if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return;
+          const nk = nr * cols + nc;
+          if (seen.has(nk) || !mine(nr, nc)) return;
+          seen.add(nk);
+          stack.push(nk);
+        });
+      }
+      sizes.push(size);
+    }
+  }
+  sizes.sort((a, b) => b - a);
+  return sizes;
+}
+
+function flipGroupScore(sizes, rule) {
+  switch (rule) {
+    case "most":
+      return sizes.length;
+    case "biggest":
+      return sizes.length ? sizes[0] : 0;
+    case "second":
+      return sizes[1] ?? 0;
+    case "smallest":
+      return sizes.length ? sizes[sizes.length - 1] : 0;
+    case "product":
+      return (sizes[0] ?? 0) * (sizes[1] ?? 0);
+    default:
+      return 0;
+  }
+}
+
+function getFlipGroupScores(board, rule) {
+  return {
+    red: flipGroupScore(flipGroupSizes(board, "red-x"), rule),
+    blue: flipGroupScore(flipGroupSizes(board, "blue-o"), rule)
+  };
+}
+
 function getFlipTriplesScores(board, settings = {}) {
+  const rule = settings.groupRule ?? "none";
+  if (FLIP_GROUP_RULES.includes(rule)) return getFlipGroupScores(board, rule);
   const exactMode = settings.exactMode === true;
   return {
     red: countFlipTriples(board, "red-x", exactMode),
@@ -447,6 +536,15 @@ function countFlipTriplesOpportunityBonus(board, shape, exactMode = false) {
   return usedOpportunityIds.size;
 }
 
+// Group scores describe the board as it stands, so they are live: every move
+// refreshes the running total. (Triple scores stay hidden until a phase ends.)
+function refreshFlipLiveScores(state) {
+  const rule = state.settings?.groupRule ?? "none";
+  if (!FLIP_GROUP_RULES.includes(rule)) return;
+  state.phaseScores.phase1 = getFlipGroupScores(state.board, rule);
+  refreshFlipTriplesTotals(state);
+}
+
 function refreshFlipTriplesTotals(state) {
   state.scores = {
     red: state.phaseScores.phase1.red + state.phaseScores.phase2.red + state.phaseScores.bonus.red,
@@ -464,15 +562,19 @@ function countFlipRemainingWhitePieces(board, shape) {
   return count;
 }
 
-// Tie-breaker: 5×5 uses the center cell (occupant loses). The center-less
-// boards (4×6, 6×6) use remaining unflipped player pieces — more white X's or
-// O's wins; equal counts stay tied.
+// Tie-breaker: the triple game on 5×5 uses the center cell (occupant loses).
+// Everything else — the center-less boards (4×6, 6×6), and every group variant
+// on any board — uses remaining unflipped player pieces: more white X's or O's
+// wins; equal counts stay tied.
 function computeFlipWinner(state) {
   const { red, blue } = state.scores;
   if (red > blue) return "red";
   if (blue > red) return "blue";
   const preset = flipBoardPreset(state.settings?.boardSize);
-  if (preset.centerRow == null) {
+  // Every group variant tie-breaks on white pieces, including on the boards
+  // that have a center cell for the triple game to use.
+  const groupGame = FLIP_GROUP_RULES.includes(state.settings?.groupRule ?? "none");
+  if (groupGame || preset.centerRow == null) {
     const redWhite = countFlipRemainingWhitePieces(state.board, "red-x");
     const blueWhite = countFlipRemainingWhitePieces(state.board, "blue-o");
     if (redWhite > blueWhite) return "red";
@@ -503,7 +605,13 @@ function flipColorHasScoringMove(state, color) {
   if (seat < 0) return false;
   const shape = color === "red" ? "red-x" : "blue-o";
   const exactMode = settings.exactMode === true;
-  const before = countFlipTriples(board, shape, exactMode);
+  const groupRule = settings.groupRule ?? "none";
+  const useGroups = FLIP_GROUP_RULES.includes(groupRule);
+  const scoreNow = () =>
+    useGroups
+      ? flipGroupScore(flipGroupSizes(board, shape), groupRule)
+      : countFlipTriples(board, shape, exactMode);
+  const before = scoreNow();
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const first = board[row][col];
@@ -521,7 +629,7 @@ function flipColorHasScoringMove(state, color) {
           const savedFrom = board[row][col];
           board[r2][c2] = { ...first, flipped: phase === 1 };
           board[row][col] = second;
-          const after = countFlipTriples(board, shape, exactMode);
+          const after = scoreNow();
           board[r2][c2] = savedTo;
           board[row][col] = savedFrom;
           if (after > before) return true;
@@ -669,6 +777,7 @@ export function createFlipTriplesGame({ io, rooms }) {
     state.doublePending = null;
     room.phase2Ready = new Set();
     room.flipUndo = null;
+    refreshFlipLiveScores(state);
 
     const solo = room.players[0] === room.players[1];
     if (solo) {
@@ -758,20 +867,41 @@ export function createFlipTriplesGame({ io, rooms }) {
       prevFlipped
     };
     state.moveId += 1;
+    refreshFlipLiveScores(state);
     settleFlipTurn(room, actorId);
   }
 
-  // The bot's move choice lives in solver.js, and runs inside a worker
-  // thread so a long think (God bot: 4.5s) never blocks the event loop. Replies
-  // carry a per-room sequence number; a restart or undo bumps it so any
-  // in-flight result for the old position is dropped on arrival.
+  // The bot's move choice lives in solver.js, and runs inside a worker thread
+  // so a long think (top level: 10s) never blocks the event loop. Replies carry
+  // a per-room sequence number; a restart or undo bumps it so any in-flight
+  // result for the old position is dropped on arrival.
+  //
+  // The worker handles requests SERIALLY, so a redundant request is not free —
+  // it costs a full think before the real one is even read. Several paths can
+  // legitimately want the bot to move at nearly the same moment (room created,
+  // game started, colour picked), and they used to queue three searches for one
+  // move: 30s of thinking to make a 10s move. `botPending` collapses that to a
+  // single in-flight search per room, and `botRerun` remembers that the
+  // position moved on underneath it so the answer is recomputed once, rather
+  // than N times up front.
   const botWorker = new Worker(new URL("./bot-worker.js", import.meta.url));
   botWorker.on("error", (err) => console.error("bot worker crashed:", err));
   botWorker.on("message", ({ seq, roomId, move }) => {
     const room = rooms.get(roomId);
     if (!room || room.gameId !== "flip-triples" || !room.isBot) return;
-    if (room.botSeq !== seq) return; // stale: position changed since requested
+    room.botPending = false;
+    const stale = room.botSeq !== seq;
+    const rerun = room.botRerun;
+    room.botRerun = false;
     const state = room.flipTriples;
+    // A search whose position changed under it tells us nothing — but the bot
+    // may still owe a move, so ask again rather than stalling the game.
+    if (stale || rerun) {
+      if (state && !state.setup && !state.gameOver && room.turn === FLIP_BOT_ID) {
+        scheduleFlipBot(roomId);
+      }
+      return;
+    }
     if (!state || state.setup || state.gameOver || state.pendingPhase2) return;
     if (room.turn !== FLIP_BOT_ID || !move) return;
     performFlipSwap(room, FLIP_BOT_ID, move.from, move.to, false);
@@ -785,6 +915,7 @@ export function createFlipTriplesGame({ io, rooms }) {
   // Any in-flight bot search no longer matches the room's position.
   function invalidateBotSearch(room) {
     room.botSeq = (room.botSeq || 0) + 1;
+    if (room.botPending) room.botRerun = true;
   }
 
   // Drives the bot: readies it for phase 2 automatically and requests a move
@@ -846,8 +977,14 @@ export function createFlipTriplesGame({ io, rooms }) {
       emitState(roomId, room);
     }
 
+    // One search in flight per room. A second request would sit behind the
+    // first in the worker's serial queue and cost a whole extra think.
+    if (room.botPending) return;
+
     const level = FLIP_BOT_LEVELS[room.botLevel] ?? FLIP_BOT_LEVELS[FLIP_BOT_DEFAULT_LEVEL];
     invalidateBotSearch(room);
+    room.botPending = true;
+    room.botRerun = false;
     botWorker.postMessage({
       seq: room.botSeq,
       roomId,
@@ -859,11 +996,22 @@ export function createFlipTriplesGame({ io, rooms }) {
       },
       playerIndex: botColorIndex,
       timeMs: level.timeMs,
-      pickWeights: level.pickWeights
+      maxDepth: level.maxDepth
     });
   }
 
+  // Coalesce timers too: several handlers can each decide the bot should move
+  // now, and without this they each get their own timer and their own search.
   function scheduleFlipBot(roomId) {
+    const room = rooms.get(roomId);
+    if (room) {
+      if (room.botTimer) return;
+      room.botTimer = setTimeout(() => {
+        room.botTimer = null;
+        runFlipBot(roomId);
+      }, FLIP_BOT_DELAY_MS);
+      return;
+    }
     setTimeout(() => runFlipBot(roomId), FLIP_BOT_DELAY_MS);
   }
 
@@ -882,8 +1030,13 @@ export function createFlipTriplesGame({ io, rooms }) {
 
     bot: {
       id: FLIP_BOT_ID,
+      // Comes straight off a socket, so coerce and range-check rather than
+      // indexing the array with it — "length" would otherwise pass as a level.
       normalizeLevel(level) {
-        return FLIP_BOT_LEVELS[level] ? level : FLIP_BOT_DEFAULT_LEVEL;
+        const i = Number(level);
+        return Number.isInteger(i) && i >= 0 && i < FLIP_BOT_LEVELS.length
+          ? i
+          : FLIP_BOT_DEFAULT_LEVEL;
       },
       onRoomCreated(roomId) {
         scheduleFlipBot(roomId);
