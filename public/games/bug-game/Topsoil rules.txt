@@ -1,0 +1,86 @@
+﻿TOPSOIL RULEBOOK WORK IN PROGRESS 
+
+
+Overview:
+* You are the leader of one of four bug factions living in the soil and your goal is to layer the soil in ways that allow your bugs to thrive on the surface (and hopefully crush some enemies along the way >:)
+
+Components:
+   * 25 Soil cards
+   * 24 Baby bug tokens (8 for each bug faction)
+   * 26 Poop tokens
+   * 4 Bug cards
+   * 20 Colony dance cards
+   * (maybe 4 reference cards?)
+
+
+Setup:
+   * Everyone choose a bug faction and take the corresponding Bug card
+   * Choose to play regular or special version
+   * Give everyone one poop token and one corresponding baby bug token
+   * Shuffle the soil cards and randomly place one card in the center as the starting garden and put the rest in a pile where everyone can reach
+   * Give each player a starting colony dance at random 
+   * Shuffle and place the rest of the colony dance cards in a pile where everyone can reach and take 3 and place faceup nearby
+   * The person who last saw a bug gets to go first
+
+
+Win condition:
+   * You will be scored on each bug that ends up on the top layer of all the cards as well as the way they are placed on the board
+   * At base each bug that made it to the top is worth one point
+   * Any bug next to a poop token gets +2 points (stuff thats next to 2+ poops get extra bonus points)
+   * Bug in groups of 2 or more will earn bonus points based on this equation (number of groups multiplied by amount of bugs in largest group)
+   * You will also be scored on the different colony dance cards you managed to complete with your bugs throughout the game
+
+
+A turn:
+   * Main action: Place a soil layer card 
+   * Cannot cover rocks or tokens
+   * Placed card must connect to an existing card following the grid pattern
+   * Can be placed fully adjacent to an existing card
+   * Can flip the card to use the mirror image
+   * Must place a card
+   * Free action: Perform anytime you want on your turn
+   * Place tokens
+   * Tokens may cover anything except for opponent bugs 
+   * May place on bugs that aren’t in play
+   * You may place as many as you have
+   * Baby bug tokens can trigger special effects
+   * If you dont want a poop token you can flip it
+   * Complete colony dance card
+   * Complete if your bugs are in the pattern listed on your card (can be any orientation including flipped)
+   * Pick a new colony dance card from the market and flip up a new card to replace it
+   * You may complete as many colony dances as you want on your turn
+   * Discard colony dance card
+   * Exchange one poop token for a new colony dance card (Place old card at the bottom of the pile)
+   * The game ends once all the soil layer cards have been placed
+
+
+Special effects:
+   * Sometimes when you perfectly align certain symbols in the soil ontop of eachother they will cause special things to happen (get a token)
+   * Consume
+   * If you place bug ontop of a sprout you receive a poop token
+   * Reproduce
+   * If you place a bug from your faction ontop of another bug of your faction you receive a baby bug token
+   * If you place a card on your turn in a way that would trigger a special effect for your opponent they don’t get anything
+   * If pieces run out you don’t get any more tokens
+
+Ending the game:
+   * The game ends once all the soil layer cards have been placed
+   * Score for each faction:
+   * Everyone count how many bugs they have
+   * Count how many poop points
+   * Count how many colony dance points
+   * Count the group points
+   * Tally up and see who wins!
+   * If tie whoever has more bugs on the top layer of the soil wins
+   * If still a tie you both rule over the garden as a united front
+
+
+Special bug abilities:
+   * Cockroach
+   * When you reproduce get two baby tokens instead of one
+   * Rolly Polly
+   * Cards may cover rocks (but not tokens)
+   * Spider
+   * Anything orthogonal applies diagonally (for poop and group scoring)
+   * Scorpion
+   * Tokens can go on top of opponent pieces (including other people’s tokens)

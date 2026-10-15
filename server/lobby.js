@@ -17,6 +17,7 @@ import { createLinoGame } from "./games/lino/game.js";
 import { createDownstreamGame } from "./games/downstream/game.js";
 import { createOnly3Game } from "./games/only-3/game.js";
 import { createSecondBestGame } from "./games/second-best/game.js";
+import { createBugGame } from "./games/bug-game/game.js";
 
 export function createLobby(io) {
   const queueByGame = new Map(); // queueKey -> [socketId]
@@ -36,7 +37,8 @@ export function createLobby(io) {
     createLinoGame(ctx),
     createDownstreamGame(ctx),
     createOnly3Game(ctx),
-    createSecondBestGame(ctx)
+    createSecondBestGame(ctx),
+    createBugGame(ctx)
   ];
   const gamesById = new Map(games.map((game) => [game.id, game]));
 

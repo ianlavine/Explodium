@@ -34,7 +34,8 @@ const GAMES = [
   { id: "lino", name: "Lino", export: "lino", state: "lino", hidden: true },
   { id: "downstream", name: "Downstream", export: "downstream", state: "downstream", hidden: true },
   { id: "only-3", name: "Only 3", export: "only3", state: "only3", hidden: true },
-  { id: "second-best", name: "Second Best", export: "secondBest", state: "secondBest" }
+  { id: "second-best", name: "Second Best", export: "secondBest", state: "secondBest" },
+  { id: "bug-game", name: "Bug Game", export: "bugGame", state: "bugGame" }
 ];
 
 const entryFor = (id) => GAMES.find((g) => g.id === id);

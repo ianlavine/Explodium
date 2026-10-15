@@ -1,0 +1,578 @@
+/* Bug Game. Setup is one centred column; the game is two: everything you hold
+   on the left, the table filling the rest. */
+
+body:has(.bg-board) {
+  padding: 12px;
+}
+
+body:has(.bg-board) .shell {
+  max-width: none;
+  padding: 14px 20px;
+}
+
+body:has(.bg-board) .game-header {
+  position: relative;
+  margin-bottom: 6px;
+}
+
+/* Leave Game goes up into the header's empty right end, so the table can run
+   to the bottom of the screen. */
+body:has(.bg-board) .game-footer,
+body:has(.bg-board-setup) .game-footer {
+  top: 16px;
+  bottom: auto;
+}
+
+.play-area:has(.bg-board),
+.play-area:has(.bg-board-setup) {
+  display: block;
+}
+
+/* Your bug, then the table's bugs in turn order; laid over the header's
+   middle so it takes no height of its own. */
+.bg-order {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.bg-order[hidden] {
+  display: none;
+}
+
+.bg-me {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+}
+
+.bg-me small {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.bg-sep {
+  width: 1px;
+  height: 26px;
+  margin: 0 6px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.bg-seat {
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  border-radius: 10px;
+  opacity: 0.45;
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.bg-seat.turn {
+  opacity: 1;
+  transform: scale(1.18);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.bg-board,
+.bg-board-setup {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  user-select: none;
+}
+
+.bg-board {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.bg-muted {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* --- pieces --- */
+
+/* One cell of card 1, cropped to the symbol in it. */
+.bg-icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+  border-radius: 6px;
+  background-size: 300% 400%;
+  background-repeat: no-repeat;
+}
+
+.bg-icon.blank {
+  width: 32px;
+  height: 32px;
+  border: 2px dashed rgba(255, 255, 255, 0.2);
+}
+
+.bg-tok {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  vertical-align: middle;
+  border-radius: 50%;
+}
+
+.bg-tok.poop {
+  background: #e9d7b4;
+  box-shadow: 0 0 0 2px #7a4b2a inset;
+}
+
+.bg-poop {
+  width: 78%;
+  height: 78%;
+  fill: #7a4b2a;
+  stroke: #3d2414;
+  stroke-width: 1.2;
+}
+
+.bg-tok.rock {
+  background: #8d8a86;
+  box-shadow: 0 0 0 2px #4a4744 inset;
+  overflow: hidden;
+}
+
+.bg-tok.rock .bg-icon {
+  border-radius: 50%;
+}
+
+.bg-tok.baby {
+  background: #2b1d17;
+  box-shadow: 0 0 0 3px var(--ring) inset;
+}
+
+.bg-tok.baby .bg-icon {
+  border-radius: 50%;
+}
+
+.bg-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 3px;
+}
+
+.bg-card img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: block;
+  pointer-events: none;
+}
+
+/* --- setup --- */
+
+.bg-setup {
+  max-width: 560px;
+  margin: 10px auto;
+  display: grid;
+  gap: 12px;
+}
+
+.bg-setup h2,
+.bg-setup h3 {
+  margin: 6px 0 0;
+}
+
+.bg-seatlist,
+.bg-tables {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.bg-seatlist li,
+.bg-tables li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.bg-seatlist li.mine {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35) inset;
+}
+
+.bg-seatlist em {
+  margin-left: auto;
+  font-style: normal;
+  color: var(--muted);
+}
+
+.bg-tables li span {
+  flex: 1;
+}
+
+.bg-bugpicks {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.bg-bugpick {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 12px 6px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bg-bugpick.on {
+  border-color: var(--ring);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.bg-bugpick:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.bg-start {
+  justify-self: start;
+}
+
+/* --- side panel --- */
+
+.bg-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: calc(100vh - 110px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* The soil card takes the top; everything else sits at the bottom. */
+.bg-side .bg-lower {
+  margin-top: auto;
+}
+
+.bg-side section {
+  display: grid;
+  gap: 8px;
+}
+
+.bg-side h4 {
+  margin: 0;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+}
+
+.bg-side h4 small {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.bg-soils {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+}
+
+.bg-soils.spent {
+  opacity: 0.3;
+}
+
+.bg-keys {
+  margin: 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.bg-keys kbd {
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bg-soil {
+  display: grid;
+  place-items: center;
+  width: 280px;
+  height: 280px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.bg-pick {
+  cursor: grab;
+  touch-action: none;
+}
+
+.bg-soil.bg-pick:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.bg-tokslot.bg-pick:hover .bg-tok {
+  transform: translateY(-2px) scale(1.06);
+}
+
+.bg-soil.lifted .bg-card {
+  opacity: 0.25;
+}
+
+.bg-toks {
+  display: flex;
+  gap: 22px;
+  padding-left: 4px;
+}
+
+.bg-tokslot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.bg-tokslot .bg-tok {
+  transition: transform 0.15s;
+}
+
+.bg-tokslot.none {
+  opacity: 0.35;
+}
+
+/* An earned token on its way from the table to your stack. */
+.bg-flyer {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1001;
+  pointer-events: none;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.6));
+}
+
+.bg-mydance {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.bg-dance-btns {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+}
+
+.bg-dance-btns button {
+  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* Dances are the card's own gridded dirt, 3:2. */
+.bg-dance {
+  position: relative;
+  flex: none;
+  width: 150px;
+  aspect-ratio: 3 / 2;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bg-dance img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.bg-dance b {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  background: #f39a1e;
+  color: #3a1d0b;
+}
+
+.bg-dance.empty {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.bg-market {
+  display: flex;
+  gap: 8px;
+}
+
+.bg-market .bg-dance {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+.bg-market .bg-dance b {
+  font-size: 0.65rem;
+}
+
+.bg-market.picking .bg-dance {
+  cursor: pointer;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+.bg-market.picking .bg-dance:hover {
+  transform: translateY(-2px);
+}
+
+.bg-hint {
+  margin: 0;
+  min-height: 1.3em;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.bg-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: grid;
+  gap: 3px;
+}
+
+.bg-result table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.bg-result th,
+.bg-result td {
+  padding: 4px 3px;
+  text-align: right;
+}
+
+.bg-result td:first-child {
+  text-align: left;
+  white-space: nowrap;
+}
+
+.bg-result tr.won td {
+  color: #f6c453;
+}
+
+/* --- the table --- */
+
+.bg-field {
+  height: calc(100vh - 110px);
+  min-height: 360px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #1d1410;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.bg-world {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: var(--cell, 40px) var(--cell, 40px);
+}
+
+.bg-world .bg-card {
+  position: absolute;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+}
+
+.bg-world .bg-card.bg-last {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: -1px;
+}
+
+.bg-placed-tok {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6));
+}
+
+.bg-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+.bg-card.bg-ghost {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+}
+
+.bg-ghost-tok {
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+}
+
+.bg-ghost.good {
+  outline: 3px solid #7ad46a;
+}
+
+.bg-ghost.bad {
+  outline: 3px solid #e2533f;
+  opacity: 0.6;
+}
+
+@media (max-width: 760px) {
+  .bg-board {
+    grid-template-columns: 1fr;
+  }
+
+  .bg-side {
+    height: auto;
+  }
+
+  .bg-field {
+    height: 70vh;
+  }
+
+  .bg-bugpicks {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
