@@ -19,6 +19,7 @@ const H = 4;
 const MARGIN = 4; // empty cells shown around the cards
 const MAX_CELL = 84;
 const SIDE_CELL = 70; // the soil card in the side panel: 4 cells = the panel's width
+const PEEK_CELL = 14; // the other held cards and the pile's top, small
 const DRAG_PX = 6; // movement that turns a press into a drag
 
 // Where each symbol sits on card 1, for cutting icons out of its picture.
@@ -29,8 +30,8 @@ const BUG_COLOR = { S: "#e8c547", R: "#e8643c", P: "#4f6ae0", G: "#78b04a" };
 const PROBLEM = {
   rock: "Rocks can't be covered",
   token: "Tokens can't be covered",
-  apart: "It has to overlap or share a side with a card",
-  empty: "Tokens go on a card",
+  apart: "It has to overlap a card or share a side with the board",
+  far: "Tokens go on the board or right beside it",
   taken: "There's a token there already",
   opponent: "Another player's bug can't be covered"
 };
@@ -54,8 +55,8 @@ const size = (rot) => (rot % 2 ? [H, W] : [W, H]);
 const key = (x, y) => `${x},${y}`;
 const me = () => state.seats[state.mySeat];
 const canAct = () => state.phase === "play" && state.turn === state.mySeat && !state.choosing;
-const canLay = () => canAct() && !state.laid && state.current !== null;
-const seatName = (i) => (i === state.mySeat ? "You" : `Player ${i + 1}`);
+const canLay = () => canAct() && !state.laid && me().hand !== null;
+const seatName = (i) => (i === state.mySeat ? "You" : state.seats[i].isBot ? "Bot" : `Player ${i + 1}`);
 
 // --- rules (the same as server/games/bug-game/engine.js) --------------------
 
@@ -82,10 +83,15 @@ function topCells() {
 
 const tokenKeys = () => new Set(state.tokens.map((t) => key(t.x, t.y)));
 
+// The board is every card cell plus every token; a token off the cards
+// extends it. Corners never count as touching.
+const besideBoard = (top, tokens, x, y) =>
+  [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([sx, sy]) => top.has(key(x + sx, y + sy)) || tokens.has(key(x + sx, y + sy)));
+
 function cardProblem(x, y, rot, mirror) {
   const top = topCells();
   const tokens = tokenKeys();
-  const grid = oriented(state.current, rot, mirror);
+  const grid = oriented(me().hand, rot, mirror);
   let ok = false;
   for (let dy = 0; dy < grid.length; dy += 1) {
     for (let dx = 0; dx < grid[0].length; dx += 1) {
@@ -93,17 +99,18 @@ function cardProblem(x, y, rot, mirror) {
       if (tokens.has(k)) return "token";
       const below = top.get(k);
       if (below === "X") return "rock";
-      if (below !== undefined) ok = true;
-      else if ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(([sx, sy]) => top.has(key(x + dx + sx, y + dy + sy)))) ok = true;
+      if (below !== undefined || besideBoard(top, tokens, x + dx, y + dy)) ok = true;
     }
   }
   return ok ? null : "apart";
 }
 
 function tokenProblem(x, y) {
-  const sym = topCells().get(key(x, y));
-  if (sym === undefined) return "empty";
-  if (tokenKeys().has(key(x, y))) return "taken";
+  const top = topCells();
+  const tokens = tokenKeys();
+  if (tokens.has(key(x, y))) return "taken";
+  const sym = top.get(key(x, y));
+  if (sym === undefined) return besideBoard(top, tokens, x, y) ? null : "far";
   const owner = state.seats.findIndex((s) => s.bug === sym);
   return owner !== -1 && owner !== state.mySeat ? "opponent" : null;
 }
@@ -169,6 +176,12 @@ function renderSetup() {
           Start with ${state.seats.length} player${state.seats.length > 1 ? "s" : ""}</button>
          <p class="bg-muted">${state.canStart ? "" : "Everyone needs a bug first."}</p>`
       : `<p class="bg-muted">Waiting for the host to start.</p>`;
+  // Alone at the table: play the bot instead, 1v1.
+  const botRow =
+    state.mySeat === 0 && state.seats.length === 1
+      ? `<button type="button" class="ghost-btn bg-vsbot" ${mine.bug ? "" : "disabled"}>Play the bot (1v1)</button>
+         <p class="bg-muted">${mine.bug ? "Who goes first is random." : "Pick your bug first."}</p>`
+      : "";
   const tables = state.tables.length
     ? `<h3>Or join a table</h3><ul class="bg-tables">${state.tables
         .map(
@@ -183,6 +196,7 @@ function renderSetup() {
       <h3>Your bug</h3>
       <div class="bg-bugpicks">${picks}</div>
       ${startRow}
+      ${botRow}
       ${tables}
     </div>`;
   els.turnStatus.textContent = "Setting up";
@@ -203,6 +217,12 @@ function computeFrame() {
     minY = Math.min(minY, p.y);
     maxX = Math.max(maxX, p.x + w);
     maxY = Math.max(maxY, p.y + h);
+  }
+  for (const t of state.tokens) {
+    minX = Math.min(minX, t.x);
+    minY = Math.min(minY, t.y);
+    maxX = Math.max(maxX, t.x + 1);
+    maxY = Math.max(maxY, t.y + 1);
   }
   minX -= MARGIN;
   minY -= MARGIN;
@@ -231,9 +251,11 @@ function renderTable() {
       cardHtml(p.card, p.rot, p.mirror, cell, i === last && last > 0 ? "bg-last" : "", `left:${ox + p.x * cell}px;top:${oy + p.y * cell}px`)
     )
     .join("");
+  // A token off the cards sits on a patch of its own: it is board now.
+  const top = topCells();
   const tokens = state.tokens
     .map(
-      (t) => `<div class="bg-placed-tok" style="left:${ox + t.x * cell}px;top:${oy + t.y * cell}px;width:${cell}px;height:${cell}px">
+      (t) => `<div class="bg-placed-tok${top.has(key(t.x, t.y)) ? "" : " off"}" style="left:${ox + t.x * cell}px;top:${oy + t.y * cell}px;width:${cell}px;height:${cell}px">
         ${tokenFace(t.type, t.bug, cell * 0.78)}</div>`
     )
     .join("");
@@ -257,23 +279,33 @@ function renderOrder() {
     .map((s, i) => {
       const turn = state.phase === "play" && state.turn === i;
       return `<span class="bg-seat${turn ? " turn" : ""}" style="--ring:${BUG_COLOR[s.bug]}" title="${seatName(i)} · ${BUG_NAME[s.bug]}">
-          ${icon(s.bug, 30)}</span>`;
+          ${icon(s.bug, 30)}<b>${s.score.total}</b></span>`;
     })
     .join("");
   strip.innerHTML = `<span class="bg-me">${icon(me().bug, 34)}<small>You</small></span><span class="bg-sep"></span>${order}`;
 }
 
+// Your card, big. Then, small, every other card in sight: what each other
+// player holds (they play it next) and the top of the pile (whoever ends the
+// turn draws it) — the cards are printed both sides, so all of it is open.
 function soilHtml() {
-  if (state.current === null) return "";
+  const mine = me().hand;
+  const myTurn = state.turn === state.mySeat;
   const live = canLay();
-  const whose = state.turn === state.mySeat ? (state.laid ? "Laid this turn" : "Your soil card") : `${seatName(state.turn)} is laying`;
+  const title = mine === null ? (myTurn ? "Laid · you draw at End turn" : "No card left") : myTurn ? "Your soil card" : "Your next card";
+  const big =
+    mine === null
+      ? `<div class="bg-soil empty">${myTurn && state.pileTop !== null ? "The pile's top card is yours at End turn" : ""}</div>`
+      : `<div class="bg-soil${live ? " bg-pick" : ""}${held?.kind === "card" ? " lifted" : ""}" data-kind="card">
+          ${cardHtml(mine, handRot, handMirror, SIDE_CELL)}</div>`;
+  const peek = (label, card) =>
+    `<div class="bg-peek">${label}${card !== null ? cardHtml(card, 0, false, PEEK_CELL) : `<span class="bg-peek-none">—</span>`}</div>`;
+  const others = state.seats.map((o, i) => (i === state.mySeat ? "" : peek(icon(o.bug, 18), o.hand))).join("");
   return `<section>
-      <h4>${whose} <small>${state.pileLeft} left</small></h4>
-      <div class="bg-soils${state.laid ? " spent" : ""}">
-        <div class="bg-soil${live ? " bg-pick" : ""}${held?.kind === "card" ? " lifted" : ""}" data-kind="card">
-          ${cardHtml(state.current, handRot, handMirror, SIDE_CELL)}</div>
-      </div>
-      <p class="bg-keys"><kbd>Right-click</kbd> or <kbd>R</kbd> rotate · <kbd>F</kbd> flip</p>
+      <h4>${title}</h4>
+      <div class="bg-soils">${big}</div>
+      ${mine !== null ? `<p class="bg-keys"><kbd>Right-click</kbd> or <kbd>R</kbd> rotate · <kbd>F</kbd> flip</p>` : ""}
+      <div class="bg-peeks">${others}${peek(`<small>Pile ${state.pileLeft}</small>`, state.pileTop)}</div>
     </section>`;
 }
 
@@ -294,16 +326,24 @@ function danceSectionHtml() {
   const mine = s.dance !== null ? danceHtml(s.dance, "mine") : `<div class="bg-dance empty">—</div>`;
   const market = state.market.map((d, slot) => danceHtml(d, "", `data-slot="${slot}"`)).join("");
   const pick = state.choosing && state.turn === state.mySeat;
+  // Everyone's dance is open information.
+  const theirs = state.seats
+    .map((o, i) =>
+      i === state.mySeat
+        ? ""
+        : `<div class="bg-theirs">${icon(o.bug, 22)}${o.dance !== null ? danceHtml(o.dance) : `<div class="bg-dance empty">—</div>`}</div>`
+    )
+    .join("");
   return `<section>
       <h4>Your colony dance <small>${s.done.length ? `${s.done.length} done` : ""}</small></h4>
       <div class="bg-mydance">${mine}
         <div class="bg-dance-btns">
           <button type="button" class="primary-btn bg-complete" ${live && s.dance !== null ? "" : "disabled"}>Complete</button>
-          <button type="button" class="ghost-btn bg-swap" ${live && s.dance !== null && s.poop ? "" : "disabled"}>Swap for ${tokenFace("poop", null, 16)}</button>
         </div>
       </div>
       <h4>${pick ? "Choose your new dance" : "Market"}</h4>
       <div class="bg-market${pick ? " picking" : ""}">${market}</div>
+      ${theirs ? `<h4>Their dances</h4><div class="bg-market bg-others">${theirs}</div>` : ""}
     </section>`;
 }
 
@@ -332,7 +372,14 @@ function renderSide() {
   side.innerHTML = `
     ${over ? resultHtml() : soilHtml() + tokensHtml() + danceSectionHtml()}
     <p class="bg-hint">${note}</p>
-    ${myTurn ? `<button type="button" class="primary-btn bg-end" ${state.laid && !state.choosing ? "" : "disabled"}>End turn</button>` : ""}`;
+    ${
+      myTurn
+        ? `<div class="bg-turnbtns">
+            <button type="button" class="ghost-btn bg-undo" ${state.canUndo ? "" : "disabled"}>Undo</button>
+            <button type="button" class="primary-btn bg-end" ${state.laid && !state.choosing ? "" : "disabled"}>End turn</button>
+          </div>`
+        : ""
+    }`;
 }
 
 function renderTurn() {
@@ -404,7 +451,7 @@ function drawGhost() {
     const [w, h] = size(handRot);
     const left = spot ? spot.left : held.px - (w * cell) / 2;
     const top = spot ? spot.top : held.py - (h * cell) / 2;
-    ghost.innerHTML = cardHtml(state.current, handRot, handMirror, cell, `bg-ghost${tone}`, `left:${left}px;top:${top}px`);
+    ghost.innerHTML = cardHtml(me().hand, handRot, handMirror, cell, `bg-ghost${tone}`, `left:${left}px;top:${top}px`);
   } else {
     const left = spot ? spot.left : held.px - cell / 2;
     const top = spot ? spot.top : held.py - cell / 2;
@@ -439,7 +486,8 @@ function drop() {
   // Shown at once; the server's state replaces it a moment later.
   if (held.kind === "card") {
     const move = { x, y, rot: handRot, mirror: handMirror };
-    state.placed = [...state.placed, { card: state.current, ...move }];
+    state.placed = [...state.placed, { card: me().hand, ...move }];
+    me().hand = null;
     state.laid = true;
     handRot = 0;
     handMirror = false;
@@ -485,13 +533,17 @@ els.gameBoard.addEventListener("click", (event) => {
   const join = t.closest("[data-join]");
   if (join) return emit("bug_game_join", { target: join.dataset.join });
   if (t.closest(".bg-start")) return emit("bug_game_start");
+  if (t.closest(".bg-vsbot")) return emit("bug_game_bot");
   if (t.closest(".bg-again")) {
     handRot = 0;
     handMirror = false;
     return emit("bug_game_again");
   }
   if (t.closest(".bg-end")) return emit("bug_game_end");
-  if (t.closest(".bg-swap")) return emit("bug_game_swap");
+  if (t.closest(".bg-undo")) {
+    letGo();
+    return emit("bug_game_undo");
+  }
   if (t.closest(".bg-complete")) {
     emit("bug_game_complete", {}, (res) => {
       if (res?.ok || !state) return;
@@ -655,7 +707,8 @@ export const bugGame = {
     if (fresh) flyGains(gains.items);
     render();
     if (held) drawGhost();
-    setBotThinking(false);
+    // The shared bouncing dots while the bot works out its turn.
+    setBotThinking(state.phase === "play" && !!state.seats[state.turn]?.isBot);
     return true;
   },
 

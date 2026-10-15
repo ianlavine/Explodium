@@ -67,12 +67,18 @@ body:has(.bg-board-setup) .game-footer {
 }
 
 .bg-seat {
-  display: grid;
-  place-items: center;
-  padding: 3px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 3px;
   border-radius: 10px;
   opacity: 0.45;
   transition: opacity 0.2s, transform 0.2s;
+}
+
+.bg-seat b {
+  font-size: 1.1rem;
+  min-width: 1.5ch;
 }
 
 .bg-seat.turn {
@@ -251,7 +257,8 @@ body:has(.bg-board-setup) .game-footer {
   cursor: not-allowed;
 }
 
-.bg-start {
+.bg-start,
+.bg-vsbot {
   justify-self: start;
 }
 
@@ -298,9 +305,6 @@ body:has(.bg-board-setup) .game-footer {
   align-items: center;
 }
 
-.bg-soils.spent {
-  opacity: 0.3;
-}
 
 .bg-keys {
   margin: 0;
@@ -575,4 +579,68 @@ body:has(.bg-board-setup) .game-footer {
   .bg-bugpicks {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* A token off the cards: its own patch of dirt, since it is board now. */
+.bg-placed-tok.off {
+  background: #4a2a1c;
+  border-radius: 3px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.bg-turnbtns {
+  display: flex;
+  gap: 8px;
+}
+
+.bg-turnbtns .bg-end {
+  flex: 1;
+}
+
+.bg-others .bg-theirs {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
+.bg-others .bg-dance {
+  width: 100%;
+}
+
+.bg-soil.empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* The other held cards and the pile's top. */
+.bg-peeks {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: flex-end;
+}
+
+.bg-peek {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+
+.bg-peek small {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.bg-peek-none {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 56px;
+  border-radius: 3px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  color: var(--muted);
 }
