@@ -1,0 +1,692 @@
+/* Lost Cities: the table (their expeditions, the discard row with the deck,
+   your expeditions, your hand) on the left, standings and log on the right. */
+
+body:has(.lc-board) .shell {
+  max-width: 1260px;
+  padding: 18px 22px;
+}
+
+.play-area:has(.lc-board) {
+  display: block;
+  padding-bottom: 64px; /* clear of the fixed Leave Game button */
+}
+
+.lc-board {
+  --lc-w: 62px;
+  --lc-h: 88px;
+  --lc-strip: 23px; /* how much of a covered card still shows */
+  --lc-gap: 12px;
+  --lc-cols: 6;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+  gap: 24px;
+  align-items: start;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.lc-table {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.lc-row {
+  display: grid;
+  grid-template-columns: repeat(var(--lc-cols), var(--lc-w));
+  gap: var(--lc-gap);
+}
+
+/* --- expeditions ---------------------------------------------------------- */
+
+.lc-theirs {
+  align-items: end;
+}
+
+.lc-mine {
+  align-items: start;
+}
+
+.lc-col {
+  display: flex;
+  flex-direction: column;
+  width: var(--lc-w);
+  min-height: var(--lc-h);
+  border-radius: 9px;
+}
+
+.lc-theirs .lc-col {
+  flex-direction: column-reverse;
+}
+
+.lc-mine .lc-col > .lc-card + .lc-card {
+  margin-top: calc(var(--lc-strip) - var(--lc-h));
+}
+
+.lc-theirs .lc-col > .lc-card + .lc-card {
+  margin-bottom: calc(var(--lc-strip) - var(--lc-h));
+}
+
+.lc-col.lc-open {
+  cursor: pointer;
+  outline: 2px dashed rgba(255, 255, 255, 0.5);
+  outline-offset: 3px;
+}
+
+/* --- cards ---------------------------------------------------------------- */
+
+.lc-yellow { --lc-tint: #f2c230; --lc-bg: linear-gradient(160deg, #ffd95a, #e3a91a); --lc-ink: #3b2a00; }
+.lc-blue { --lc-tint: #3d7fe6; --lc-bg: linear-gradient(160deg, #5b97f2, #2459c2); --lc-ink: #ffffff; }
+.lc-white { --lc-tint: #e9ecf1; --lc-bg: linear-gradient(160deg, #ffffff, #d2d8e1); --lc-ink: #2a303b; }
+.lc-green { --lc-tint: #36a866; --lc-bg: linear-gradient(160deg, #4cc07d, #23804a); --lc-ink: #ffffff; }
+.lc-red { --lc-tint: #e04b43; --lc-bg: linear-gradient(160deg, #f06a5f, #b8302b); --lc-ink: #ffffff; }
+.lc-purple { --lc-tint: #9662dd; --lc-bg: linear-gradient(160deg, #ad80ec, #7442bf); --lc-ink: #ffffff; }
+
+.lc-card {
+  position: relative;
+  display: block;
+  flex: none;
+  width: var(--lc-w);
+  height: var(--lc-h);
+  border-radius: 8px;
+  background: var(--lc-bg);
+  color: var(--lc-ink);
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.26), 0 2px 5px rgba(0, 0, 0, 0.38);
+  overflow: hidden;
+  font-weight: 800;
+  user-select: none;
+}
+
+.lc-wager::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.16) 0 5px, transparent 5px 11px);
+  pointer-events: none;
+}
+
+.lc-end {
+  position: absolute;
+  left: 6px;
+  right: 5px;
+  height: var(--lc-strip);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.lc-head {
+  top: 0;
+}
+
+.lc-foot {
+  bottom: 0;
+  transform: rotate(180deg);
+}
+
+.lc-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.lc-face {
+  position: absolute;
+  inset: var(--lc-strip) 0;
+  display: grid;
+  place-items: center;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.lc-num .lc-shake {
+  font-size: 12px;
+}
+
+.lc-face .lc-shake {
+  font-size: 26px;
+}
+
+.lc-back {
+  background: repeating-linear-gradient(45deg, #3b2e1c 0 6px, #2b2115 6px 12px);
+  border-color: #6b5432;
+  box-shadow: inset 0 0 0 3px rgba(233, 196, 120, 0.32), 0 2px 5px rgba(0, 0, 0, 0.38);
+}
+
+/* The last card the other side put out. */
+.lc-card.lc-last {
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.26), 0 0 0 2px #ffffff, 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.lc-mini {
+  --lc-w: 30px;
+  --lc-h: 42px;
+  border-radius: 5px;
+}
+
+.lc-mini .lc-end {
+  display: none;
+}
+
+.lc-mini .lc-face {
+  inset: 0;
+  font-size: 15px;
+}
+
+.lc-mini .lc-face .lc-shake {
+  font-size: 14px;
+}
+
+.lc-slot {
+  display: grid;
+  place-items: center;
+  width: var(--lc-w);
+  height: var(--lc-h);
+  border-radius: 8px;
+  border: 2px dashed var(--lc-tint, rgba(255, 255, 255, 0.3));
+  color: var(--lc-tint, rgba(255, 255, 255, 0.3));
+  opacity: 0.38;
+}
+
+.lc-slot .lc-icon {
+  width: 22px;
+  height: 22px;
+}
+
+/* An empty discard pile is the board's printed spot for that colour. */
+.lc-slot.lc-board-spot {
+  border-style: solid;
+  background: color-mix(in srgb, var(--lc-tint) 16%, transparent);
+  opacity: 0.6;
+}
+
+/* --- the middle row: discard piles and the deck ---------------------------- */
+
+.lc-middle {
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(233, 196, 120, 0.06);
+  border: 1px solid rgba(233, 196, 120, 0.18);
+}
+
+.lc-pile,
+.lc-deck {
+  position: relative;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  border-radius: 8px;
+  cursor: default;
+}
+
+.lc-pile:disabled,
+.lc-deck:disabled {
+  opacity: 1;
+  color: inherit;
+}
+
+.lc-pile.lc-drawable,
+.lc-pile.lc-open,
+.lc-deck.lc-drawable {
+  cursor: pointer;
+}
+
+.lc-pile.lc-drawable .lc-card,
+.lc-deck.lc-drawable .lc-card {
+  transition: transform 0.14s ease;
+}
+
+.lc-pile.lc-drawable:hover .lc-card,
+.lc-deck.lc-drawable:hover .lc-card {
+  transform: translateY(-4px);
+}
+
+.lc-pile.lc-open {
+  outline: 2px dashed rgba(255, 255, 255, 0.5);
+  outline-offset: 3px;
+}
+
+.lc-count {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lc-lock {
+  position: absolute;
+  left: 50%;
+  bottom: -9px;
+  transform: translateX(-50%);
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #0d1117;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.lc-deck-count {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 21px;
+  font-weight: 800;
+  color: #f3e2b8;
+  text-shadow: 0 1px 3px #000000;
+  pointer-events: none;
+}
+
+.lc-deck-empty {
+  border-color: rgba(233, 196, 120, 0.3);
+}
+
+/* --- hands ---------------------------------------------------------------- */
+
+.lc-opp-hand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+}
+
+.lc-who {
+  font-weight: 700;
+}
+
+.lc-who small {
+  color: var(--muted);
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.lc-minis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.lc-hand {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  min-height: calc(var(--lc-h) + 14px);
+  padding-top: 14px;
+}
+
+.lc-hand-card {
+  position: relative;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.14s ease;
+}
+
+.lc-hand-card:disabled {
+  cursor: default;
+}
+
+.lc-hand-card:not(:disabled):hover {
+  transform: translateY(-4px);
+}
+
+.lc-hand-card.lc-selected {
+  transform: translateY(-13px);
+}
+
+.lc-hand-card.lc-selected .lc-card {
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.26), 0 0 0 3px var(--accent), 0 8px 16px rgba(0, 0, 0, 0.45);
+}
+
+.lc-hand-card.lc-fresh::after {
+  content: "new";
+  position: absolute;
+  left: 50%;
+  bottom: -9px;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: var(--accent-2);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* --- end-of-round scores -------------------------------------------------- */
+
+.lc-scores {
+  min-height: 24px;
+}
+
+.lc-chip {
+  width: var(--lc-w);
+  padding: 3px 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  text-align: center;
+  font-weight: 800;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lc-chip.lc-up {
+  color: #6fe39a;
+}
+
+.lc-chip.lc-down {
+  color: #ff7b7b;
+}
+
+.lc-chip.lc-none {
+  background: none;
+  color: var(--muted);
+}
+
+.lc-chip.lc-total {
+  background: rgba(255, 138, 0, 0.16);
+  color: var(--accent-2);
+}
+
+/* --- actions -------------------------------------------------------------- */
+
+.lc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 46px;
+  text-align: center;
+}
+
+.lc-btn {
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lc-btn.lc-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #10131a;
+}
+
+.lc-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lc-hint {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.lc-hint.lc-strong {
+  color: var(--text);
+  font-size: 16px;
+}
+
+/* --- side panel ----------------------------------------------------------- */
+
+.lc-side {
+  display: grid;
+  gap: 12px;
+}
+
+.lc-panel {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(16, 21, 29, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lc-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.lc-panel-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lc-standings {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lc-standings th,
+.lc-standings td {
+  padding: 4px 2px;
+  text-align: right;
+}
+
+.lc-standings th:first-child,
+.lc-standings td:first-child {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.lc-standings th {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lc-total-row td {
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  font-weight: 800;
+}
+
+.lc-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.lc-log li.lc-me {
+  color: var(--text);
+}
+
+.lc-rules summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.lc-rules p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.lc-rules b {
+  color: var(--text);
+}
+
+/* --- setup modal ---------------------------------------------------------- */
+
+.lc-setup-card {
+  max-width: 460px;
+  text-align: left;
+}
+
+.lc-setup-rows {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 18px;
+}
+
+.lc-setup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: rgba(16, 21, 29, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lc-setup-label {
+  display: grid;
+  gap: 3px;
+}
+
+.lc-setup-label strong {
+  font-size: 14px;
+}
+
+.lc-setup-label small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.lc-segmented {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.lc-seg {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lc-seg.selected {
+  background: var(--accent);
+  color: #10131a;
+}
+
+.lc-opponents {
+  display: grid;
+  gap: 7px;
+}
+
+.lc-play-btn {
+  display: grid;
+  gap: 2px;
+  padding: 10px 13px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(16, 21, 29, 0.9);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, transform 0.14s ease;
+}
+
+.lc-play-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.lc-play-btn small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.lc-play-btn.lc-primary {
+  border-color: var(--accent);
+  text-align: center;
+}
+
+/* --- narrow screens ------------------------------------------------------- */
+
+@media (max-width: 960px) {
+  .lc-board {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .lc-board {
+    --lc-w: 44px;
+    --lc-h: 64px;
+    --lc-strip: 18px;
+    --lc-gap: 6px;
+  }
+
+  .lc-end {
+    left: 4px;
+    right: 3px;
+    font-size: 12px;
+  }
+
+  .lc-icon {
+    width: 10px;
+    height: 10px;
+  }
+
+  .lc-face {
+    font-size: 22px;
+  }
+
+  .lc-face .lc-shake {
+    font-size: 19px;
+  }
+
+  .lc-hand {
+    gap: 5px;
+  }
+
+  .lc-setup-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

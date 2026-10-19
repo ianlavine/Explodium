@@ -18,6 +18,7 @@ import { createDownstreamGame } from "./games/downstream/game.js";
 import { createOnly3Game } from "./games/only-3/game.js";
 import { createSecondBestGame } from "./games/second-best/game.js";
 import { createBugGame } from "./games/bug-game/game.js";
+import { createLostCitiesGame } from "./games/lost-cities/game.js";
 
 export function createLobby(io) {
   const queueByGame = new Map(); // queueKey -> [socketId]
@@ -38,7 +39,8 @@ export function createLobby(io) {
     createDownstreamGame(ctx),
     createOnly3Game(ctx),
     createSecondBestGame(ctx),
-    createBugGame(ctx)
+    createBugGame(ctx),
+    createLostCitiesGame(ctx)
   ];
   const gamesById = new Map(games.map((game) => [game.id, game]));
 
