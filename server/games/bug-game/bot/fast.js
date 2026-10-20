@@ -9,6 +9,8 @@
 //           5 rock, 6 sprout
 //   tok[i]  0 none, 1 poop, 2 rock token, 3+b baby of bug b
 //   vis(i)  the bug showing there (a baby counts, a token hides a card bug)
+//   born[i] the clock time of whatever shows there (a dance needs at least
+//           one bug born after its card was taken); a move being tried is NOW
 import * as E from "../engine.js";
 
 export const N = 200;
@@ -71,12 +73,20 @@ export const DANCE_SHAPES = E.DANCES.map((d) => {
 });
 
 const SIDE = [1, -1, N, -N];
+const DIAG = [N + 1, N - 1, -N + 1, -N - 1];
+const ALL8 = [...SIDE, ...DIAG];
+
+// Born time of a move being tried, and the "since" for a dance not yet taken
+// (nothing on the table, not even this move, is newer than that card).
+export const NOW = 1e9;
 
 export class Board {
   constructor() {
     this.sym = new Int8Array(N * N);
     this.tok = new Int8Array(N * N);
+    this.born = new Int32Array(N * N);
     this.poopAdj = new Uint8Array(N * N); // how many poop tokens touch this cell
+    this.poopAdjD = new Uint8Array(N * N); // ... diagonally (a Spider's power)
     this.near = new Uint8Array(N * N); // board, or sharing a side with it
     this.stamp = new Int32Array(N * N);
     this.stampN = 0;
@@ -88,8 +98,17 @@ export class Board {
     this.state = state;
     this.sym.fill(-1);
     this.tok.fill(0);
+    this.born.fill(0);
     this.poopAdj.fill(0);
+    this.poopAdjD.fill(0);
     this.near.fill(0);
+    // The special version's powers, by bug index (S R P G).
+    const powers = state.powers ?? [];
+    const on = (b) => powers.includes(b);
+    this.rockOk = [false, false, on("P"), false];
+    this.diag = [false, false, false, on("G")];
+    this.stackOk = [on("S"), false, false, false];
+    this.dbl = [false, on("R"), false, false];
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -97,17 +116,22 @@ export class Board {
     for (const p of state.placed) {
       const v = VARIANTS[p.card].find((q) => q.rot === p.rot && q.mirror === !!p.mirror) ?? variantOf(p);
       for (let dy = 0; dy < v.h; dy += 1) {
-        for (let dx = 0; dx < v.w; dx += 1) this.sym[idx(p.x + dx, p.y + dy)] = v.codes[dy * v.w + dx];
+        for (let dx = 0; dx < v.w; dx += 1) {
+          const i = idx(p.x + dx, p.y + dy);
+          this.sym[i] = v.codes[dy * v.w + dx];
+          this.born[i] = p.t ?? 0;
+        }
       }
       minX = Math.min(minX, p.x);
       minY = Math.min(minY, p.y);
       maxX = Math.max(maxX, p.x + v.w - 1);
       maxY = Math.max(maxY, p.y + v.h - 1);
     }
+    // Tokens in the order laid: the last on a cell is the one that shows.
     for (const t of state.tokens) {
       const i = idx(t.x, t.y);
       this.tok[i] = t.type === "poop" ? T_POOP : t.type === "rock" ? T_ROCK : T_BABY + BUG_INDEX[t.bug];
-      if (t.type === "poop") for (const s of SIDE) this.poopAdj[i + s] += 1;
+      if (t.type === "baby") this.born[i] = t.t ?? 0;
       minX = Math.min(minX, t.x);
       minY = Math.min(minY, t.y);
       maxX = Math.max(maxX, t.x);
@@ -117,6 +141,7 @@ export class Board {
     for (let y = minY; y <= maxY; y += 1) {
       for (let x = minX; x <= maxX; x += 1) {
         const i = idx(x, y);
+        if (this.tok[i] === T_POOP) this.addPoop(i, 1);
         if (this.sym[i] >= 0 || this.tok[i]) {
           this.near[i] = 1;
           for (const s of SIDE) this.near[i + s] = 1;
@@ -148,15 +173,35 @@ export class Board {
 
   // --- scoring ---------------------------------------------------------------
 
-  // Score of bug b from a list of the cells it shows on (list must be exact).
-  scoreList(b, list) {
-    let poop = 0;
-    for (let k = 0; k < list.length; k += 1) if (this.poopAdj[list[k]]) poop += 2;
-    return list.length + poop + this.groupScore(b, list);
+  addPoop(i, d) {
+    for (const s of SIDE) this.poopAdj[i + s] += d;
+    for (const s of DIAG) this.poopAdjD[i + s] += d;
   }
 
-  // (number of groups of 2+) x (size of the biggest), orthogonal.
+  poopPoints(b, list) {
+    let poop = 0;
+    if (this.diag[b]) {
+      for (let k = 0; k < list.length; k += 1) if (this.poopAdj[list[k]] || this.poopAdjD[list[k]]) poop += 2;
+    } else {
+      for (let k = 0; k < list.length; k += 1) if (this.poopAdj[list[k]]) poop += 2;
+    }
+    return poop;
+  }
+
+  // Score of bug b from a list of the cells it shows on (list must be exact).
+  scoreList(b, list) {
+    return list.length + this.poopPoints(b, list) + this.groupScore(b, list);
+  }
+
+  // scoreList with the poop and group parts weighted (a bot's own taste).
+  scoreListW(b, list, wPoop, wGroup) {
+    return list.length + wPoop * this.poopPoints(b, list) + wGroup * this.groupScore(b, list);
+  }
+
+  // (number of groups of 2+) x (size of the biggest), orthogonal (a Spider
+  // with its power: diagonal too).
   groupScore(b, list) {
+    const dirs = this.diag[b] ? ALL8 : SIDE;
     const st = ++this.stampN;
     const stamp = this.stamp;
     const stack = this.stack;
@@ -172,8 +217,8 @@ export class Board {
       while (top) {
         const i = stack[--top];
         size += 1;
-        for (let s = 0; s < 4; s += 1) {
-          const n = i + SIDE[s];
+        for (let s = 0; s < dirs.length; s += 1) {
+          const n = i + dirs[s];
           if (stamp[n] !== st && this.vis(n) === b) {
             stamp[n] = st;
             stack[top++] = n;
@@ -193,8 +238,10 @@ export class Board {
   }
 
   // The best partial match of a dance for bug b: the most pattern cells any one
-  // placement of it has covered by b. `list` = the cells b shows on.
-  danceProgress(b, dance, list = this.cells[b]) {
+  // placement of it has covered by b. `list` = the cells b shows on. A full
+  // match with no bug born after `since` (when the card was taken) doesn't
+  // count yet — it scores as one short, since one new bug in it finishes it.
+  danceProgress(b, dance, list = this.cells[b], since = -1) {
     let best = 0;
     const need = E.DANCES[dance].cells.length;
     for (const shape of DANCE_SHAPES[dance]) {
@@ -204,7 +251,15 @@ export class Board {
         for (let p = 0; p < offs.length; p += 1) {
           const anchor = c - offs[p];
           let hit = 0;
-          for (let q = 0; q < offs.length; q += 1) if (this.vis(anchor + offs[q]) === b) hit += 1;
+          let fresh = false;
+          for (let q = 0; q < offs.length; q += 1) {
+            const i = anchor + offs[q];
+            if (this.vis(i) === b) {
+              hit += 1;
+              if (this.born[i] > since) fresh = true;
+            }
+          }
+          if (hit === need && !fresh) hit = need - 1;
           if (hit > best) {
             best = hit;
             if (best === need) return best;
@@ -217,15 +272,15 @@ export class Board {
 
   // --- moves -----------------------------------------------------------------
 
-  // Every legal placement of a card: [{ v, x, y }].
-  cardMoves(card) {
+  // Every legal placement of a card by bug `layer`: [{ v, x, y }].
+  cardMoves(card, layer = -1) {
     const out = [];
     for (const v of VARIANTS[card]) {
       for (let y = this.minY - v.h; y <= this.maxY + 1; y += 1) {
         if (Math.abs(y) > LIMIT) continue;
         for (let x = this.minX - v.w; x <= this.maxX + 1; x += 1) {
           if (Math.abs(x) > LIMIT) continue;
-          if (this.cardFits(v, x, y)) out.push({ v, x, y });
+          if (this.cardFits(v, x, y, layer)) out.push({ v, x, y });
         }
       }
     }
@@ -233,25 +288,26 @@ export class Board {
   }
 
   // cardMoves without building the list: fn(v, x, y) for each legal one.
-  eachCardMove(card, fn) {
+  eachCardMove(card, fn, layer = -1) {
     for (const v of VARIANTS[card]) {
       for (let y = this.minY - v.h; y <= this.maxY + 1; y += 1) {
         if (Math.abs(y) > LIMIT) continue;
         for (let x = this.minX - v.w; x <= this.maxX + 1; x += 1) {
           if (Math.abs(x) > LIMIT) continue;
-          if (this.cardFits(v, x, y)) fn(v, x, y);
+          if (this.cardFits(v, x, y, layer)) fn(v, x, y);
         }
       }
     }
   }
 
-  cardFits(v, x, y) {
+  cardFits(v, x, y, layer = -1) {
+    const rocksOk = layer >= 0 && this.rockOk[layer];
     let connected = false;
     for (let dy = 0; dy < v.h; dy += 1) {
       const row = idx(x, y + dy);
       for (let dx = 0; dx < v.w; dx += 1) {
         const i = row + dx;
-        if (this.tok[i] || this.sym[i] === ROCK) return false;
+        if (this.tok[i] || (this.sym[i] === ROCK && !rocksOk)) return false;
         if (this.near[i]) connected = true;
       }
     }
@@ -271,7 +327,8 @@ export class Board {
         const i = row + dx;
         const old = this.sym[i];
         const now = v.codes[dy * v.w + dx];
-        undo.push(i, old);
+        undo.push(i, old, this.born[i]);
+        this.born[i] = NOW;
         if (old >= 1 && old <= 4) touched |= 1 << (old - 1);
         if (now >= 1 && now <= 4) {
           touched |= 1 << (now - 1);
@@ -287,7 +344,10 @@ export class Board {
   }
 
   revert(undo) {
-    for (let k = undo.length - 2; k >= 0; k -= 2) this.sym[undo[k]] = undo[k + 1];
+    for (let k = undo.length - 3; k >= 0; k -= 3) {
+      this.sym[undo[k]] = undo[k + 1];
+      this.born[undo[k]] = undo[k + 2];
+    }
   }
 
   // The exact cell list for bug b after a card was applied: the old list minus
@@ -312,21 +372,26 @@ export class Board {
   }
 
   // Cells a token may go on for `seat`: free board cells not showing another
-  // player's bug, and empty cells beside the board.
+  // player's bug, and empty cells beside the board. A Scorpion with its power:
+  // any board cell at all.
   tokenCells(seat) {
     const out = [];
+    const anything = this.stackOk[BUG_INDEX[this.state.seats[seat].bug]];
     for (let y = this.minY - 1; y <= this.maxY + 1; y += 1) {
       if (Math.abs(y) > LIMIT) continue;
       for (let x = this.minX - 1; x <= this.maxX + 1; x += 1) {
         if (Math.abs(x) > LIMIT) continue;
         const i = idx(x, y);
-        if (this.tok[i]) continue;
+        if (this.tok[i]) {
+          if (anything) out.push(i);
+          continue;
+        }
         const c = this.sym[i];
         if (c < 0) {
           if (this.near[i]) out.push(i);
           continue;
         }
-        if (c >= 1 && c <= 4) {
+        if (c >= 1 && c <= 4 && !anything) {
           const owner = this.owners[c - 1];
           if (owner !== -1 && owner !== seat) continue;
         }
@@ -342,21 +407,29 @@ export class Board {
     let touched = 0;
     const was = this.vis(i);
     if (was >= 0) touched |= 1 << was;
-    this.tok[i] = t;
-    if (t === T_POOP) {
-      for (const s of SIDE) {
-        this.poopAdj[i + s] += 1;
+    const prev = this.tok[i]; // a stacking Scorpion may cover a token
+    this.tokSaved = prev;
+    this.bornSaved = this.born[i];
+    if (prev === T_POOP || t === T_POOP) {
+      for (const s of ALL8) {
         const n = this.vis(i + s);
         if (n >= 0) touched |= 1 << n;
       }
     }
+    if (prev === T_POOP) this.addPoop(i, -1);
+    this.tok[i] = t;
+    if (t >= T_BABY) this.born[i] = NOW;
+    if (t === T_POOP) this.addPoop(i, 1);
     if (t >= T_BABY) touched |= 1 << (t - T_BABY);
     return touched;
   }
 
+  // Only ever right after placeToken on the same cell.
   removeToken(i) {
-    if (this.tok[i] === T_POOP) for (const s of SIDE) this.poopAdj[i + s] -= 1;
-    this.tok[i] = 0;
+    if (this.tok[i] === T_POOP) this.addPoop(i, -1);
+    this.tok[i] = this.tokSaved;
+    if (this.tokSaved === T_POOP) this.addPoop(i, 1);
+    this.born[i] = this.bornSaved;
   }
 
   // Bug b's exact list after a token went on cell i.

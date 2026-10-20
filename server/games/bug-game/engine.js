@@ -18,7 +18,10 @@
 // sprout or on your own bug consumes or reproduces — except it can never be
 // covered.
 //
-// Everyone's dance is open. Starting dances are the four 3-pointers. The
+// Everyone's dance is open. Starting dances are the four 3-pointers. A dance
+// only counts if at least one of its bugs was placed AFTER you took the card —
+// by anyone: a card or a baby. So a pattern already on the table when you
+// take it needs a new bug in it (a baby on top of one of its bugs will do). The
 // player on turn may take back their most recent action (one step only).
 // When the pile runs out, players play the card they hold without drawing;
 // the game ends once every card is down.
@@ -128,14 +131,34 @@ export function topCells(placed) {
   return top;
 }
 
+// The top token on each cell (a Scorpion can stack them; the last one laid
+// is the one that counts).
 const tokenMap = (tokens) => new Map(tokens.map((t) => [key(t.x, t.y), t]));
+
+// --- the special version: each bug's power -------------------------------------------
+// `state.powers` lists the bugs whose power is on (the special version turns on
+// all four; the lab can turn on one at a time).
+//   Cockroach (R): starts with no baby; each reproduce earns two babies.
+//   Rolly Polly (P): the cards it lays may cover rocks (never tokens).
+//   Spider (G): diagonals count as touching, for its poop and its groups.
+//   Scorpion (S): its tokens may go on any bug or any token (stacking).
+export const hasPower = (state, bug, power) => !!state.powers?.includes(power) && bug === power;
+const DIAGS = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+const touchDirs = (state, bug) => (hasPower(state, bug, "G") ? [...SIDES, ...DIAGS] : SIDES);
+
+// Lab only: per-seat counts of what each player did (state.stats, if set).
+const tally = (state, seat, field, n = 1) => {
+  if (state.stats) state.stats[seat][field] = (state.stats[seat][field] ?? 0) + n;
+};
 
 // Does (x, y) share a side with the board (a card cell or a token)?
 const besideBoard = (top, tokens, x, y) =>
   SIDES.some(([sx, sy]) => top.has(key(x + sx, y + sy)) || tokens.has(key(x + sx, y + sy)));
 
-// Why a card can't go here, or null if it can.
-export function cardProblem(state, cardIndex, x, y, rot, mirror) {
+// Why a card can't go here, or null if it can. `layer` is the bug laying it
+// (a Rolly Polly with its power may cover rocks).
+export function cardProblem(state, cardIndex, x, y, rot, mirror, layer = null) {
+  const rocksOk = hasPower(state, layer, "P");
   const top = topCells(state.placed);
   const tokens = tokenMap(state.tokens);
   let connected = false;
@@ -145,7 +168,7 @@ export function cardProblem(state, cardIndex, x, y, rot, mirror) {
       const k = key(x + dx, y + dy);
       if (tokens.has(k)) return "token";
       const below = top.get(k);
-      if (below === ROCK) return "rock";
+      if (below === ROCK && !rocksOk) return "rock";
       if (below !== undefined || besideBoard(top, tokens, x + dx, y + dy)) connected = true;
     }
   }
@@ -159,12 +182,22 @@ export function tokenProblem(state, seat, x, y) {
   if (Math.abs(x) > LIMIT || Math.abs(y) > LIMIT) return "far";
   const top = topCells(state.placed);
   const tokens = tokenMap(state.tokens);
-  if (tokens.has(key(x, y))) return "token";
+  // A Scorpion with its power may lay a token on anything at all.
+  const anything = hasPower(state, state.seats[seat].bug, "S");
+  if (tokens.has(key(x, y))) return anything ? null : "token";
   const sym = top.get(key(x, y));
   if (sym === undefined) return besideBoard(top, tokens, x, y) ? null : "far";
   const owner = state.seats.findIndex((s) => s.bug === sym);
-  if (owner !== -1 && owner !== seat) return "opponent";
+  if (owner !== -1 && owner !== seat && !anything) return "opponent";
   return null;
+}
+
+// What shows on a cell: the top token if any ("baby:R", "poop", "rock"),
+// else the top card's symbol, else undefined.
+function showing(top, tokens, k) {
+  const t = tokens.get(k);
+  if (t) return t.type === "baby" ? `baby:${t.bug}` : t.type;
+  return top.get(k);
 }
 
 // Every cell where this bug shows on top: card cells not under a token, plus
@@ -174,21 +207,22 @@ export function bugCells(state, bug) {
   const tokens = tokenMap(state.tokens);
   const cells = new Set();
   for (const [k, sym] of top) if (sym === bug && !tokens.has(k)) cells.add(k);
-  for (const t of state.tokens) if (t.type === "baby" && t.bug === bug) cells.add(key(t.x, t.y));
+  for (const [k, t] of tokens) if (t.type === "baby" && t.bug === bug) cells.add(k);
   return cells;
 }
 
 export function scoreOf(state, seat) {
   const bug = state.seats[seat].bug;
   const cells = bugCells(state, bug);
-  const poops = new Set(state.tokens.filter((t) => t.type === "poop").map((t) => key(t.x, t.y)));
+  const poops = new Set([...tokenMap(state.tokens)].filter(([, t]) => t.type === "poop").map(([k]) => k));
   const at = (k) => k.split(",").map(Number);
+  const dirs = touchDirs(state, bug);
   let poop = 0;
   for (const k of cells) {
     const [x, y] = at(k);
-    if (SIDES.some(([sx, sy]) => poops.has(key(x + sx, y + sy)))) poop += 2;
+    if (dirs.some(([sx, sy]) => poops.has(key(x + sx, y + sy)))) poop += 2;
   }
-  // Groups: orthogonally connected, two or more.
+  // Groups: orthogonally connected (a Spider's diagonally too), two or more.
   const seen = new Set();
   const sizes = [];
   for (const k of cells) {
@@ -199,7 +233,7 @@ export function scoreOf(state, seat) {
     while (stack.length) {
       const [x, y] = at(stack.pop());
       size += 1;
-      for (const [sx, sy] of SIDES) {
+      for (const [sx, sy] of dirs) {
         const n = key(x + sx, y + sy);
         if (cells.has(n) && !seen.has(n)) {
           seen.add(n);
@@ -230,15 +264,49 @@ function danceShapes(index) {
   return shapes;
 }
 
-export function danceMade(state, seat, index) {
-  const cells = bugCells(state, state.seats[seat].bug);
-  const mine = [...cells].map((k) => k.split(",").map(Number));
-  return danceShapes(index).some((shape) =>
-    mine.some(([ax, ay]) => {
+// When the thing showing each of a bug's cells was put there (a card's or a
+// baby's clock time): "x,y" -> time.
+function bugBorn(state, bug) {
+  const born = new Map();
+  const tokens = tokenMap(state.tokens);
+  for (const p of state.placed) {
+    oriented(p.card, p.rot, p.mirror).forEach((row, dy) =>
+      row.forEach((sym, dx) => {
+        const k = key(p.x + dx, p.y + dy);
+        if (sym === bug && !tokens.has(k)) born.set(k, p.t ?? 0);
+        else born.delete(k);
+      })
+    );
+  }
+  for (const [k, t] of tokens) {
+    if (t.type === "baby" && t.bug === bug) born.set(k, t.t ?? 0);
+    else born.delete(k);
+  }
+  return born;
+}
+
+// "made": the pattern is there with a bug placed since the card was taken;
+// "stale": it's there, but every bug in it is older than the card;
+// "missing": it isn't there.
+export function danceStatus(state, seat, index) {
+  const born = bugBorn(state, state.seats[seat].bug);
+  const since = state.seats[seat].danceAt ?? 0;
+  const mine = [...born.keys()].map((k) => k.split(",").map(Number));
+  let status = "missing";
+  for (const shape of danceShapes(index)) {
+    for (const [ax, ay] of mine) {
       const [fx, fy] = shape[0];
-      return shape.every(([x, y]) => cells.has(key(ax - fx + x, ay - fy + y)));
-    })
-  );
+      const keys = shape.map(([x, y]) => key(ax - fx + x, ay - fy + y));
+      if (!keys.every((k) => born.has(k))) continue;
+      if (keys.some((k) => born.get(k) > since)) return "made";
+      status = "stale";
+    }
+  }
+  return status;
+}
+
+export function danceMade(state, seat, index) {
+  return danceStatus(state, seat, index) === "made";
 }
 
 // --- the game -------------------------------------------------------------------
@@ -279,7 +347,9 @@ export function start(state) {
   const starting = threes.splice(0, state.seats.length);
   const dances = shuffle([...threes, ...DANCES.map((_, i) => i).filter((i) => DANCES[i].pts !== 3)]);
   state.phase = "play";
-  state.placed = [{ card: pile.shift(), x: 0, y: 0, rot: 0, mirror: false }];
+  // Every card and token carries the clock time it went down (for dances).
+  state.clock = 0;
+  state.placed = [{ card: pile.shift(), x: 0, y: 0, rot: 0, mirror: false, t: 0 }];
   state.pile = pile;
   state.tokens = [];
   state.poopLeft = POOP_TOKENS;
@@ -287,10 +357,12 @@ export function start(state) {
   for (const s of state.seats) {
     s.hand = pile.shift();
     s.poop = 1;
-    s.babies = 1;
+    // A Cockroach with its power starts with no baby.
+    s.babies = hasPower(state, s.bug, "R") ? 0 : 1;
     state.poopLeft -= 1;
-    state.babiesLeft[s.bug] -= 1;
+    state.babiesLeft[s.bug] -= s.babies;
     s.dance = starting.shift();
+    s.danceAt = 0; // when this dance was taken
     s.done = [];
   }
   state.dancePile = dances;
@@ -315,7 +387,7 @@ const onTurn = (state, seat) => state.phase === "play" && state.turn === seat &&
 
 // --- undo: one step, the player on turn's most recent action -------------------
 
-const UNDOABLE = ["placed", "pile", "tokens", "poopLeft", "babiesLeft", "seats", "dancePile", "market", "laid", "choosing", "log"];
+const UNDOABLE = ["placed", "pile", "tokens", "poopLeft", "babiesLeft", "seats", "dancePile", "market", "laid", "choosing", "log", "clock"];
 
 // Called by each action just before it changes anything. `state.noUndo` (the
 // bot lab) skips the copying.
@@ -338,7 +410,12 @@ function gain(state, seat, eaten, bred) {
   const s = state.seats[seat];
   const bug = s.bug;
   const poops = Math.min(eaten.length, state.poopLeft);
-  const babies = Math.min(bred.length, state.babiesLeft[bug]);
+  // A Cockroach with its power earns two babies for each reproduce.
+  const perBreed = hasPower(state, bug, "R") ? 2 : 1;
+  const babies = Math.min(bred.length * perBreed, state.babiesLeft[bug]);
+  tally(state, seat, "breeds", bred.length);
+  tally(state, seat, "babiesEarned", babies);
+  tally(state, seat, "poopEarned", poops);
   s.poop += poops;
   state.poopLeft -= poops;
   s.babies += babies;
@@ -351,7 +428,7 @@ function gain(state, seat, eaten, bred) {
     seat,
     items: [
       ...eaten.slice(0, poops).map((c) => ({ ...c, type: "poop" })),
-      ...bred.slice(0, babies).map((c) => ({ ...c, type: "baby" }))
+      ...bred.flatMap((c) => Array(perBreed).fill(c)).slice(0, babies).map((c) => ({ ...c, type: "baby" }))
     ]
   };
 }
@@ -362,24 +439,33 @@ export function layCard(state, seat, { x, y, rot, mirror } = {}) {
   if (Math.abs(x) > LIMIT || Math.abs(y) > LIMIT) return false;
   mirror = !!mirror;
   const card = state.seats[seat].hand;
-  if (cardProblem(state, card, x, y, rot, mirror)) return false;
+  const bug = state.seats[seat].bug;
+  if (cardProblem(state, card, x, y, rot, mirror, bug)) return false;
 
   // Consume and reproduce: only the bugs of the player laying the card count.
-  const bug = state.seats[seat].bug;
   const top = topCells(state.placed);
   const eaten = [];
   const bred = [];
   oriented(card, rot, mirror).forEach((row, dy) =>
     row.forEach((sym, dx) => {
-      if (sym !== bug) return;
       const below = top.get(key(x + dx, y + dy));
+      if (state.stats) {
+        if (below === ROCK) tally(state, seat, "rocksCovered");
+        const owner = state.seats.findIndex((o) => o.bug === below);
+        if (owner !== -1 && owner !== seat) {
+          tally(state, seat, "coveredOthers");
+          tally(state, owner, "coveredByOthers");
+        }
+      }
+      if (sym !== bug) return;
       if (below === SPROUT) eaten.push({ x: x + dx, y: y + dy });
       else if (below === bug) bred.push({ x: x + dx, y: y + dy });
     })
   );
 
   remember(state);
-  state.placed.push({ card, x, y, rot, mirror });
+  state.clock += 1;
+  state.placed.push({ card, x, y, rot, mirror, t: state.clock });
   state.seats[seat].hand = null;
   state.laid = true;
   gain(state, seat, eaten, bred);
@@ -393,13 +479,26 @@ export function layToken(state, seat, { x, y, type } = {}) {
   const stock = type === "baby" ? "babies" : type === "poop" || type === "rock" ? "poop" : null;
   if (!stock || s[stock] < 1) return false;
   if (tokenProblem(state, seat, x, y)) return false;
-  // A baby is a bug: on a sprout it eats, on its own kind it breeds.
-  const below = topCells(state.placed).get(key(x, y));
+  // A baby is a bug: on a sprout it eats, on its own kind it breeds (a card
+  // bug or, for a stacking Scorpion, one of its own babies).
+  const below = showing(topCells(state.placed), tokenMap(state.tokens), key(x, y));
+  const mine = below === s.bug || below === `baby:${s.bug}`;
+  if (state.stats) {
+    tally(state, seat, `${type}Placed`);
+    if (tokenMap(state.tokens).has(key(x, y))) tally(state, seat, "stacked");
+    const victim = below?.startsWith?.("baby:") ? below.slice(5) : below;
+    const owner = state.seats.findIndex((o) => o.bug === victim);
+    if (owner !== -1 && owner !== seat) {
+      tally(state, seat, "tokensOnOthers");
+      tally(state, owner, "coveredByOthers");
+    }
+  }
   remember(state);
   s[stock] -= 1;
-  state.tokens.push({ x, y, type, seat, bug: type === "baby" ? s.bug : null });
-  if (type === "baby" && (below === SPROUT || below === s.bug)) {
-    gain(state, seat, below === SPROUT ? [{ x, y }] : [], below === s.bug ? [{ x, y }] : []);
+  state.clock += 1;
+  state.tokens.push({ x, y, type, seat, bug: type === "baby" ? s.bug : null, t: state.clock });
+  if (type === "baby" && (below === SPROUT || mine)) {
+    gain(state, seat, below === SPROUT ? [{ x, y }] : [], mine ? [{ x, y }] : []);
   }
   return true;
 }
@@ -421,6 +520,7 @@ export function chooseDance(state, seat, slot) {
   if (!Number.isInteger(slot) || slot < 0 || slot >= state.market.length) return false;
   remember(state);
   state.seats[seat].dance = state.market[slot];
+  state.seats[seat].danceAt = state.clock;
   if (state.dancePile.length) state.market[slot] = state.dancePile.shift();
   else state.market.splice(slot, 1);
   state.choosing = false;

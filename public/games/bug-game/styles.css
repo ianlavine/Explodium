@@ -134,17 +134,18 @@ body:has(.bg-board-setup) .game-footer {
   border-radius: 50%;
 }
 
+/* The poop token: its own art, cut round. */
 .bg-tok.poop {
-  background: #e9d7b4;
-  box-shadow: 0 0 0 2px #7a4b2a inset;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 2px solid #3d2414;
 }
 
-.bg-poop {
-  width: 78%;
-  height: 78%;
-  fill: #7a4b2a;
-  stroke: #3d2414;
-  stroke-width: 1.2;
+.bg-tok.poop img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .bg-tok.rock {
@@ -643,4 +644,40 @@ body:has(.bg-board-setup) .game-footer {
   border-radius: 3px;
   border: 1px dashed rgba(255, 255, 255, 0.2);
   color: var(--muted);
+}
+
+/* Regular / special version choice. */
+.bg-mode {
+  display: flex;
+  gap: 8px;
+}
+
+.bg-mode button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.bg-setup h3 small {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.bg-bugpick small {
+  font-weight: 400;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: var(--muted);
+  text-align: center;
+}
+
+.bg-power {
+  margin: 0 0 4px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.bg-power b {
+  color: var(--text);
 }

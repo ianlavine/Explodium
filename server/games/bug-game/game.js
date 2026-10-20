@@ -29,6 +29,7 @@ import {
   layCard,
   layToken,
   completeDance,
+  danceStatus,
   undo,
   chooseDance,
   endTurn,
@@ -53,6 +54,7 @@ function view(roomId, room, seat, tables) {
     bugs: BUGS,
     maxSeats: MAX_SEATS,
     canStart: canStart(s),
+    powers: s.powers ?? [], // the special version: every bug's power on
     seats: s.seats.map((x, i) => ({ bug: x.bug, isBot: room.bgSockets[i] === null }))
   };
   if (s.phase === "setup") {
@@ -170,13 +172,15 @@ export function createBugGame({ io, rooms }) {
   function on(socket, event, fn) {
     socket.on(event, (payload = {}, ack) => {
       const at = seatOf(socket, payload.roomId);
-      const ok = at ? !!fn(at, payload) : false;
+      // A handler returns a boolean, or { ok, why } to tell the player why not.
+      const res = at ? fn(at, payload) : false;
+      const ok = res && typeof res === "object" ? !!res.ok : !!res;
       if (ok) {
         send(payload.roomId, at.room);
         if (at.s.phase === "setup" || event === "bug_game_start" || event === "bug_game_bot") sendSetupTables();
         maybeBot(payload.roomId, at.room);
       }
-      if (typeof ack === "function") ack({ ok });
+      if (typeof ack === "function") ack({ ok, why: res?.why });
     });
   }
 
@@ -231,6 +235,12 @@ export function createBugGame({ io, rooms }) {
       socket.on("disconnect", gone);
 
       on(socket, "bug_game_pick", ({ s, seat }, { bug }) => pickBug(s, seat, bug));
+      // Regular or special (all four bug powers): the host's call, before the deal.
+      on(socket, "bug_game_mode", ({ s, seat }, { special }) => {
+        if (seat !== 0 || s.phase !== "setup") return false;
+        s.powers = special ? [...BUGS] : [];
+        return true;
+      });
       // Alone at the table with a bug picked: play the bot, 1v1.
       on(socket, "bug_game_bot", ({ room, s, seat }) => {
         if (seat !== 0 || s.phase !== "setup" || s.seats.length !== 1 || !s.seats[0].bug) return false;
@@ -244,7 +254,9 @@ export function createBugGame({ io, rooms }) {
       on(socket, "bug_game_again", ({ s, seat }) => seat === 0 && s.phase === "over" && start(s));
       on(socket, "bug_game_card", ({ s, seat }, move) => layCard(s, seat, move));
       on(socket, "bug_game_token", ({ s, seat }, move) => layToken(s, seat, move));
-      on(socket, "bug_game_complete", ({ s, seat }) => completeDance(s, seat));
+      on(socket, "bug_game_complete", ({ s, seat }) =>
+        completeDance(s, seat) || { ok: false, why: s.seats[seat]?.dance != null ? danceStatus(s, seat, s.seats[seat].dance) : null }
+      );
       on(socket, "bug_game_undo", ({ s, seat }) => undo(s, seat));
       on(socket, "bug_game_choose", ({ s, seat }, { slot }) => chooseDance(s, seat, slot));
       on(socket, "bug_game_end", ({ s, seat }) => endTurn(s, seat));

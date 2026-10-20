@@ -1,0 +1,31 @@
+Balanced deck (Oct 18 2026). Same rocks/sprouts/empties as the printed cards;
+only which bug sits in each bug spot changed (24 of 25 cards).
+Rows top to bottom. S Scorpion, R Cockroach, P Rolly Polly, G Spider, X rock, L sprout, . empty
+
+breeder5 vs itself, 6,300 fresh 2-player games: S 49.3%  R 51.7%  P 49.0%  G 50.1%
+
+card 01:  ..P  GLS  SR.  .X.
+card 02:  GLS  .P.  X..  R..
+card 03:  G.P  .X.  .X.  RLS
+card 04:  ..S  R.X  .G.  PLR
+card 05:  ...  PSX  X..  SRG
+card 06:  X.R  S..  .RP  PLG
+card 07:  LS.  .G.  XRL  ..P
+card 08:  SLP  .R.  ...  X.G
+card 09:  P..  LXG  RP.  XS.
+card 10:  .GL  .XP  R.X  LS.
+card 11:  ..X  RG.  SP.  ..L
+card 12:  X..  LG.  RX.  .PS
+card 13:  S.X  GLP  ...  R..
+card 14:  ..R  GLS  SP.  X.G
+card 15:  .P.  .GX  L.P  RGS
+card 16:  ..R  LS.  GP.  X..
+card 17:  P.X  ...  S..  LGR
+card 18:  P.G  XSL  G.R  ...
+card 19:  ..G  SX.  R.P  ...
+card 20:  ...  XSL  GRP  ...
+card 21:  SLP  .G.  RXR  ...
+card 22:  P.X  ...  .S.  RLG
+card 23:  .PR  .LG  .S.  X..
+card 24:  XR.  .LP  ...  SLG
+card 25:  RL.  .PL  S..  GX.

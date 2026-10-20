@@ -25,6 +25,14 @@ const DRAG_PX = 6; // movement that turns a press into a drag
 // Where each symbol sits on card 1, for cutting icons out of its picture.
 const ICON_AT = { S: [2, 0], R: [2, 1], P: [0, 2], G: [1, 2], L: [1, 1], X: [1, 3] };
 const BUG_NAME = { S: "Scorpion", R: "Cockroach", P: "Rolly Polly", G: "Spider" };
+// Each bug's power in the special version (the rules live in the engine).
+const POWER = {
+  R: "Starts with no baby, but every reproduce earns two.",
+  P: "Its cards may cover rocks (never tokens).",
+  G: "Diagonals count as touching, for its poop and its groups.",
+  S: "Its tokens may go on anything: any bug, any token."
+};
+const hasPower = (bug) => !!state.powers?.includes(bug);
 const BUG_COLOR = { S: "#e8c547", R: "#e8643c", P: "#4f6ae0", G: "#78b04a" };
 
 const PROBLEM = {
@@ -98,7 +106,7 @@ function cardProblem(x, y, rot, mirror) {
       const k = key(x + dx, y + dy);
       if (tokens.has(k)) return "token";
       const below = top.get(k);
-      if (below === "X") return "rock";
+      if (below === "X" && !(me().bug === "P" && hasPower("P"))) return "rock";
       if (below !== undefined || besideBoard(top, tokens, x + dx, y + dy)) ok = true;
     }
   }
@@ -108,11 +116,13 @@ function cardProblem(x, y, rot, mirror) {
 function tokenProblem(x, y) {
   const top = topCells();
   const tokens = tokenKeys();
-  if (tokens.has(key(x, y))) return "taken";
+  // A Scorpion with its power may lay a token on anything at all.
+  const anything = me().bug === "S" && hasPower("S");
+  if (tokens.has(key(x, y))) return anything ? null : "taken";
   const sym = top.get(key(x, y));
   if (sym === undefined) return besideBoard(top, tokens, x, y) ? null : "far";
   const owner = state.seats.findIndex((s) => s.bug === sym);
-  return owner !== -1 && owner !== state.mySeat ? "opponent" : null;
+  return owner !== -1 && owner !== state.mySeat && !anything ? "opponent" : null;
 }
 
 // --- pieces -------------------------------------------------------------------
@@ -122,13 +132,10 @@ const icon = (sym, px, cls = "") => {
   return `<span class="bg-icon ${cls}" style="width:${px}px;height:${px}px;background-image:url(${img(0)});background-position:${col * 50}% ${(row * 100) / 3}%"></span>`;
 };
 
-const POOP_SVG = `<svg viewBox="0 0 40 40" class="bg-poop" aria-hidden="true">
-    <ellipse cx="20" cy="31" rx="15" ry="6" /><ellipse cx="20" cy="23.5" rx="11" ry="5.5" />
-    <ellipse cx="20" cy="16" rx="7" ry="4.8" /><path d="M20 6 q5 4 1 8 h-3 q3 -3 2 -8z" />
-  </svg>`;
+const POOP_IMG = "/games/bug-game/cards/poop.jpg";
 
 function tokenFace(type, bug, px) {
-  if (type === "poop") return `<span class="bg-tok poop" style="width:${px}px;height:${px}px">${POOP_SVG}</span>`;
+  if (type === "poop") return `<span class="bg-tok poop" style="width:${px}px;height:${px}px"><img src="${POOP_IMG}" alt="" draggable="false" /></span>`;
   if (type === "rock") return `<span class="bg-tok rock" style="width:${px}px;height:${px}px">${icon("X", px)}</span>`;
   return `<span class="bg-tok baby" style="width:${px}px;height:${px}px;--ring:${BUG_COLOR[bug]}">${icon(bug, px * 0.8)}</span>`;
 }
@@ -154,6 +161,13 @@ function danceHtml(index, cls = "", attrs = "") {
 
 function renderSetup() {
   const mine = me();
+  const special = state.powers.length > 0;
+  // Regular or special (bug powers): the host chooses, everyone sees it.
+  const host = state.mySeat === 0;
+  const mode = `<div class="bg-mode">
+      <button type="button" class="${special ? "ghost-btn" : "primary-btn"}" data-mode="regular" ${host ? "" : "disabled"}>Regular</button>
+      <button type="button" class="${special ? "primary-btn" : "ghost-btn"}" data-mode="special" ${host ? "" : "disabled"}>Special · bug powers</button>
+    </div>`;
   const seats = state.seats
     .map(
       (s, i) => `<li${i === state.mySeat ? ' class="mine"' : ""}>
@@ -167,7 +181,9 @@ function renderSetup() {
     .map((b) => {
       const taken = state.seats.some((s, i) => i !== state.mySeat && s.bug === b);
       return `<button type="button" class="bg-bugpick${mine.bug === b ? " on" : ""}" data-bug="${b}" ${taken ? "disabled" : ""}
-          style="--ring:${BUG_COLOR[b]}">${icon(b, 56)}<span>${BUG_NAME[b]}</span></button>`;
+          style="--ring:${BUG_COLOR[b]}">${icon(b, 56)}<span>${BUG_NAME[b]}</span>${
+            special ? `<small>${POWER[b]}</small>` : ""
+          }</button>`;
     })
     .join("");
   const startRow =
@@ -193,6 +209,8 @@ function renderSetup() {
   els.gameBoard.innerHTML = `<div class="bg-setup">
       <h2>Table ${state.table}</h2>
       <ol class="bg-seatlist">${seats}</ol>
+      <h3>Version${host ? "" : " <small>(the host picks)</small>"}</h3>
+      ${mode}
       <h3>Your bug</h3>
       <div class="bg-bugpicks">${picks}</div>
       ${startRow}
@@ -278,7 +296,8 @@ function renderOrder() {
   const order = state.seats
     .map((s, i) => {
       const turn = state.phase === "play" && state.turn === i;
-      return `<span class="bg-seat${turn ? " turn" : ""}" style="--ring:${BUG_COLOR[s.bug]}" title="${seatName(i)} · ${BUG_NAME[s.bug]}">
+      const power = hasPower(s.bug) ? ` — ${POWER[s.bug]}` : "";
+      return `<span class="bg-seat${turn ? " turn" : ""}" style="--ring:${BUG_COLOR[s.bug]}" title="${seatName(i)} · ${BUG_NAME[s.bug]}${power}">
           ${icon(s.bug, 30)}<b>${s.score.total}</b></span>`;
     })
     .join("");
@@ -316,7 +335,8 @@ function tokensHtml() {
   const tok = (type, count) =>
     `<div class="bg-tokslot${live && count ? " bg-pick" : ""}${count ? "" : " none"}" data-kind="token" data-type="${type}">
       ${tokenFace(type, s.bug, 38)}<span>×${count}</span></div>`;
-  return `<section class="bg-lower"><h4>Your tokens</h4><div class="bg-toks">
+  const power = hasPower(s.bug) ? `<p class="bg-power"><b>${BUG_NAME[s.bug]} power:</b> ${POWER[s.bug]}</p>` : "";
+  return `<section class="bg-lower">${power}<h4>Your tokens</h4><div class="bg-toks">
       ${tok("poop", s.poop - inbound.poop)}${tok("baby", s.babies - inbound.baby)}</div></section>`;
 }
 
@@ -534,6 +554,8 @@ els.gameBoard.addEventListener("click", (event) => {
   if (join) return emit("bug_game_join", { target: join.dataset.join });
   if (t.closest(".bg-start")) return emit("bug_game_start");
   if (t.closest(".bg-vsbot")) return emit("bug_game_bot");
+  const modeBtn = t.closest("[data-mode]");
+  if (modeBtn && !modeBtn.disabled) return emit("bug_game_mode", { special: modeBtn.dataset.mode === "special" });
   if (t.closest(".bg-again")) {
     handRot = 0;
     handMirror = false;
@@ -547,7 +569,10 @@ els.gameBoard.addEventListener("click", (event) => {
   if (t.closest(".bg-complete")) {
     emit("bug_game_complete", {}, (res) => {
       if (res?.ok || !state) return;
-      note = "That pattern isn't on the table yet";
+      note =
+        res?.why === "stale"
+          ? "It's there, but every bug in it is older than your card — add a new one (a baby on top will do)"
+          : "That pattern isn't on the table yet";
       const hint = els.gameBoard.querySelector(".bg-hint");
       if (hint) hint.textContent = note;
     });

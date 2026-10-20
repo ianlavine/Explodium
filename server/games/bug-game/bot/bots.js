@@ -6,7 +6,7 @@
 // The live game uses BOTS.breeder5 (see ../game.js). The rest are the ladder
 // it was found on; the lab that plays them off lives in tools/bug-game.
 import * as E from "../engine.js";
-import { Board, BUG_INDEX, DANCE_SHAPES, N, idx, xOf, yOf, T_POOP, T_ROCK, T_BABY, SPROUT } from "./fast.js";
+import { Board, BUG_INDEX, DANCE_SHAPES, N, NOW, idx, xOf, yOf, T_POOP, T_ROCK, T_BABY, SPROUT } from "./fast.js";
 
 const B = new Board();
 
@@ -15,7 +15,7 @@ const B = new Board();
 // replay them a beat apart.
 let recording = null;
 
-function act(name, state, ...args) {
+export function act(name, state, ...args) {
   const ok = E[name](state, ...args);
   if (ok && recording && recording.state === state) recording.moves.push([name, args]);
   return ok;
@@ -70,7 +70,8 @@ export function chooseByProgress(state, seat) {
   let bestKey = -Infinity;
   state.market.forEach((d, slot) => {
     const need = E.DANCES[d].cells.length;
-    const left = need - B.danceProgress(me, d);
+    // Taken now, so nothing already on the table counts as new for it.
+    const left = need - B.danceProgress(me, d, B.cells[me], NOW);
     const key = -left * 10 + E.DANCES[d].pts + Math.random() * 0.1;
     if (key > bestKey) {
       bestKey = key;
@@ -93,20 +94,28 @@ function cardDelta(m, me, opp, base, Bd = B) {
 
 // Score change of a token on cell i, plus what a baby would earn.
 function tokenDelta(i, t, me, opp, base) {
-  const below = B.sym[i];
+  const t0 = B.tok[i];
+  const s0 = B.sym[i];
   const touched = B.placeToken(i, t);
   let d = 0;
   if (touched & (1 << me)) d += B.scoreList(me, B.listAfterToken(me, i)) - base.me;
   if (touched & (1 << opp)) d -= B.scoreList(opp, B.listAfterToken(opp, i)) - base.opp;
   B.removeToken(i);
   const isBaby = t >= T_BABY;
-  return { d, ate: isBaby && below === SPROUT ? 1 : 0, bred: isBaby && below === me + 1 && B.tok[i] === 0 ? 1 : 0 };
+  return {
+    d,
+    ate: isBaby && t0 === 0 && s0 === SPROUT ? 1 : 0,
+    bred: isBaby && ((t0 === 0 && s0 === me + 1) || t0 === T_BABY + me) ? 1 : 0
+  };
 }
 
 // Tokens earned, valued — capped by what's left in the pools.
 const earned = (state, seat, ate, bred, w) =>
   Math.min(ate, state.poopLeft) * (w.livePoop ?? w.poopTok) +
-  Math.min(bred, state.babiesLeft[state.seats[seat].bug]) * (w.liveBaby ?? w.babyTok);
+  Math.min(bred * breedMul(state, seat), state.babiesLeft[state.seats[seat].bug]) * (w.liveBaby ?? w.babyTok);
+
+// Babies per breed: two for a Cockroach with its power.
+const breedMul = (state, seat) => (E.hasPower(state, state.seats[seat].bug, "R") ? 2 : 1);
 
 // What one more baby / poop token in hand is worth right now: the best spot
 // for it on the board as it stands (never less than the fixed values).
@@ -134,7 +143,7 @@ export const random = {
   name: "random",
   turn(state, seat) {
     B.load(state);
-    layMove(state, seat, pick(B.cardMoves(state.seats[seat].hand)));
+    layMove(state, seat, pick(B.cardMoves(state.seats[seat].hand, BUG_INDEX[state.seats[seat].bug])));
     const s = state.seats[seat];
     const bug = BUG_INDEX[s.bug];
     for (let n = s.babies; n > 0; n -= 1) {
@@ -169,7 +178,7 @@ export function makeGreedy(name, w) {
       const base = { me: B.score(me), opp: B.score(opp) };
       let best = null;
       let bestV = -Infinity;
-      for (const m of B.cardMoves(state.seats[seat].hand)) {
+      for (const m of B.cardMoves(state.seats[seat].hand, BUG_INDEX[state.seats[seat].bug])) {
         const { d, ate, bred } = cardDelta(m, me, opp, base);
         const v = d + earned(state, seat, ate, bred, w) + Math.random() * 1e-3;
         if (v > bestV) {
@@ -222,15 +231,15 @@ export const greedy = makeGreedy("greedy", { poopTok: 1.5, babyTok: 2, babyHold:
 function danceTerm(state, seat, b, list, w) {
   const d = state.seats[seat].dance;
   if (d === null) return 0;
-  return danceValue(state, d, b, list, w, 0, [d]);
+  return danceValue(state, d, b, list, w, 0, [d], state.seats[seat].danceAt ?? -1);
 }
 
 // With w.chainDepth, a finished dance is also worth the best market dance it
 // lets you take next (bugs can be reused, so that one may be finished too),
 // up to chainDepth deep. Without it, a flat w.chain.
-function danceValue(state, d, b, list, w, depth, used) {
+function danceValue(state, d, b, list, w, depth, used, since) {
   const need = E.DANCES[d].cells.length;
-  const missing = need - B.danceProgress(b, d, list);
+  const missing = need - B.danceProgress(b, d, list, since);
   const v = E.DANCES[d].pts * (w.danceShare[missing] ?? 0);
   if (missing !== 0) return v;
   if (!w.chainDepth) return v + w.chain;
@@ -238,7 +247,7 @@ function danceValue(state, d, b, list, w, depth, used) {
   let next = 0;
   for (const m of state.market) {
     if (used.includes(m)) continue;
-    const mv = danceValue(state, m, b, list, w, depth + 1, [...used, m]);
+    const mv = danceValue(state, m, b, list, w, depth + 1, [...used, m], NOW);
     if (mv > next) next = mv;
   }
   return v + next;
@@ -279,7 +288,7 @@ export function makeDancer(name, w) {
       const hot = hotCells(state, seat, opp, oppSeat, me);
 
       // Stage 1: the cheap score change for every placement.
-      const moves = B.cardMoves(state.seats[seat].hand).map((m) => {
+      const moves = B.cardMoves(state.seats[seat].hand, BUG_INDEX[state.seats[seat].bug]).map((m) => {
         const { d, ate, bred } = cardDelta(m, me, opp, base);
         m.v0 = d + earned(state, seat, ate, bred, w) + Math.random() * 1e-3;
         return m;
@@ -386,9 +395,9 @@ function replyCost(after, mySeat, cards, w) {
       m.x = x;
       m.y = y;
       const r = cardDelta(m, opp, me, base, B2);
-      const val = r.d + Math.min(r.ate, poopLeft) * w.poopTok + Math.min(r.bred, babiesLeft) * w.babyTok;
+      const val = r.d + Math.min(r.ate, poopLeft) * w.poopTok + Math.min(r.bred * breedMul(after, oppSeat), babiesLeft) * w.babyTok;
       if (val > best) best = val;
-    });
+    }, opp);
     sum += best;
   }
   return sum / cards.length;
@@ -422,9 +431,9 @@ function bestCard(Bd, st, who, card, w) {
     m.x = x;
     m.y = y;
     const r = cardDelta(m, who, other, base, Bd);
-    const val = r.d + Math.min(r.ate, poopLeft) * w.poopTok + Math.min(r.bred, babiesLeft) * w.babyTok;
+    const val = r.d + Math.min(r.ate, poopLeft) * w.poopTok + Math.min(r.bred * breedMul(st, whoSeat), babiesLeft) * w.babyTok;
     if (val > best.val) best = { val, move: { v, x, y } };
-  });
+  }, who);
   return best;
 }
 
@@ -473,7 +482,7 @@ export function makeDeep(name, w0) {
       const base = { me: B.score(me), opp: B.score(opp) };
       const danceBase = danceTerm(state, seat, me, B.cells[me], w) - danceTerm(state, oppSeat, opp, B.cells[opp], w);
       const hot = hotCells(state, seat, opp, oppSeat, me);
-      const moves = B.cardMoves(state.seats[seat].hand).map((m) => {
+      const moves = B.cardMoves(state.seats[seat].hand, BUG_INDEX[state.seats[seat].bug]).map((m) => {
         const { d, ate, bred } = cardDelta(m, me, opp, base);
         m.v0 = d + earned(state, seat, ate, bred, w) + Math.random() * 1e-3;
         return m;
@@ -529,7 +538,7 @@ export function makeLooker(name, w0) {
       const base = { me: B.score(me), opp: B.score(opp) };
       const danceBase = danceTerm(state, seat, me, B.cells[me], w) - danceTerm(state, oppSeat, opp, B.cells[opp], w);
       const hot = hotCells(state, seat, opp, oppSeat, me);
-      const moves = B.cardMoves(state.seats[seat].hand).map((m) => {
+      const moves = B.cardMoves(state.seats[seat].hand, BUG_INDEX[state.seats[seat].bug]).map((m) => {
         const { d, ate, bred } = cardDelta(m, me, opp, base);
         m.v0 = d + earned(state, seat, ate, bred, w) + Math.random() * 1e-3;
         return m;
