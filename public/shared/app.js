@@ -36,7 +36,8 @@ const GAMES = [
   { id: "only-3", name: "Only 3", export: "only3", state: "only3", hidden: true },
   { id: "second-best", name: "Second Best", export: "secondBest", state: "secondBest" },
   { id: "bug-game", name: "Bug Game", export: "bugGame", state: "bugGame" },
-  { id: "lost-cities", name: "Lost Cities", export: "lostCities", state: "lostCities" }
+  { id: "lost-cities", name: "Lost Cities", export: "lostCities", state: "lostCities" },
+  { id: "bluff-race", name: "Bluff Race", export: "bluffRace", state: "bluffRace" }
 ];
 
 const entryFor = (id) => GAMES.find((g) => g.id === id);
@@ -361,13 +362,18 @@ els.gameList.addEventListener("click", (event) => {
   const card = target.closest(".game-card");
   if (!card || !card.dataset.gameId) return;
   withGame(card.dataset.gameId, (selected) => {
+    // Games seated with AI opponents (Downstream) or round one shared table
+    // (Bluff Race) have no two-player queue — the card starts a table. Their
+    // setup step, if they have one, runs first all the same.
+    const table = !!selected.soloOnly;
     if (selected.openSetup) {
-      selected.openSetup({ mode: "queue", onReady: (options) => startQueue(selected, options) });
+      selected.openSetup({
+        mode: table ? "solo" : "queue",
+        onReady: (options) => (table ? startSoloGame(selected, options) : startQueue(selected, options))
+      });
       return;
     }
-    // Games seated with AI opponents (Downstream) have no two-player queue —
-    // the card just starts a table.
-    if (selected.soloOnly) {
+    if (table) {
       startSoloGame(selected);
       return;
     }

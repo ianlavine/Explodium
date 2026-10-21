@@ -19,6 +19,7 @@ import { createOnly3Game } from "./games/only-3/game.js";
 import { createSecondBestGame } from "./games/second-best/game.js";
 import { createBugGame } from "./games/bug-game/game.js";
 import { createLostCitiesGame } from "./games/lost-cities/game.js";
+import { createBluffRaceGame } from "./games/bluff-race/game.js";
 
 export function createLobby(io) {
   const queueByGame = new Map(); // queueKey -> [socketId]
@@ -40,7 +41,8 @@ export function createLobby(io) {
     createOnly3Game(ctx),
     createSecondBestGame(ctx),
     createBugGame(ctx),
-    createLostCitiesGame(ctx)
+    createLostCitiesGame(ctx),
+    createBluffRaceGame(ctx)
   ];
   const gamesById = new Map(games.map((game) => [game.id, game]));
 
