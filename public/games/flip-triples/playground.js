@@ -145,7 +145,7 @@ function build() {
   root.className = "modal-overlay hidden";
   root.innerHTML = `
     <div class="modal-card pg-card">
-      <h3>Flip Triples — Metrics Playground</h3>
+      <h3>Flip Tac Toe — Metrics Playground</h3>
       <p class="modal-sub">left-click: cycle × / ◯ / neutral &nbsp;·&nbsp; right-click: lock / unlock a tile</p>
       <div class="pg-layout">
         <div class="board flip-triples-board flip-board-4x6 pg-board" role="grid"></div>

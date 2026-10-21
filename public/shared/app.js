@@ -27,14 +27,14 @@ import { socket, els, app, setScreen, setBotThinking, updateTurn } from "./conte
 const GAMES = [
   { id: "explodium", name: "Explodium", export: "explodium", state: null, hidden: true },
   { id: "toy-battle", name: "Toy Battle", export: "toyBattle", state: "toyBattle", hidden: true },
-  { id: "flip-triples", name: "Flip Triples", export: "flipTriples", state: "flipTriples" },
+  { id: "flip-triples", name: "Flip Tac Toe", export: "flipTriples", state: "flipTriples" },
   { id: "truck-mania", name: "Truck Mania", export: "truckMania", state: "truckMania", hidden: true },
-  { id: "uber-mania", name: "Uber Mania", export: "uberMania", state: "uberMania", styles: ["truck-mania", "uber-mania"] },
+  { id: "uber-mania", name: "Uber Mania", export: "uberMania", state: "uberMania", hidden: true, styles: ["truck-mania", "uber-mania"] },
   { id: "landmark-mania", name: "Landmark Mania", export: "landmarkMania", state: "landmarkMania", hidden: true, styles: ["truck-mania", "landmark-mania"] },
   { id: "lino", name: "Lino", export: "lino", state: "lino", hidden: true },
   { id: "downstream", name: "Downstream", export: "downstream", state: "downstream", hidden: true },
   { id: "only-3", name: "Only 3", export: "only3", state: "only3", hidden: true },
-  { id: "second-best", name: "Second Best", export: "secondBest", state: "secondBest" },
+  { id: "second-best", name: "Second Best", export: "secondBest", state: "secondBest", hidden: true },
   { id: "bug-game", name: "Bug Game", export: "bugGame", state: "bugGame" },
   { id: "lost-cities", name: "Lost Cities", export: "lostCities", state: "lostCities" },
   { id: "bluff-race", name: "Bluff Race", export: "bluffRace", state: "bluffRace" }

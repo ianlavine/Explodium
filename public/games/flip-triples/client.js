@@ -635,7 +635,7 @@ function flipShapesFromRecord(record) {
 
 // Throws an Error whose message is shown to the player.
 function flipOptionsFromSave(record) {
-  if (!record || record.game !== "flip-triples") throw new Error("Not a Flip Triples save file.");
+  if (!record || record.game !== "flip-triples") throw new Error("Not a Flip Tac Toe save file.");
   const shapes = flipShapesFromRecord(record);
   if (!Array.isArray(shapes) || shapes.length === 0) throw new Error("File has no starting board.");
   const rows = shapes.length;
@@ -1105,7 +1105,7 @@ flipPhase2Banner.addEventListener("click", (event) => {
 
 export const flipTriples = {
   id: "flip-triples",
-  name: "Flip Triples",
+  name: "Flip Tac Toe",
   description: "",
   hasBots: true,
   // Drives the solo picker. Same table the server hands the search, so what a
