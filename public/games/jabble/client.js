@@ -11,16 +11,26 @@
 // server forces (the other player turned; their jab moved a ball) eased in
 // rather than snapped.
 //
-// Down the right-hand side is a panel of sliders over the engine's SETTINGS —
+// It takes the whole window: its own layer over the page, a slim bar along
+// the top and the arena scaled up to fill the rest. A Settings button in the
+// corner drops down a panel of sliders over the engine's SETTINGS —
 // reach, kick power, ball size and count, and so on. Moving one changes the
 // match for everyone at the table (the server says when it's in force), and
 // the last set you used is kept in this browser and brought to your next game.
 //
+// It's loud on purpose: the engine reports every contact (kick, knockback,
+// bounce) as an event, and those become sound (sound.js) and sparks, shake,
+// squash and hit-stop (juice.js). Your own hits come from this browser's copy
+// of the match, so they land the instant they happen; anything the server
+// reveals later still plays, once.
+//
 // createJabbleClient keeps all of a game's state to itself and only answers
 // while it's the game being played.
-import { socket, els, app } from "../../shared/context.js";
-import { TICK_MS, SETTINGS, defaultSettings, jabExtension } from "./engine.js";
+import { socket, els, app, prefersReducedMotion } from "../../shared/context.js";
+import { TICK_MS, SETTINGS, PRESETS, defaultSettings, jabExtension } from "./engine.js";
 import { createPredictor } from "./predict.js";
+import { createSounds } from "./sound.js";
+import { createJuice } from "./juice.js";
 
 const MOVE_BITS = { KeyW: 1, KeyS: 2, KeyA: 4, KeyD: 8 };
 const JAB_BITS = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8 };
@@ -32,7 +42,12 @@ const EASE_MS = 80;
 const SNAP_DIST = 260;
 // After a stall (a background tab), don't race to catch up — start afresh.
 const MAX_TICKS_PER_FRAME = 5;
-const BURST_MS = 650;
+// The same contact can be reported more than once — this browser predicted it,
+// then replayed it after a correction — so one that matches something heard
+// this recently, this close by, is taken to be the same and stays quiet.
+const ECHO_MS = 450;
+const ECHO_DIST = 40;
+const TAU = Math.PI * 2;
 
 // Controllers, in the browser's "standard" (Xbox-shaped) button layout. The
 // face buttons sit in a diamond, so they jab the way the arrow keys do.
@@ -50,9 +65,6 @@ const FLICK_OFF = 0.4; // ...and it must fall back under this before it can agai
 const KEYBOARD_HINT =
   "<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · " +
   "<kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> jab (two at once for a diagonal)";
-// The board spans the window, this far in from each side.
-const GUTTER_PX = 24;
-
 // Slider moves are sent at most this often while you drag.
 const SETTINGS_SEND_MS = 50;
 const percent = (v) => `${Math.round(v * 100)}%`;
@@ -98,9 +110,12 @@ const PAD_HINT =
   "<kbd>Y</kbd><kbd>X</kbd><kbd>A</kbd><kbd>B</kbd>, jab";
 
 const TEAMS = [
-  { name: "Blue", body: "#3d8bff", light: "#a9cbff", glow: "rgba(61, 139, 255, 0.55)" },
-  { name: "Red", body: "#ff4d5e", light: "#ffb0b7", glow: "rgba(255, 77, 94, 0.55)" }
+  { name: "Blue", body: "#3d8bff", light: "#a9cbff", rgb: "61, 139, 255", glow: "rgba(61, 139, 255, 0.55)" },
+  { name: "Red", body: "#ff4d5e", light: "#ffb0b7", rgb: "255, 77, 94", glow: "rgba(255, 77, 94, 0.55)" }
 ];
+
+// One audio context for the page, whichever match is on.
+const sounds = createSounds();
 
 // What the floor looks like on each surface (the `ice` setting). `me` is the
 // outline that marks your own square.
@@ -250,30 +265,48 @@ function drawPlayer(ctx, jb, p, team, isMe) {
     ctx.lineWidth = 2.5;
     ctx.stroke();
   }
-  roundRect(ctx, p.x - half, p.y - half, size, size, 6);
+  // `scale` swells the square for a moment after it kicks; `white` flashes it
+  // after it takes a knockback.
+  const drawn = size * (p.scale ?? 1);
+  roundRect(ctx, p.x - drawn / 2, p.y - drawn / 2, drawn, drawn, 6);
   ctx.fillStyle = colors.body;
   ctx.fill();
+  if (p.white) {
+    ctx.fillStyle = `rgba(255, 255, 255, ${p.white})`;
+    ctx.fill();
+  }
   ctx.lineWidth = isMe ? 3.5 : 2;
   ctx.strokeStyle = isMe ? surfaceLook(jb).me : "rgba(0, 0, 0, 0.4)";
   ctx.stroke();
 }
 
-function drawBall(ctx, r, ball) {
+// `shape`, if any, stretches the ball `along` its axis (nx, ny) and `across`
+// it: squashed flat against whatever it just hit, or drawn out by speed. A
+// faster ball also glows harder.
+function drawBall(ctx, r, ball, shape, speed) {
   const colors = TEAMS[ball.team];
   ctx.save();
+  ctx.translate(ball.x, ball.y);
+  if (shape) {
+    const angle = Math.atan2(shape.ny, shape.nx);
+    ctx.rotate(angle);
+    ctx.scale(shape.along, shape.across);
+    ctx.rotate(-angle);
+  }
   ctx.shadowColor = colors.glow;
-  ctx.shadowBlur = 16;
-  const gradient = ctx.createRadialGradient(ball.x - r * 0.35, ball.y - r * 0.35, r * 0.15, ball.x, ball.y, r);
+  ctx.shadowBlur = 16 + Math.min(26, speed / 60);
+  const gradient = ctx.createRadialGradient(-r * 0.35, -r * 0.35, r * 0.15, 0, 0, r);
   gradient.addColorStop(0, colors.light);
   gradient.addColorStop(1, colors.body);
   ctx.fillStyle = gradient;
   ctx.beginPath();
-  ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
+  ctx.arc(0, 0, r, 0, TAU);
   ctx.fill();
-  ctx.restore();
+  ctx.shadowBlur = 0;
   ctx.lineWidth = 2;
   ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
   ctx.stroke();
+  ctx.restore();
 }
 
 // --- one game -----------------------------------------------------------------
@@ -296,7 +329,13 @@ export function createJabbleClient({ id, name, stateKey }) {
   let padHeld = []; // its buttons as of the last frame, for spotting presses
   let aimOut = false; // right stick is past FLICK_ON (and has already jabbed)
   let lastAlive = [];
-  let bursts = []; // { x, y, team, start, spin }
+  let lastJabbing = []; // per seat: was an arm out last frame (for the swish)
+  let juice = null; // this match's effects
+  let heardRecently = []; // { key, x, y, t } — see ECHO_MS
+  let frozenAt = null; // positions held still during a hit-stop
+  let shownScore = null; // to spot a change and pop it
+  let root = null; // this game's full-window layer
+  let settingsOpen = false;
   let rematchSent = false;
   let goUntil = 0; // "Go!" stays up until this performance.now()
   let unsentSettings = {}; // slider moves waiting for the next send
@@ -414,6 +453,15 @@ export function createJabbleClient({ id, name, stateKey }) {
 
   window.addEventListener("keydown", (event) => {
     if (!isPlaying() || event.metaKey || event.ctrlKey || event.altKey) return;
+    sounds.wake();
+    if (event.code === "KeyM" && !event.repeat) {
+      toggleMute();
+      return;
+    }
+    if (event.code === "Escape" && settingsOpen) {
+      showSettings(false);
+      return;
+    }
     const move = MOVE_BITS[event.code];
     if (move) {
       event.preventDefault();
@@ -479,68 +527,208 @@ export function createJabbleClient({ id, name, stateKey }) {
     };
   });
 
-  function decayEase(now) {
-    const keep = Math.exp(-Math.max(0, now - lastFrame) / EASE_MS);
-    lastFrame = now;
+  function decayEase(dt) {
+    const keep = Math.exp(-Math.max(0, dt) / EASE_MS);
     [...ease.players, ...ease.balls].forEach((off) => {
       off.x *= keep;
       off.y *= keep;
     });
   }
 
-  function drawBursts(ctx, now) {
-    bursts = bursts.filter((b) => now - b.start < BURST_MS);
-    bursts.forEach((b) => {
-      const k = (now - b.start) / BURST_MS;
-      const colors = TEAMS[b.team];
-      ctx.globalAlpha = 1 - k;
-      ctx.strokeStyle = colors.light;
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, 14 + k * 50, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = colors.body;
-      for (let i = 0; i < 10; i += 1) {
-        const angle = (i / 10) * Math.PI * 2 + b.spin;
-        const d = 10 + k * 70;
-        ctx.fillRect(b.x + Math.cos(angle) * d - 4, b.y + Math.sin(angle) * d - 4, 8, 8);
+  // --- juice ----------------------------------------------------------------
+
+  const panAt = (x) => (x / jb.config.arenaW) * 2 - 1;
+  const power = (speed, full) => Math.min(1, speed / full);
+
+  // Whether `event` is a repeat of one already played (see ECHO_MS).
+  function heardBefore(event, now) {
+    const key = `${event.type}:${event.ball ?? ""}:${event.seat ?? ""}:${event.a ?? ""}:${event.b ?? ""}`;
+    heardRecently = heardRecently.filter((h) => now - h.t < ECHO_MS);
+    if (heardRecently.some((h) => h.key === key && Math.hypot(h.x - event.x, h.y - event.y) < ECHO_DIST)) {
+      return true;
+    }
+    heardRecently.push({ key, x: event.x, y: event.y, t: now });
+    return false;
+  }
+
+  // Hold the picture on `at` for a beat.
+  function hitStop(ms, at, now) {
+    juice.freeze(ms, now);
+    if (juice.frozen(now)) frozenAt = frozenAt ?? at;
+  }
+
+  function playEvent(event, world, at, now) {
+    const pan = panAt(event.x);
+    const mine = event.seat === mySeat();
+    switch (event.type) {
+      case "kick": {
+        const p = power(event.speed, 2200);
+        sounds.kick(0.55 + 0.45 * p, pan);
+        juice.kick(event.x, event.y, event.dx, event.dy, TEAMS[event.team], p);
+        juice.squash(event.ball, event.dx, event.dy, 0.3, now);
+        juice.pop(event.seat, "kick", now);
+        juice.shake(mine ? 3 + 3 * p : 1.5);
+        break;
       }
-      ctx.globalAlpha = 1;
+      case "knock":
+        sounds.knock(pan);
+        juice.knock(event.x, event.y, event.dx, event.dy, TEAMS[jb.teams[event.seat]]);
+        juice.pop(event.seat, "hit", now);
+        juice.shake(mine ? 13 : 8);
+        hitStop(60, at, now);
+        break;
+      case "wall": {
+        const p = power(event.speed, 1600);
+        sounds.wall(p, pan, event.ball);
+        juice.wall(event.x, event.y, event.nx, event.ny, TEAMS[event.team], p);
+        juice.squash(event.ball, event.nx, event.ny, 0.12 + 0.3 * p, now);
+        if (p > 0.7) juice.shake(2 + 4 * (p - 0.7));
+        break;
+      }
+      case "clack": {
+        const p = power(event.speed, 1800);
+        sounds.clack(p, pan);
+        juice.clack(event.x, event.y, TEAMS[event.teams[0]], TEAMS[event.teams[1]], p);
+        const a = world.balls[event.a];
+        const b = world.balls[event.b];
+        if (a && b) {
+          juice.squash(event.a, b.x - a.x, b.y - a.y, 0.1 + 0.25 * p, now);
+          juice.squash(event.b, a.x - b.x, a.y - b.y, 0.1 + 0.25 * p, now);
+        }
+        if (p > 0.6) juice.shake(2);
+        break;
+      }
+      case "body": {
+        const p = power(event.speed, 1200);
+        sounds.body(p, pan);
+        juice.body(event.x, event.y, TEAMS[event.team], p);
+        const ball = world.balls[event.ball];
+        if (ball) juice.squash(event.ball, ball.x - event.x, ball.y - event.y, 0.1 + 0.2 * p, now);
+        break;
+      }
+      case "slam": {
+        const p = power(event.speed, 1500);
+        sounds.slam(0.5 + 0.5 * p, pan);
+        juice.slam(event.x, event.y, p);
+        juice.shake(4 + 5 * p);
+        break;
+      }
+      default:
+    }
+  }
+
+  // Someone's out (the server has said so). The pieces fly away from the
+  // enemy ball that got them; it's a red flash if it was you.
+  function playDeath(seat, at, world, now) {
+    const team = jb.teams[seat];
+    const spot = at.players[seat];
+    let dir = null;
+    let nearest = Infinity;
+    world.balls.forEach((b) => {
+      if (b.team === team) return;
+      const d = Math.hypot(spot.x - b.x, spot.y - b.y);
+      if (d < nearest && d > 1e-6) {
+        nearest = d;
+        dir = { x: (spot.x - b.x) / d, y: (spot.y - b.y) / d };
+      }
     });
+    const mine = seat === mySeat();
+    // The server sends the point before the death, so by now the score says
+    // whether this kill won the match — that one gets the KO and hits harder.
+    const ko = jb.phase === "over" && jb.score.some((s) => s >= jb.tune.winScore);
+    juice.death(spot.x, spot.y, TEAMS[team], jb.tune.playerSize, dir, { ko });
+    juice.shake(ko ? 26 : mine ? 22 : 16);
+    juice.flash(mine ? "255, 60, 70" : "255, 255, 255", ko ? 0.65 : mine ? 0.55 : 0.4);
+    hitStop(ko ? 260 : 130, at, now);
+    sounds.death(panAt(spot.x));
+  }
+
+  // What changed since the last frame, made audible and visible: the
+  // engine's contact events, deaths, arms thrown, skate marks on the ice.
+  function noticeChanges(world, at, now) {
+    for (const event of predictor.takeEvents()) {
+      if (!heardBefore(event, now)) playEvent(event, world, at, now);
+    }
+    world.players.forEach((p, i) => {
+      if (lastAlive[i] && !p.alive) playDeath(i, at, world, now);
+      lastAlive[i] = p.alive;
+      const jabbing = !!p.jab;
+      if (jabbing && !lastJabbing[i] && p.alive) sounds.jab(panAt(at.players[i].x), i === mySeat());
+      lastJabbing[i] = jabbing;
+      if (jb.tune.ice && p.alive && Math.hypot(p.vx, p.vy) > 60) juice.skate(i, at.players[i].x, at.players[i].y, now);
+    });
+  }
+
+  function ballShape(i, b, now) {
+    const squash = juice.squashOf(i, now);
+    if (squash) return { nx: squash.nx, ny: squash.ny, along: 1 - squash.amount, across: 1 + squash.amount * 0.55 };
+    const speed = Math.hypot(b.vx, b.vy);
+    if (speed < 500) return null;
+    const stretch = Math.min(0.2, (speed - 500) / 6000);
+    return { nx: b.vx / speed, ny: b.vy / speed, along: 1 + stretch, across: 1 - stretch * 0.6 };
   }
 
   function draw() {
     frame = requestAnimationFrame(draw);
     if (!view || !jb) return;
     const now = performance.now();
+    const dt = lastFrame ? now - lastFrame : 0;
+    lastFrame = now;
     runTicks(now);
-    decayEase(now);
+    decayEase(dt);
+
+    const world = predictor?.world;
+    const live = !!world && world.round === jb.round;
+    let at = live ? drawnPositions(world) : null;
+    if (live) noticeChanges(world, at, now);
+    else predictor?.takeEvents(); // contacts from a round that's over
+    if (juice.frozen(now)) at = frozenAt ?? at;
+    else frozenAt = null;
+    juice.update(dt, now);
 
     const { ctx, canvas } = view;
     const { arenaW: W, arenaH: H } = jb.config;
     const scale = canvas.width / W;
-    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    // Clear edge to edge first: a shaken picture would otherwise leave
+    // last frame's pixels along the side it moved away from.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#2b323d";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const jolt = juice.shakeOffset();
+    ctx.setTransform(scale, 0, 0, scale, jolt.x * scale, jolt.y * scale);
     drawFloor(ctx, jb, W, H);
+    juice.drawFloor(ctx, now);
     drawWalls(ctx, jb.solids);
 
-    const world = predictor?.world;
-    if (world && world.round === jb.round) {
-      const at = drawnPositions(world);
-      world.players.forEach((p, i) => {
-        if (lastAlive[i] && !p.alive) {
-          bursts.push({ ...at.players[i], team: jb.teams[i], start: now, spin: Math.random() });
-        }
-        lastAlive[i] = p.alive;
-      });
-      world.balls.forEach((b, i) => drawBall(ctx, jb.tune.ballRadius, { team: b.team, ...at.balls[i] }));
+    if (live) {
+      const r = jb.tune.ballRadius;
+      world.balls.forEach((b, i) => juice.trackBall(i, at.balls[i].x, at.balls[i].y, now));
+      juice.drawTrails(ctx, (i) => TEAMS[world.balls[i]?.team ?? 0].rgb, r);
+      world.balls.forEach((b, i) =>
+        drawBall(ctx, r, { team: b.team, ...at.balls[i] }, ballShape(i, b, now), Math.hypot(b.vx, b.vy))
+      );
       world.players.forEach((p, i) => {
         if (!p.alive) return;
         const ext = p.jab ? jabExtension(p.jab.t) : 0;
         const jab = ext > 0 ? { dx: p.jab.dx, dy: p.jab.dy, ext } : null;
-        drawPlayer(ctx, jb, { ...at.players[i], jab, flying: p.flying, vx: p.vx, vy: p.vy }, jb.teams[i], i === mySeat());
+        const pop = juice.popOf(i, now);
+        drawPlayer(
+          ctx,
+          jb,
+          { ...at.players[i], jab, flying: p.flying, vx: p.vx, vy: p.vy, scale: pop.scale, white: pop.white },
+          jb.teams[i],
+          i === mySeat()
+        );
       });
     }
-    drawBursts(ctx, now);
+    juice.drawTop(ctx);
+
+    const flash = juice.flashStyle();
+    if (flash) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = flash;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
 
     // The shell resets the status line on its own schedule; keep ours on it.
     const status = statusText();
@@ -557,22 +745,6 @@ export function createJabbleClient({ id, name, stateKey }) {
     return `You are ${TEAMS[myTeam()].name} · first to ${jb.tune.winScore}`;
   }
 
-  // Stretch the board across the window. Its container (the shell) can sit
-  // anywhere — at the left of a wide window, it does — so this measures where
-  // the container starts and offsets the board from there.
-  function placeBoard() {
-    const board = els.gameBoard;
-    const container = board.parentElement;
-    if (!view || !container) return;
-    const windowWidth = document.documentElement.clientWidth;
-    board.style.left = `${Math.round(GUTTER_PX - container.getBoundingClientRect().left)}px`;
-    board.style.width = `${Math.max(320, windowWidth - 2 * GUTTER_PX)}px`;
-  }
-
-  window.addEventListener("resize", () => {
-    if (isActive()) placeBoard();
-  });
-
   function fitCanvas() {
     if (!view || !jb) return;
     const { arenaW: W, arenaH: H } = jb.config;
@@ -587,10 +759,13 @@ export function createJabbleClient({ id, name, stateKey }) {
     view.canvas.height = Math.round(cssH * dpr);
   }
 
+  // The game's own layer over the whole window (the shell's header and Leave
+  // button sit underneath it): the bar, the arena, and the settings dropdown.
   function buildView() {
     els.gameBoard.innerHTML = "";
-    els.gameBoard.classList.add("jb-board");
     els.hand.innerHTML = "";
+    root = document.createElement("div");
+    root.className = "jb-root";
 
     const bar = document.createElement("div");
     bar.className = "jb-bar";
@@ -598,9 +773,34 @@ export function createJabbleClient({ id, name, stateKey }) {
     you.className = "jb-you";
     const score = document.createElement("div");
     score.className = "jb-score";
+    const tools = document.createElement("div");
+    tools.className = "jb-tools";
     const hint = document.createElement("div");
     hint.className = "jb-hint";
-    bar.append(you, score, hint);
+    const mute = document.createElement("button");
+    mute.type = "button";
+    mute.className = "ghost-btn jb-tool";
+    mute.addEventListener("click", () => {
+      sounds.wake();
+      toggleMute();
+      mute.blur(); // the keyboard belongs to the game
+    });
+    const settings = document.createElement("button");
+    settings.type = "button";
+    settings.className = "ghost-btn jb-tool jb-settings-btn";
+    settings.textContent = "⚙ Settings";
+    settings.addEventListener("click", () => {
+      showSettings(!settingsOpen);
+      settings.blur();
+    });
+    const leave = document.createElement("button");
+    leave.type = "button";
+    leave.className = "ghost-btn jb-tool";
+    leave.textContent = "Leave";
+    // The shell's own Leave Game button is under this layer; press it for us.
+    leave.addEventListener("click", () => els.exitButton.click());
+    tools.append(hint, mute, settings, leave);
+    bar.append(you, score, tools);
 
     const stage = document.createElement("div");
     stage.className = "jb-stage";
@@ -609,14 +809,18 @@ export function createJabbleClient({ id, name, stateKey }) {
     const overlay = document.createElement("div");
     overlay.className = "jb-overlay";
     stage.append(canvas, overlay);
+    // Clicking back on the arena puts the settings away.
+    stage.addEventListener("pointerdown", () => showSettings(false));
 
     const panel = buildPanel();
-    const main = document.createElement("div");
-    main.className = "jb-main";
-    main.append(stage, panel.root);
+    root.append(bar, stage, panel.root);
+    root.addEventListener("pointerdown", () => sounds.wake());
+    document.body.appendChild(root);
 
-    els.gameBoard.append(bar, main);
-    view = { canvas, ctx: canvas.getContext("2d"), stage, overlay, you, score, hint, panel };
+    view = { canvas, ctx: canvas.getContext("2d"), stage, overlay, you, score, hint, panel, mute, settings };
+    juice = createJuice({ reducedMotion: prefersReducedMotion() });
+    showSettings(false);
+    renderMute();
     renderHint();
     renderPanel();
 
@@ -624,18 +828,19 @@ export function createJabbleClient({ id, name, stateKey }) {
       if (event.target instanceof Element && event.target.closest(".jb-rematch")) requestRematch();
     });
 
-    // The game screen is still hidden while this runs (it measures as
-    // nothing), so the board is placed again whenever its container gets a
-    // size, as well as whenever the arena's own space changes.
-    resizeObserver = new ResizeObserver(() => {
-      placeBoard();
-      fitCanvas();
-    });
+    resizeObserver?.disconnect();
+    resizeObserver = new ResizeObserver(fitCanvas);
     resizeObserver.observe(stage);
-    if (els.gameBoard.parentElement) resizeObserver.observe(els.gameBoard.parentElement);
-    placeBoard();
     fitCanvas();
     if (!frame) frame = requestAnimationFrame(draw);
+  }
+
+  function showSettings(open) {
+    settingsOpen = open;
+    if (!view) return;
+    view.panel.root.classList.toggle("hidden", !open);
+    view.settings.classList.toggle("on", open);
+    view.settings.setAttribute("aria-expanded", String(open));
   }
 
   // --- sliders --------------------------------------------------------------
@@ -647,10 +852,14 @@ export function createJabbleClient({ id, name, stateKey }) {
   function buildPanel() {
     const root = document.createElement("aside");
     root.className = "jb-panel";
+    // Modes first: Default (every slider back) and each named preset.
+    const modes = [{ id: "default", name: "Default", settings: defaultSettings() }, ...PRESETS];
     root.innerHTML =
-      `<div class="jb-panel-head"><strong>Tune the game</strong>` +
-      `<button type="button" class="ghost-btn jb-reset">Reset</button></div>` +
-      (app.isBotGame ? "" : `<p class="jb-panel-note">Changes here apply for both players.</p>`);
+      `<div class="jb-panel-head"><strong>Tune the game</strong></div>` +
+      (app.isBotGame ? "" : `<p class="jb-panel-note">Changes here apply for both players.</p>`) +
+      `<section class="jb-group"><h4>Mode</h4><div class="jb-choice jb-modes" role="group" aria-label="Mode">` +
+      modes.map((mode) => `<button type="button" data-mode="${mode.id}">${mode.name}</button>`).join("") +
+      `</div></section>`;
     const rows = new Map(); // key -> { def, row, wait, input?, value?, buttons? }
     let group = null;
     SETTINGS.forEach((def) => {
@@ -706,13 +915,19 @@ export function createJabbleClient({ id, name, stateKey }) {
       rows.set(def.key, entry);
       group.appendChild(row);
     });
-    root.querySelector(".jb-reset").addEventListener("click", () => {
-      if (!app.roomId) return;
-      unsentSettings = {};
-      saveSettings(id, null);
-      socket.emit("jabble_settings", { roomId: app.roomId, reset: true });
-    });
-    return { root, rows };
+    const modeButtons = [...root.querySelectorAll(".jb-modes button")];
+    modeButtons.forEach((button) =>
+      button.addEventListener("click", () => {
+        button.blur(); // the keyboard belongs to the game
+        const mode = modes.find((m) => m.id === button.dataset.mode);
+        if (!app.roomId || !mode) return;
+        unsentSettings = {};
+        saveSettings(id, mode.settings); // your next game starts in it too
+        if (mode.id === "default") socket.emit("jabble_settings", { roomId: app.roomId, reset: true });
+        else socket.emit("jabble_settings", { roomId: app.roomId, changes: mode.settings });
+      })
+    );
+    return { root, rows, modes, modeButtons };
   }
 
   // Sliders follow the server's word, except the one you're holding or have
@@ -722,6 +937,12 @@ export function createJabbleClient({ id, name, stateKey }) {
     if (!view?.panel || !jb) return;
     const wanted = (key) => (key in unsentSettings ? unsentSettings[key] : jb.settings[key]);
     const surface = wanted("ice") ? "ice" : "grip";
+    // A mode is lit while every slider matches it.
+    const { modes, modeButtons } = view.panel;
+    modeButtons.forEach((button) => {
+      const mode = modes.find((m) => m.id === button.dataset.mode);
+      button.classList.toggle("on", !!mode && SETTINGS.every((def) => wanted(def.key) === mode.settings[def.key]));
+    });
     view.panel.rows.forEach(({ def, row, wait, input, value, buttons }, key) => {
       row.classList.toggle("hidden", !!def.only && def.only !== surface);
       wait.classList.toggle("hidden", jb.settings[key] === jb.tune[key]);
@@ -748,6 +969,17 @@ export function createJabbleClient({ id, name, stateKey }) {
     unsentSettings = {};
   }
 
+  function toggleMute() {
+    sounds.toggleMute();
+    renderMute();
+  }
+
+  function renderMute() {
+    if (!view?.mute) return;
+    view.mute.textContent = sounds.muted ? "Sound off (M)" : "Sound on (M)";
+    view.mute.setAttribute("aria-pressed", String(!sounds.muted));
+  }
+
   function renderHint() {
     if (view) view.hint.innerHTML = padId ? PAD_HINT : KEYBOARD_HINT;
   }
@@ -757,10 +989,14 @@ export function createJabbleClient({ id, name, stateKey }) {
     const team = myTeam();
     view.you.className = `jb-you jb-t${team}`;
     view.you.textContent = `You · ${TEAMS[team].name}`;
+    // A side whose score just went up pops.
+    const popped = (side) => (shownScore && jb.score[side] > shownScore[side] ? " jb-pop" : "");
     view.score.innerHTML =
-      `<span class="jb-t0">${TEAMS[0].name} ${jb.score[0]}</span>` +
+      `<span class="jb-t0${popped(0)}">${TEAMS[0].name} ${jb.score[0]}</span>` +
       `<span class="jb-dash">–</span>` +
-      `<span class="jb-t1">${jb.score[1]} ${TEAMS[1].name}</span>`;
+      `<span class="jb-t1${popped(1)}">${jb.score[1]} ${TEAMS[1].name}</span>` +
+      `<small class="jb-first-to">first to ${jb.tune.winScore}</small>`;
+    shownScore = [...jb.score];
   }
 
   function roundCall() {
@@ -793,6 +1029,18 @@ export function createJabbleClient({ id, name, stateKey }) {
     view.overlay.innerHTML = html;
   }
 
+  // Round and match moments, by ear.
+  function playPhase(state) {
+    if (state.phase === "countdown") sounds.ready();
+    else if (state.phase === "play") sounds.go();
+    else if (state.phase === "over") {
+      const winner = state.lastRound?.winner;
+      sounds.point(winner === null || winner === undefined ? null : winner === myTeam());
+    } else if (state.phase === "matchover") {
+      sounds.fanfare(state.score[myTeam()] > state.score[1 - myTeam()]);
+    }
+  }
+
   // --- module ---------------------------------------------------------------
 
   function clearState() {
@@ -816,7 +1064,15 @@ export function createJabbleClient({ id, name, stateKey }) {
     padHeld = [];
     aimOut = false;
     lastAlive = [];
-    bursts = [];
+    lastJabbing = [];
+    juice = null;
+    root?.remove();
+    root = null;
+    settingsOpen = false;
+    heardRecently = [];
+    frozenAt = null;
+    shownScore = null;
+    lastFrame = 0;
     rematchSent = false;
     goUntil = 0;
   }
@@ -831,12 +1087,13 @@ export function createJabbleClient({ id, name, stateKey }) {
     // the bot (level 0, its only one) and the card joins the queue, no
     // opponent picker in between.
     openSetup({ mode, onReady }) {
+      sounds.wake(); // still inside the click, which is what lets a page make sound
       onReady({ settings: loadSavedSettings(id) }, mode === "solo" ? 0 : null);
     },
 
     handleState(payload, resetGameUi) {
       if (!payload[stateKey]) return false;
-      const firstRender = !jb || !view || !els.gameBoard.contains(view.canvas);
+      const firstRender = !jb || !view || !document.body.contains(view.canvas);
       const prev = jb;
       jb = payload[stateKey];
       if (firstRender) {
@@ -846,9 +1103,12 @@ export function createJabbleClient({ id, name, stateKey }) {
       }
       if (!prev || prev.round !== jb.round) {
         lastAlive = [];
-        bursts = [];
+        lastJabbing = [];
+        heardRecently = [];
+        juice?.clearRound();
       }
-      if (prev?.phase === "countdown" && jb.phase === "play") goUntil = performance.now() + 600;
+      if (prev && prev.phase !== jb.phase) playPhase(jb);
+      if (prev?.phase === "countdown" && jb.phase === "play") goUntil = performance.now() + 400;
       if (jb.phase !== "matchover") rematchSent = false;
       renderHud();
       renderPanel();
@@ -856,12 +1116,10 @@ export function createJabbleClient({ id, name, stateKey }) {
       return true;
     },
 
-    // The board element is shared with every other game, so take back the
-    // position placeBoard gave it too.
+    // Leaving, or another game starting: take the full-window layer away.
     resetUi() {
-      els.gameBoard.classList.remove("jb-board");
-      els.gameBoard.style.left = "";
-      els.gameBoard.style.width = "";
+      root?.remove();
+      root = null;
     },
 
     clearState,

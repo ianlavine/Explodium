@@ -75,8 +75,8 @@ export const TUNING = {
 
   obstacles: 0, // straight bars set out each round
 
-  countdownTicks: 90, // frozen "ready" before each round
-  overTicks: 120, // pause after a round is decided
+  countdownTicks: 36, // frozen "ready" before each round (0.6 s)
+  overTicks: 54, // pause after a round is decided (0.9 s)
   winScore: 11
 };
 
@@ -109,6 +109,39 @@ export const SETTINGS = [
   { key: "winScore", group: "Arena", label: "First to", min: 1, max: 21, step: 1 }
 ];
 const SETTING_BY_KEY = new Map(SETTINGS.map((def) => [def.key, def]));
+
+// Named sets of slider values a table can switch to in one go. Each lists
+// every setting, so a preset stays exactly as it was made even when the
+// defaults move on.
+export const PRESETS = [
+  {
+    id: "bunda",
+    name: "Bunda mode",
+    // The user's own favourite, saved from their sliders on Oct 30 2026:
+    // grass, quick on your feet, smaller balls, four bars.
+    settings: {
+      ballsPerTeam: 2,
+      ballRadius: 26,
+      ballDrag: 0.55,
+      wallBounce: 1.1,
+      bodyBounce: 0.3,
+      jabReach: 100,
+      kickSpeed: 1300,
+      playerKickSpeed: 900,
+      jabCooldownTicks: 21,
+      ice: 0,
+      playerSpeed: 440,
+      playerAccel: 2600,
+      iceAccel: 800,
+      iceMaxSpeed: 380,
+      iceFriction: 0.5,
+      iceWallBounce: 0.35,
+      playerSize: 40,
+      obstacles: 4,
+      winScore: 11
+    }
+  }
+];
 
 // A slider value pulled onto its step and inside its bounds; null if it isn't
 // a number at all.
@@ -412,6 +445,24 @@ export function requestJab(state, seat, mask) {
   p.pendingJab = { dx: dx / len, dy: dy / len, ttl: state.tune.jabBufferTicks };
 }
 
+// --- events -----------------------------------------------------------------
+
+// A browser running the engine (predict mode) sets `state.events` to an array,
+// and the contacts worth a sound or a spark are pushed onto it as they happen:
+//   kick  - a jab launched a ball      { ball, team, seat, x, y, dx, dy, speed }
+//   knock - a jab launched a player    { seat, by, x, y, dx, dy, speed }
+//   wall  - a ball hit a wall          { ball, team, x, y, nx, ny, speed }
+//   clack - two balls hit              { a, b, teams, x, y, speed }
+//   body  - a ball came off a player   { ball, team, seat, x, y, speed }
+//   slam  - a flying player hit a wall { seat, x, y, speed }
+// (x, y) is where it happened and speed how hard. The server never sets it, so
+// none of this costs it anything. Deaths aren't here: only the server decides.
+const IMPACT_MIN = 70; // softer contacts than this (rolling, resting) say nothing
+
+function emit(state, event) {
+  if (state.events) state.events.push(event);
+}
+
 // --- geometry ---------------------------------------------------------------
 
 function playerRect(p, size) {
@@ -461,6 +512,9 @@ function pushOutOfWalls(state, p) {
     if (vn < 0) {
       p.vx -= (1 + rebound) * vn * hit.nx;
       p.vy -= (1 + rebound) * vn * hit.ny;
+      if (p.flying && -vn > 2 * IMPACT_MIN) {
+        emit(state, { type: "slam", seat: p.seat, x: p.x - hit.nx * half, y: p.y - hit.ny * half, speed: -vn });
+      }
     }
   }
 }
@@ -507,14 +561,15 @@ function circleRectContact(c, radius, rect) {
 
 // Moves the ball out along the contact normal and reflects the part of its
 // velocity (relative to whatever it hit, moving at vx, vy) that points in.
+// Returns how fast it was coming in, 0 if it wasn't.
 function bounce(ball, contact, vx, vy, restitution) {
   ball.x += contact.nx * contact.depth;
   ball.y += contact.ny * contact.depth;
   const vn = (ball.vx - vx) * contact.nx + (ball.vy - vy) * contact.ny;
-  if (vn < 0) {
-    ball.vx -= (1 + restitution) * vn * contact.nx;
-    ball.vy -= (1 + restitution) * vn * contact.ny;
-  }
+  if (vn >= 0) return 0;
+  ball.vx -= (1 + restitution) * vn * contact.nx;
+  ball.vy -= (1 + restitution) * vn * contact.ny;
+  return -vn;
 }
 
 function distToSegment(px, py, ax, ay, bx, by) {
@@ -675,12 +730,13 @@ function moveBall(tune, ball, dt) {
   ball.y += ball.vy * dt;
 }
 
+// Returns how fast the two were closing, 0 if they weren't touching.
 function collideBalls(tune, a, b) {
   const r = tune.ballRadius;
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const d = Math.hypot(dx, dy);
-  if (d >= 2 * r) return;
+  if (d >= 2 * r) return 0;
   const nx = d > 1e-9 ? dx / d : 1;
   const ny = d > 1e-9 ? dy / d : 0;
   const push = (2 * r - d) / 2;
@@ -689,12 +745,13 @@ function collideBalls(tune, a, b) {
   b.x += nx * push;
   b.y += ny * push;
   const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-  if (vn >= 0) return;
+  if (vn >= 0) return 0;
   const impulse = (-(1 + tune.ballBounce) * vn) / 2;
   a.vx -= impulse * nx;
   a.vy -= impulse * ny;
   b.vx += impulse * nx;
   b.vy += impulse * ny;
+  return -vn;
 }
 
 // How many collision passes this tick needs: enough that the fastest thing
@@ -726,7 +783,8 @@ function jabTouchesSquare(tune, seg, rect) {
 }
 
 // A jab landing on an opponent sends them flying along it, once per jab.
-function knockPlayers(tune, alive) {
+function knockPlayers(state, alive) {
+  const { tune } = state;
   if (!tune.playerKickSpeed) return;
   for (const p of alive) {
     if (!p.jab || jabExtension(p.jab.t) <= 0) continue;
@@ -739,6 +797,16 @@ function knockPlayers(tune, alive) {
       q.vx = p.jab.dx * tune.playerKickSpeed;
       q.vy = p.jab.dy * tune.playerKickSpeed;
       q.flying = true;
+      emit(state, {
+        type: "knock",
+        seat: q.seat,
+        by: p.seat,
+        x: q.x,
+        y: q.y,
+        dx: p.jab.dx,
+        dy: p.jab.dy,
+        speed: tune.playerKickSpeed
+      });
     }
   }
 }
@@ -748,7 +816,7 @@ function substep(state, lethal, dt) {
   const alive = state.players.filter((p) => p.alive);
   alive.forEach((p) => movePlayer(state, p, dt));
   separatePlayers(state, alive);
-  knockPlayers(tune, alive);
+  knockPlayers(state, alive);
 
   const deaths = new Set();
   const r = tune.ballRadius;
@@ -759,7 +827,11 @@ function substep(state, lethal, dt) {
       const contact = circleRectContact(ball, r, playerRect(p, size));
       if (!contact) continue;
       if (lethal && ball.team !== p.team) deaths.add(p);
-      bounce(ball, contact, p.vx, p.vy, tune.bodyBounce);
+      const speed = bounce(ball, contact, p.vx, p.vy, tune.bodyBounce);
+      if (speed > IMPACT_MIN) {
+        const at = { x: ball.x - contact.nx * r, y: ball.y - contact.ny * r };
+        emit(state, { type: "body", ball: index, team: ball.team, seat: p.seat, ...at, speed });
+      }
     }
     // Jabs: your own balls get kicked (each once per jab), an enemy's kills you.
     for (const p of alive) {
@@ -775,17 +847,33 @@ function substep(state, lethal, dt) {
         p.jab.hit |= 1 << index;
         ball.vx = p.jab.dx * tune.kickSpeed;
         ball.vy = p.jab.dy * tune.kickSpeed;
+        emit(state, {
+          type: "kick",
+          ball: index,
+          team: ball.team,
+          seat: p.seat,
+          x: ball.x,
+          y: ball.y,
+          dx: p.jab.dx,
+          dy: p.jab.dy,
+          speed: tune.kickSpeed
+        });
       }
     }
   });
 
   for (let i = 0; i < state.balls.length; i += 1) {
     for (let j = i + 1; j < state.balls.length; j += 1) {
-      collideBalls(tune, state.balls[i], state.balls[j]);
+      const a = state.balls[i];
+      const b = state.balls[j];
+      const speed = collideBalls(tune, a, b);
+      if (speed > IMPACT_MIN) {
+        emit(state, { type: "clack", a: i, b: j, teams: [a.team, b.team], x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, speed });
+      }
     }
   }
 
-  for (const ball of state.balls) {
+  state.balls.forEach((ball, index) => {
     // A few passes, so a ball pushed out of one surface into another (a
     // corner) settles against both.
     for (let pass = 0, touched = true; pass < 3 && touched; pass += 1) {
@@ -793,8 +881,12 @@ function substep(state, lethal, dt) {
       for (const solid of state.collide) {
         const hit = distanceTo(solid, ball.x, ball.y);
         if (hit.d >= r) continue;
-        bounce(ball, { nx: hit.nx, ny: hit.ny, depth: r - hit.d }, 0, 0, tune.wallBounce);
+        const speed = bounce(ball, { nx: hit.nx, ny: hit.ny, depth: r - hit.d }, 0, 0, tune.wallBounce);
         touched = true;
+        if (speed > IMPACT_MIN) {
+          const at = { x: ball.x - hit.nx * r, y: ball.y - hit.ny * r };
+          emit(state, { type: "wall", ball: index, team: ball.team, ...at, nx: hit.nx, ny: hit.ny, speed });
+        }
       }
     }
     // A ball the walls just shoved back into a player was pinched between
@@ -807,7 +899,7 @@ function substep(state, lethal, dt) {
       p.y -= contact.ny * contact.depth;
       pushOutOfWalls(state, p);
     }
-  }
+  });
 
   deaths.forEach((p) => {
     p.alive = false;

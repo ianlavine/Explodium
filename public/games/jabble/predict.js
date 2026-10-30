@@ -11,6 +11,11 @@
 // guess was wrong, the next snapshot puts it right (the renderer eases the
 // jump). Nothing in the copy can die — deaths wait for the server.
 //
+// The copy also collects the engine's contact events (kicks, bounces, ...) as
+// it steps, replays included, for the renderer to turn into sound and sparks.
+// A replay re-runs moments already heard, so it's the renderer's job to skip
+// an event it has just played.
+//
 // No DOM in here, so the same code runs under Node for testing.
 import { step, setKeys, requestJab, worldFromSnapshot } from "./engine.js";
 
@@ -20,11 +25,16 @@ export function createPredictor(seat) {
   let world = null;
   let history = []; // inputs the server hasn't acknowledged, oldest first
   let seq = 0;
+  let heard = []; // events since the last takeEvents()
 
   function apply([, keys, jab]) {
     setKeys(world, seat, keys);
     if (jab) requestJab(world, seat, jab);
     step(world, true);
+    if (world.events.length) {
+      heard.push(...world.events);
+      world.events.length = 0;
+    }
   }
 
   return {
@@ -49,7 +59,15 @@ export function createPredictor(seat) {
       const ack = snap.ack?.[seat] ?? 0;
       history = history.filter(([n]) => n > ack);
       world = worldFromSnapshot(snap, tune, solids, teams);
+      world.events = [];
       history.forEach(apply);
+    },
+
+    // Every contact event since the last call, oldest first.
+    takeEvents() {
+      const out = heard;
+      heard = [];
+      return out;
     }
   };
 }

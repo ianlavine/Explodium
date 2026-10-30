@@ -1,27 +1,31 @@
-/* The stadium spans the whole window, escaping the shell's 1200px cap. The
-   shell sits at the LEFT of a wide window rather than the middle, so centring
-   on it would push the board off the left edge: the client measures where the
-   board's container starts and sets its `left` and `width` (placeBoard). The
-   canvas inside keeps the arena's aspect. */
-.board.jb-board {
-  position: relative;
+/* The game takes the whole window: a layer of its own over the page (the
+   shell's header and Leave button sit underneath), a slim bar along the top,
+   and the arena scaled up to fill the rest. The canvas keeps its aspect. */
+.jb-root {
+  position: fixed;
+  inset: 0;
+  z-index: 20; /* over the page, under the shell's modals */
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  flex: none; /* it sits in the play-area's flex row, which would squeeze it */
-  width: 100%; /* until placeBoard has measured */
-  height: calc(100vh - 190px);
-  min-height: 380px;
-  margin: 4px 0 -60px; /* swallow most of the play-area's bottom padding */
-  overflow: visible;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  background: radial-gradient(circle at top left, #202734 0%, #0b0e13 55%);
+  color: var(--text);
 }
 
 .jb-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 18px;
   flex-wrap: wrap;
+}
+
+/* Right-hand end of the bar: the key hint and the buttons. */
+.jb-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .jb-you {
@@ -44,12 +48,48 @@
   color: var(--muted);
 }
 
+.jb-first-to {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
 .jb-t0 {
   color: #6aa6ff;
 }
 
 .jb-t1 {
   color: #ff7581;
+}
+
+.jb-tool.ghost-btn {
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 12px;
+}
+
+.jb-settings-btn.on {
+  background: var(--accent);
+  color: #1a1206;
+}
+
+/* A score that just went up. */
+.jb-pop {
+  display: inline-block;
+  animation: jbPop 0.5s ease-out;
+}
+
+@keyframes jbPop {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.45);
+    text-shadow: 0 0 18px currentColor;
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .jb-hint {
@@ -71,14 +111,6 @@
   color: var(--text);
 }
 
-/* The arena and, to its right, the slider panel. */
-.jb-main {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  gap: 18px;
-}
-
 .jb-stage {
   position: relative;
   flex: 1;
@@ -89,16 +121,20 @@
   justify-content: center;
 }
 
+/* The sliders: a dropdown under the Settings button, over the arena. */
 .jb-panel {
-  flex: none;
-  width: 290px;
-  /* stops short of the fixed Leave Game button in the corner */
-  margin-bottom: 58px;
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  z-index: 2;
+  width: 300px;
+  max-height: calc(100vh - 80px);
   overflow-y: auto;
   padding: 14px 16px 16px;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(18, 22, 29, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
 }
 
 .jb-panel-head {
@@ -110,12 +146,6 @@
 
 .jb-panel-head strong {
   font-size: 15px;
-}
-
-.jb-panel-head .ghost-btn {
-  margin: 0;
-  padding: 5px 14px;
-  font-size: 12px;
 }
 
 .jb-panel-note {
@@ -201,15 +231,16 @@
   accent-color: var(--accent);
 }
 
-@media (max-width: 1000px) {
-  .jb-main {
-    flex-direction: column;
+@media (max-width: 1100px) {
+  .jb-hint {
+    display: none;
   }
+}
 
+@media (max-width: 600px) {
   .jb-panel {
+    left: 16px;
     width: auto;
-    max-height: 38vh;
-    margin-bottom: 0;
   }
 }
 
@@ -266,7 +297,7 @@
 }
 
 .jb-go {
-  animation: jbGo 0.6s ease forwards;
+  animation: jbGo 0.4s ease forwards;
 }
 
 @keyframes jbGo {
@@ -281,7 +312,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .jb-go {
+  .jb-go,
+  .jb-pop {
     animation: none;
   }
 }
