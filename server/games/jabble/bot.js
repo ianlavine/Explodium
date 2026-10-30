@@ -1,11 +1,14 @@
 // Jabble bot (both games): a single-strength opponent that plays through the same two
 // calls a human's socket does (setKeys, requestJab). Every few ticks it reads
-// the field again: if the enemy ball is coming at it, it steps sideways out of
-// the line; otherwise it picks whichever of the eight jab directions sends its
-// ball closest to you (allowing one bank off a wall), walks round behind the
-// ball, jabs, and steps aside so the ball can't come straight back into it.
-// On ice it can't stop dead, so it steers by velocity instead (see steer).
-import { TUNING, setKeys, requestJab, isBlocked, sceneDistance } from "./engine.js";
+// the field again: if an enemy ball is coming at it, it steps sideways out of
+// the line; otherwise it takes its nearest ball, picks whichever of the eight
+// jab directions sends that ball closest to you (allowing one bank off a
+// wall), walks round behind it, jabs, and steps aside so the ball can't come
+// straight back into it. When you're in reach with one of its balls lying on
+// past you, it jabs YOU instead, to knock you into it. On ice it can't stop dead, so it steers by velocity
+// instead (see steer). Every size and reach it reasons with is the match's
+// `tune`, so it keeps up when the sliders move.
+import { setKeys, requestJab, isBlocked, sceneDistance } from "../../../public/games/jabble/engine.js";
 
 export const JABBLE_BOT_ID = "jabble-bot";
 
@@ -13,7 +16,8 @@ const THINK_TICKS = [5, 6, 7]; // ticks between decisions (its reaction time), p
 const LOOKAHEAD_S = 0.5; // how far ahead it sees an incoming ball
 const SHOT_LENGTH = 1300; // how far it traces a kicked ball
 const KEEP_AIM = 25; // stick with the last direction unless another is this much better
-const HALF = TUNING.playerSize / 2;
+const COMBO_RANGE = 450; // how far past you one of its balls may lie for a knockback to be worth it
+const SHOVE_CHANCE = 0.3; // per decision, when you're close with no ball lined up
 const D = Math.SQRT1_2;
 
 // The eight jab directions as arrow-key masks (1 up, 2 down, 4 left, 8 right)
@@ -63,25 +67,27 @@ function steer(state, me, gx, gy) {
   return keysToward(wx - me.vx, wy - me.vy, 25);
 }
 
-// Where to stand to jab a ball of radius r along `dir`: close enough that the
-// arm reaches it, far enough that the square isn't already bumping it.
-function standoff(dir, r) {
+// Where to stand to jab a ball along `dir`: close enough that the arm reaches
+// it, far enough that the square isn't already bumping it.
+function standoff(tune, dir) {
+  const half = tune.playerSize / 2;
   const diagonal = dir.x !== 0 && dir.y !== 0;
-  return (diagonal ? HALF * Math.SQRT2 : HALF) + r + 3;
+  return (diagonal ? half * Math.SQRT2 : half) + tune.ballRadius + 3;
 }
 
-// A direction to step to get out of the enemy ball's way, or null if it isn't
-// a threat in the next LOOKAHEAD_S. Straight-line only — it doesn't foresee
-// bounces.
+// A direction to step to get out of an enemy ball's way, with how soon it
+// arrives (`t`, seconds), or null if it isn't a threat in the next
+// LOOKAHEAD_S. Straight-line only — it doesn't foresee bounces.
 function dodgeFrom(state, me, ball) {
   const rx = me.x - ball.x;
   const ry = me.y - ball.y;
-  const danger = HALF * Math.SQRT2 + state.tune.ballRadius;
+  const danger = (state.tune.playerSize / 2) * Math.SQRT2 + state.tune.ballRadius;
   const speed2 = ball.vx * ball.vx + ball.vy * ball.vy;
   if (speed2 < 40 * 40) {
     const d = Math.hypot(rx, ry);
     if (d >= danger + 30) return null;
-    return d > 1e-6 ? { x: rx / d, y: ry / d } : DIRS[Math.floor(Math.random() * 8)];
+    const away = d > 1e-6 ? { x: rx / d, y: ry / d } : DIRS[Math.floor(Math.random() * 8)];
+    return { x: away.x, y: away.y, t: 0 };
   }
   const t = (rx * ball.vx + ry * ball.vy) / speed2;
   if (t < 0 || t > LOOKAHEAD_S) return null;
@@ -100,7 +106,17 @@ function dodgeFrom(state, me, ball) {
     px = -px;
     py = -py;
   }
-  return { x: px, y: py };
+  return { x: px, y: py, t };
+}
+
+// The most urgent of every enemy ball's dodges.
+function dodgeAll(state, me, foeBalls) {
+  let soonest = null;
+  for (const ball of foeBalls) {
+    const dodge = dodgeFrom(state, me, ball);
+    if (dodge && (!soonest || dodge.t < soonest.t)) soonest = dodge;
+  }
+  return soonest;
 }
 
 // How close a ball kicked from (x, y) along `dir` would pass the target,
@@ -151,7 +167,7 @@ function chooseAim(state, brain, ball, target) {
   let best = null;
   let kept = null;
   for (const dir of DIRS) {
-    const gap = standoff(dir, state.tune.ballRadius);
+    const gap = standoff(state.tune, dir);
     if (isBlocked(state, ball.x - dir.x * gap, ball.y - dir.y * gap)) continue;
     const miss = shotMiss(state, ball.x, ball.y, dir, target);
     if (!best || miss < best.miss) best = { dir, miss };
@@ -161,19 +177,41 @@ function chooseAim(state, brain, ball, target) {
   return best?.dir ?? null;
 }
 
-// Whether the arm, thrown along `dir`, would come anywhere near the enemy ball.
-function safeToJab(me, dir, foeBall, r) {
-  if (!foeBall) return true;
-  const reach = HALF + TUNING.jabReach;
-  const ax = me.x;
-  const ay = me.y;
-  const bx = me.x + dir.x * reach;
-  const by = me.y + dir.y * reach;
-  const abx = bx - ax;
-  const aby = by - ay;
-  const t = Math.max(0, Math.min(1, ((foeBall.x - ax) * abx + (foeBall.y - ay) * aby) / (reach * reach)));
-  const d = Math.hypot(foeBall.x - (ax + abx * t), foeBall.y - (ay + aby * t));
-  return d > TUNING.fistRadius + r + 30;
+// A direction to jab the other player along, or null. Best: one where the
+// jab reaches them and one of its own balls lies on past them, so the
+// knockback carries them into it. Failing that, when they're well inside
+// reach, now and then just shove them off.
+function knockbackDir(state, me, foe, ownBalls) {
+  const { tune } = state;
+  if (!tune.playerKickSpeed) return null;
+  const half = tune.playerSize / 2;
+  const reach = half + tune.jabReach;
+  let shove = null;
+  for (const dir of DIRS) {
+    const along = (foe.x - me.x) * dir.x + (foe.y - me.y) * dir.y;
+    const off = Math.abs(-(foe.x - me.x) * dir.y + (foe.y - me.y) * dir.x);
+    if (along <= 0 || along > reach + half || off > half + tune.fistRadius - 4) continue;
+    const lined = ownBalls.some((b) => {
+      const past = (b.x - foe.x) * dir.x + (b.y - foe.y) * dir.y;
+      const wide = Math.abs(-(b.x - foe.x) * dir.y + (b.y - foe.y) * dir.x);
+      return past > 0 && past < COMBO_RANGE && wide < tune.ballRadius + half;
+    });
+    if (lined) return dir;
+    if (along < reach * 0.6) shove = dir;
+  }
+  return shove && Math.random() < SHOVE_CHANCE ? shove : null;
+}
+
+// Whether the arm, thrown along `dir`, would come anywhere near an enemy ball.
+function safeToJab(tune, me, dir, foeBalls) {
+  const reach = tune.playerSize / 2 + tune.jabReach;
+  const bx = dir.x * reach;
+  const by = dir.y * reach;
+  return foeBalls.every((ball) => {
+    const t = Math.max(0, Math.min(1, ((ball.x - me.x) * bx + (ball.y - me.y) * by) / (reach * reach)));
+    const d = Math.hypot(ball.x - (me.x + bx * t), ball.y - (me.y + by * t));
+    return d > tune.fistRadius + tune.ballRadius + 30;
+  });
 }
 
 export function botThink(state, seat, brain) {
@@ -191,9 +229,12 @@ export function botThink(state, seat, brain) {
   brain.lastX = me.x;
   brain.lastY = me.y;
 
-  const ball = state.balls.find((b) => b.team === me.team);
-  const foeBall = state.balls.find((b) => b.team !== me.team);
-  const dodge = foeBall && state.phase === "play" ? dodgeFrom(state, me, foeBall) : null;
+  const near = (b) => Math.hypot(b.x - me.x, b.y - me.y);
+  const ball = state.balls
+    .filter((b) => b.team === me.team)
+    .reduce((best, b) => (!best || near(b) < near(best) ? b : best), null);
+  const foeBalls = state.balls.filter((b) => b.team !== me.team);
+  const dodge = state.phase === "play" ? dodgeAll(state, me, foeBalls) : null;
   if (dodge) {
     brain.sidestep = null;
     setKeys(state, seat, keysToward(dodge.x * 100, dodge.y * 100)); // a unit vector is inside the dead zone
@@ -229,14 +270,23 @@ export function botThink(state, seat, brain) {
     return;
   }
 
+  // A jab at you comes first, and this decision ends there (it keeps on
+  // walking however it was) so a ball shot can't overwrite it.
+  const ownBalls = state.balls.filter((b) => b.team === me.team);
+  const knock = me.cooldown === 0 ? knockbackDir(state, me, foe, ownBalls) : null;
+  if (knock && safeToJab(state.tune, me, knock, foeBalls)) {
+    requestJab(state, seat, knock.mask);
+    return;
+  }
+
   const dir = chooseAim(state, brain, ball, foe);
   brain.aim = dir;
   if (!dir) {
     setKeys(state, seat, steer(state, me, ball.x, ball.y));
     return;
   }
-  const r = state.tune.ballRadius;
-  const gap = standoff(dir, r);
+  const { tune } = state;
+  const gap = standoff(tune, dir);
 
   const relx = me.x - ball.x;
   const rely = me.y - ball.y;
@@ -244,7 +294,7 @@ export function botThink(state, seat, brain) {
   const side = -relx * dir.y + rely * dir.x; // how far off the line of the shot
 
   if (behind > gap - 8 && Math.abs(side) < 12) {
-    if (behind < HALF + TUNING.jabReach + 10 && safeToJab(me, dir, foeBall, r)) {
+    if (behind < tune.playerSize / 2 + tune.jabReach + 10 && safeToJab(tune, me, dir, foeBalls)) {
       requestJab(state, seat, dir.mask);
       // Step off the line of the shot, so a rebound goes past rather than
       // straight back into its own square.

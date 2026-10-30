@@ -2,8 +2,18 @@
 // the engine's VARIANTS say what differs). One fixed-rate simulation loop per
 // room: the engine steps at TICK_HZ; positions go out as small volatile
 // "jabble_tick" snapshots every SEND_EVERY ticks, and the rest (arena, score,
-// phase) as a normal state_update only when it changes. Clients send held
-// movement keys and jab presses; nothing they send is trusted beyond that.
+// phase) as a normal state_update only when it changes.
+//
+// Each browser predicts its own square (public/games/jabble/predict.js), so
+// it sends one numbered input per tick — [seq, keys, jab] — in small batches.
+// They queue here and the loop spends exactly one per player per tick, the
+// same way the browser did, and every snapshot carries each seat's `ack`:
+// the last input it has spent. A queue that runs dry (a late packet) just
+// repeats the last keys. Nothing a client sends is trusted beyond its keys.
+//
+// Anyone at the table can move the sliders (engine SETTINGS); a change goes
+// out to everyone as a state_update, so in an online match both players are
+// always playing — and predicting — the same numbers.
 //
 // Both instances listen for the same socket events, so every handler first
 // checks the room belongs to its own game.
@@ -11,17 +21,21 @@ import {
   TICK_MS,
   createMatch,
   resetMatch,
+  applySettings,
+  resetSettings,
   step,
   setKeys,
   requestJab,
   snapshot,
   publicState
-} from "./engine.js";
+} from "../../../public/games/jabble/engine.js";
 import { JABBLE_BOT_ID, createBotBrain, botThink } from "./bot.js";
 
 const SEND_EVERY = 2; // 30 snapshots a second
 const LOOP_MS = 8; // timer resolution; the accumulator keeps the sim at TICK_HZ
 const MAX_CATCHUP = 5; // after a stall, drop time rather than fast-forward
+const MAX_QUEUE = 12; // inputs a seat may have waiting (0.2 s); older ones are dropped
+const MAX_BATCH = 30; // inputs one message may carry
 
 // `id` is the lobby's game id (and the engine variant); `stateKey` is the key
 // its state_update payload travels under, which is how the client shell knows
@@ -77,13 +91,23 @@ export function createJabbleGame({ io, rooms }, { id, stateKey }) {
           pending -= TICK_MS;
           steps += 1;
           room.jabbleBots?.forEach(({ seat, brain }) => botThink(state, seat, brain));
+          room.jabbleInputs.forEach((inputs, seat) => {
+            const next = inputs.queue.shift();
+            if (!next) return;
+            setKeys(state, seat, next.keys);
+            if (next.jab) requestJab(state, seat, next.jab);
+            inputs.ack = next.seq;
+          });
           if (step(state)) changed = true;
         }
         if (steps === MAX_CATCHUP) pending = 0;
         if (changed) emitState(roomId, room);
         if (steps && state.tick - lastSent >= SEND_EVERY) {
           lastSent = state.tick;
-          io.to(roomId).volatile.emit("jabble_tick", snapshot(state));
+          io.to(roomId).volatile.emit("jabble_tick", {
+            ...snapshot(state),
+            ack: room.jabbleInputs.map((inputs) => inputs.ack)
+          });
         }
       }, LOOP_MS)
     );
@@ -99,8 +123,15 @@ export function createJabbleGame({ io, rooms }, { id, stateKey }) {
   return {
     id,
 
-    createRoomState() {
-      return { jabble: createMatch(2, id) };
+    // The sliders a match starts with are the ones the first player to sit
+    // down brought (their last-used set, saved in their browser).
+    createRoomState(options) {
+      return {
+        jabble: createMatch(2, id, options?.settings),
+        // Per seat: inputs waiting to be spent, the newest seq received, and
+        // the last seq spent (what snapshots acknowledge).
+        jabbleInputs: [0, 1].map(() => ({ queue: [], received: 0, ack: 0 }))
+      };
     },
 
     emitState,
@@ -110,14 +141,31 @@ export function createJabbleGame({ io, rooms }, { id, stateKey }) {
     },
 
     registerHandlers(socket) {
-      socket.on("jabble_input", ({ roomId, keys } = {}) => {
+      socket.on("jabble_input", ({ roomId, inputs } = {}) => {
         const at = seated(socket, roomId);
-        if (at) setKeys(at.room.jabble, at.seat, Number(keys) || 0);
+        if (!at || !Array.isArray(inputs)) return;
+        const mine = at.room.jabbleInputs[at.seat];
+        for (const input of inputs.slice(0, MAX_BATCH)) {
+          const [seq, keys, jab] = Array.isArray(input) ? input.map(Number) : [];
+          if (!Number.isInteger(seq) || seq <= mine.received) continue;
+          mine.received = seq;
+          mine.queue.push({ seq, keys: (keys || 0) & 15, jab: (jab || 0) & 15 });
+        }
+        // Too far behind (a burst after a stall): drop the oldest, keeping
+        // any jab one carried by handing it to the next.
+        while (mine.queue.length > MAX_QUEUE) {
+          const dropped = mine.queue.shift();
+          if (dropped.jab && !mine.queue[0].jab) mine.queue[0].jab = dropped.jab;
+        }
       });
 
-      socket.on("jabble_jab", ({ roomId, dir } = {}) => {
+      // { changes: { key: value, ... } } moves sliders; { reset: true } puts
+      // every one back to the game's default.
+      socket.on("jabble_settings", ({ roomId, changes, reset } = {}) => {
         const at = seated(socket, roomId);
-        if (at) requestJab(at.room.jabble, at.seat, Number(dir) || 0);
+        if (!at) return;
+        const moved = reset ? resetSettings(at.room.jabble) : applySettings(at.room.jabble, changes);
+        if (moved) emitState(roomId, at.room);
       });
 
       socket.on("jabble_rematch", ({ roomId } = {}) => {

@@ -1,22 +1,99 @@
-// Jabble client: draws the stadium on a canvas and sends the keyboard. WASD
+// Jabble client: draws the stadium on a canvas and sends the controls. WASD
 // steers your square; an arrow key throws a jab that way, and two arrows
-// pressed together jab on the diagonal. The server owns every position — this
-// side draws a moment in the past, interpolated between the snapshots it's
-// been sent, so motion stays smooth when one arrives late.
+// pressed together jab on the diagonal. A controller works too (see pollPad).
+//
+// The server owns the match, but waiting on it would put a round trip between
+// a key and your square moving. So the browser runs the same engine itself
+// (predict.js): each 1/60 s it turns the controls into one input, steps its
+// own copy of the match and sends the input on; each snapshot from the server
+// resets the copy and replays whatever the server hasn't reached yet. What's
+// drawn is that copy — the present, not the past — with any correction the
+// server forces (the other player turned; their jab moved a ball) eased in
+// rather than snapped.
+//
+// Down the right-hand side is a panel of sliders over the engine's SETTINGS —
+// reach, kick power, ball size and count, and so on. Moving one changes the
+// match for everyone at the table (the server says when it's in force), and
+// the last set you used is kept in this browser and brought to your next game.
 //
 // Jabble and Jabble Ice are both made by createJabbleClient. The home screen
 // may load the two at once, so each keeps its own state and only answers when
 // it's the game being played.
 import { socket, els, app } from "../../shared/context.js";
+import { TICK_MS, SETTINGS, defaultSettings, jabExtension } from "./engine.js";
+import { createPredictor } from "./predict.js";
 
 const MOVE_BITS = { KeyW: 1, KeyS: 2, KeyA: 4, KeyD: 8 };
 const JAB_BITS = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8 };
 // Arrows pressed within this many ms of each other count as one diagonal jab.
 const CHORD_MS = 35;
-// How far behind the newest snapshot to draw. Snapshots come every ~33 ms, so
-// this leaves room for one to be late without the picture stalling.
-const INTERP_MS = 70;
+// A correction from the server is worked off over roughly this long, unless
+// it's so big that easing would look stranger than a jump.
+const EASE_MS = 80;
+const SNAP_DIST = 260;
+// After a stall (a background tab), don't race to catch up — start afresh.
+const MAX_TICKS_PER_FRAME = 5;
 const BURST_MS = 650;
+
+// Controllers, in the browser's "standard" (Xbox-shaped) button layout. The
+// face buttons sit in a diamond, so they jab the way the arrow keys do.
+const PAD = { A: 0, B: 1, X: 2, Y: 3, START: 9, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
+const FACE_JABS = [
+  [PAD.Y, 1],
+  [PAD.A, 2],
+  [PAD.X, 4],
+  [PAD.B, 8]
+];
+const STICK_DEAD = 0.35; // left stick: ignore drift below this
+const FLICK_ON = 0.65; // right stick: pushing past this jabs that way...
+const FLICK_OFF = 0.4; // ...and it must fall back under this before it can again
+
+const KEYBOARD_HINT =
+  "<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · " +
+  "<kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> jab (two at once for a diagonal)";
+// Slider moves are sent at most this often while you drag.
+const SETTINGS_SEND_MS = 50;
+const percent = (v) => `${Math.round(v * 100)}%`;
+// How a slider's value reads, where a bare number wouldn't say much.
+const SETTING_FORMATS = {
+  jabCooldownTicks: (v) => `${(v / 60).toFixed(2)} s`,
+  ballDrag: (v) => v.toFixed(2),
+  iceFriction: (v) => v.toFixed(2),
+  wallBounce: percent,
+  bodyBounce: percent,
+  iceWallBounce: percent,
+  playerKickSpeed: (v) => (v ? String(v) : "off")
+};
+const formatSetting = (key, v) => (SETTING_FORMATS[key] ?? String)(v);
+
+// Your last-used sliders for one game, kept per browser — only the ones moved
+// off the default, so a slider you never touched follows the game's default
+// when that changes. Storage can be missing or refuse (private windows); the
+// game just starts on defaults then.
+const savedKey = (id) => `jabble-settings-v2:${id}`;
+
+function loadSavedSettings(id) {
+  try {
+    return JSON.parse(localStorage.getItem(savedKey(id))) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSettings(id, settings) {
+  try {
+    const defaults = defaultSettings(id);
+    const moved = Object.fromEntries(Object.entries(settings ?? {}).filter(([key, v]) => v !== defaults[key]));
+    if (Object.keys(moved).length) localStorage.setItem(savedKey(id), JSON.stringify(moved));
+    else localStorage.removeItem(savedKey(id));
+  } catch {
+    // not saved; nothing else depends on it
+  }
+}
+
+const PAD_HINT =
+  "Controller: left stick move · right stick flick, or " +
+  "<kbd>Y</kbd><kbd>X</kbd><kbd>A</kbd><kbd>B</kbd>, jab";
 
 const TEAMS = [
   { name: "Blue", body: "#3d8bff", light: "#a9cbff", glow: "rgba(61, 139, 255, 0.55)" },
@@ -44,7 +121,19 @@ const SURFACES = {
   }
 };
 
-const lerp = (a, b, f) => a + (b - a) * f;
+// Movement bits (1 up, 2 down, 4 left, 8 right) for a stick at (x, y),
+// snapped to the nearest of eight directions; 0 inside the dead zone.
+function stickMask(x, y, dead) {
+  const len = Math.hypot(x, y);
+  if (len < dead) return 0;
+  const lean = len * 0.38; // sin 22.5°: the edge between one octant and the next
+  let mask = 0;
+  if (x > lean) mask |= 8;
+  else if (x < -lean) mask |= 4;
+  if (y > lean) mask |= 2;
+  else if (y < -lean) mask |= 1;
+  return mask;
+}
 
 // --- drawing ----------------------------------------------------------------
 
@@ -130,9 +219,19 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 function drawPlayer(ctx, jb, p, team, isMe) {
-  const { playerSize: size, jabReach, fistRadius, armRadius } = jb.config;
+  const { playerSize: size, jabReach, fistRadius, armRadius } = jb.tune;
   const half = size / 2;
   const colors = TEAMS[team];
+  // Knocked flying: a couple of fading copies trail behind along the flight.
+  if (p.flying) {
+    [0.035, 0.07].forEach((lag, i) => {
+      roundRect(ctx, p.x - p.vx * lag - half, p.y - p.vy * lag - half, size, size, 6);
+      ctx.fillStyle = colors.body;
+      ctx.globalAlpha = i ? 0.12 : 0.25;
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+  }
   if (p.jab) {
     const reach = half + jabReach * p.jab.ext;
     const tipX = p.x + p.jab.dx * reach;
@@ -184,18 +283,26 @@ function drawBall(ctx, r, ball) {
 // under.
 export function createJabbleClient({ id, name, stateKey }) {
   let jb = null; // the latest state_update: arena, score, phase
-  let snaps = []; // recent snapshots of the current round, oldest first
-  let clockOffset = null; // local ms minus server tick time — tracks the fastest arrival
-  let view = null; // { canvas, ctx, stage, overlay, you, score }
+  let predictor = null; // this browser's running copy of the match
+  let ease = { players: [], balls: [] }; // corrections still being worked off, { x, y } each
+  let tickClock = null; // performance.now() the fixed 60 Hz input clock has reached
+  let lastFrame = 0;
+  let view = null; // { canvas, ctx, stage, overlay, you, score, hint }
   let frame = null;
   let resizeObserver = null;
-  let moveKeys = 0;
-  let sentKeys = 0;
+  let moveKeys = 0; // keyboard movement held right now
+  let queuedJab = 0; // a jab waiting for the next tick to carry it
   let chord = null; // { mask, timer } while a jab waits to see if it's a diagonal
+  let padId = null; // the controller in use, if any
+  let padHeld = []; // its buttons as of the last frame, for spotting presses
+  let aimOut = false; // right stick is past FLICK_ON (and has already jabbed)
   let lastAlive = [];
   let bursts = []; // { x, y, team, start, spin }
   let rematchSent = false;
   let goUntil = 0; // "Go!" stays up until this performance.now()
+  let unsentSettings = {}; // slider moves waiting for the next send
+  let settingsTimer = null;
+  let draggingKey = null; // the slider under your pointer, which incoming state mustn't yank
 
   function isActive() {
     return app.currentGame?.id === id;
@@ -215,10 +322,14 @@ export function createJabbleClient({ id, name, stateKey }) {
 
   // --- input ----------------------------------------------------------------
 
-  function sendKeys() {
-    if (moveKeys === sentKeys || !isPlaying()) return;
-    sentKeys = moveKeys;
-    socket.emit("jabble_input", { roomId: app.roomId, keys: moveKeys });
+  // Arrow keys and face buttons both come through here. The first press waits
+  // CHORD_MS for a second; opposite directions cancel out.
+  function pressJab(bit) {
+    if (chord) {
+      chord.mask |= bit;
+      return;
+    }
+    chord = { mask: bit, timer: setTimeout(fireJab, CHORD_MS) };
   }
 
   function fireJab() {
@@ -226,7 +337,80 @@ export function createJabbleClient({ id, name, stateKey }) {
     chord = null;
     if ((mask & 3) === 3) mask &= ~3; // up + down
     if ((mask & 12) === 12) mask &= ~12; // left + right
-    if (mask && isPlaying()) socket.emit("jabble_jab", { roomId: app.roomId, dir: mask });
+    if (mask) queuedJab = mask;
+  }
+
+  function requestRematch() {
+    if (!app.roomId || rematchSent) return;
+    rematchSent = true;
+    socket.emit("jabble_rematch", { roomId: app.roomId });
+    renderOverlay();
+  }
+
+  // Movement from the controller, read fresh every frame; jabs and the
+  // rematch fire on the frame a button goes down. Browsers only reveal a
+  // controller once one of its buttons has been pressed.
+  function pollPad() {
+    const pad = [...(navigator.getGamepads?.() ?? [])].find((g) => g && g.connected) ?? null;
+    if ((pad?.id ?? null) !== padId) {
+      padId = pad?.id ?? null;
+      renderHint();
+    }
+    if (!pad || !isPlaying()) {
+      padHeld = [];
+      aimOut = false;
+      return 0;
+    }
+    const down = (i) => !!pad.buttons[i]?.pressed;
+    const pressed = (i) => down(i) && !padHeld[i];
+
+    let move = stickMask(pad.axes[0] ?? 0, pad.axes[1] ?? 0, STICK_DEAD);
+    if (down(PAD.UP)) move |= 1;
+    if (down(PAD.DOWN)) move |= 2;
+    if (down(PAD.LEFT)) move |= 4;
+    if (down(PAD.RIGHT)) move |= 8;
+
+    if (jb.phase === "matchover") {
+      if (pressed(PAD.A) || pressed(PAD.START)) requestRematch();
+    } else {
+      FACE_JABS.forEach(([button, bit]) => {
+        if (pressed(button)) pressJab(bit);
+      });
+      const ax = pad.axes[2] ?? 0;
+      const ay = pad.axes[3] ?? 0;
+      const aim = Math.hypot(ax, ay);
+      if (!aimOut && aim > FLICK_ON) {
+        aimOut = true;
+        queuedJab = stickMask(ax, ay, 0);
+      } else if (aimOut && aim < FLICK_OFF) {
+        aimOut = false;
+      }
+    }
+    padHeld = pad.buttons.map((b) => b.pressed);
+    return move;
+  }
+
+  // One input per 1/60 s of real time: applied to our copy at once, batched
+  // to the server once per frame.
+  function runTicks(now) {
+    if (!predictor) return;
+    if (tickClock === null || now - tickClock > TICK_MS * MAX_TICKS_PER_FRAME) tickClock = now;
+    const keys = moveKeys | pollPad();
+    const outbox = [];
+    while (now - tickClock >= TICK_MS) {
+      tickClock += TICK_MS;
+      outbox.push(predictor.tick(isPlaying() ? keys : 0, queuedJab));
+      queuedJab = 0;
+    }
+    if (outbox.length && app.roomId) socket.emit("jabble_input", { roomId: app.roomId, inputs: outbox });
+  }
+
+  // Let go of everything at once, without waiting for a frame — a background
+  // tab may not get another one, and the server holds whatever it last heard.
+  function releaseAll() {
+    moveKeys = 0;
+    if (!predictor || !app.roomId) return;
+    socket.emit("jabble_input", { roomId: app.roomId, inputs: [predictor.tick(0, 0)] });
   }
 
   window.addEventListener("keydown", (event) => {
@@ -235,81 +419,74 @@ export function createJabbleClient({ id, name, stateKey }) {
     if (move) {
       event.preventDefault();
       moveKeys |= move;
-      sendKeys();
       return;
     }
     const jab = JAB_BITS[event.code];
     if (!jab) return;
     event.preventDefault(); // arrows would otherwise scroll the page
     if (event.repeat) return; // holding an arrow is one jab, not a stream
-    if (chord) {
-      chord.mask |= jab;
-      return;
-    }
-    chord = { mask: jab, timer: setTimeout(fireJab, CHORD_MS) };
+    pressJab(jab);
   });
 
   window.addEventListener("keyup", (event) => {
     const move = MOVE_BITS[event.code];
-    if (!move) return;
-    moveKeys &= ~move;
-    sendKeys();
+    if (move) moveKeys &= ~move;
   });
 
   // Keys released while the window is in the background never send a keyup.
   window.addEventListener("blur", () => {
-    moveKeys = 0;
-    sendKeys();
+    if (isActive()) releaseAll();
   });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && isActive()) releaseAll();
+  });
+  window.addEventListener("gamepadconnected", () => renderHint());
+  window.addEventListener("gamepaddisconnected", () => renderHint());
 
   // --- snapshots ------------------------------------------------------------
 
+  // Where everything is drawn: the copy's positions plus what's left of any
+  // correction being eased off.
+  function drawnAt(list, i, thing) {
+    const off = list[i];
+    return off ? { x: thing.x + off.x, y: thing.y + off.y } : { x: thing.x, y: thing.y };
+  }
+
+  function drawnPositions(world) {
+    return {
+      players: world.players.map((p, i) => drawnAt(ease.players, i, p)),
+      balls: world.balls.map((b, i) => drawnAt(ease.balls, i, b))
+    };
+  }
+
+  // A jump from where something was drawn to where it now belongs, kept as an
+  // offset that shrinks to nothing — unless it's too far to ease.
+  function easeFrom(was, thing) {
+    if (!was) return { x: 0, y: 0 };
+    const x = was.x - thing.x;
+    const y = was.y - thing.y;
+    return Math.hypot(x, y) > SNAP_DIST ? { x: 0, y: 0 } : { x, y };
+  }
+
   socket.on("jabble_tick", (snap) => {
-    if (!isActive() || !jb || !snap) return;
-    const now = performance.now();
-    const sample = now - snap.t * jb.config.tickMs;
-    // The smallest sample is the least-delayed arrival seen; drift upward
-    // slowly so a server that runs a touch slow doesn't leave us starved.
-    if (clockOffset === null || sample < clockOffset) clockOffset = sample;
-    else clockOffset += (sample - clockOffset) * 0.01;
-    if (snaps.length && snaps[snaps.length - 1].r !== snap.r) snaps = [];
-    snaps.push(snap);
-    if (snaps.length > 40) snaps.shift();
+    if (!isActive() || !jb || !predictor || !snap || snap.r !== jb.round) return;
+    const old = predictor.world;
+    const before = old && old.round === snap.r ? drawnPositions(old) : null;
+    predictor.reconcile(snap, jb.tune, jb.solids, jb.teams);
+    const world = predictor.world;
+    ease = {
+      players: world.players.map((p, i) => easeFrom(before?.players[i], p)),
+      balls: world.balls.map((b, i) => easeFrom(before?.balls[i], b))
+    };
   });
 
-  // The world as it was INTERP_MS ago, blended between the two snapshots
-  // either side of that moment.
-  function currentPose() {
-    if (!jb || clockOffset === null) return null;
-    const live = snaps.filter((s) => s.r === jb.round);
-    if (!live.length) return null;
-    const at = (performance.now() - clockOffset - INTERP_MS) / jb.config.tickMs;
-    let a = live[0];
-    let b = live[0];
-    for (let i = 0; i < live.length; i += 1) {
-      if (live[i].t <= at) {
-        a = live[i];
-        b = live[i + 1] ?? live[i];
-      }
-    }
-    const f = b.t > a.t ? Math.max(0, Math.min(1, (at - a.t) / (b.t - a.t))) : 0;
-    return {
-      players: a.pl.map((pa, i) => {
-        const pb = b.pl[i] ?? pa;
-        const ext = lerp(pa[5], pb[5], f) / 100;
-        const src = pb[5] ? pb : pa;
-        return {
-          x: lerp(pa[0], pb[0], f),
-          y: lerp(pa[1], pb[1], f),
-          alive: !!pa[2],
-          jab: ext > 0 ? { dx: src[3] / 100, dy: src[4] / 100, ext } : null
-        };
-      }),
-      balls: a.b.map((ba, i) => {
-        const bb = b.b[i] ?? ba;
-        return { team: ba[0], x: lerp(ba[1], bb[1], f), y: lerp(ba[2], bb[2], f) };
-      })
-    };
+  function decayEase(now) {
+    const keep = Math.exp(-Math.max(0, now - lastFrame) / EASE_MS);
+    lastFrame = now;
+    [...ease.players, ...ease.balls].forEach((off) => {
+      off.x *= keep;
+      off.y *= keep;
+    });
   }
 
   function drawBursts(ctx, now) {
@@ -336,6 +513,10 @@ export function createJabbleClient({ id, name, stateKey }) {
   function draw() {
     frame = requestAnimationFrame(draw);
     if (!view || !jb) return;
+    const now = performance.now();
+    runTicks(now);
+    decayEase(now);
+
     const { ctx, canvas } = view;
     const { arenaW: W, arenaH: H } = jb.config;
     const scale = canvas.width / W;
@@ -343,18 +524,21 @@ export function createJabbleClient({ id, name, stateKey }) {
     drawFloor(ctx, jb, W, H);
     drawWalls(ctx, jb.solids);
 
-    const now = performance.now();
-    const pose = currentPose();
-    if (pose) {
-      pose.players.forEach((p, i) => {
+    const world = predictor?.world;
+    if (world && world.round === jb.round) {
+      const at = drawnPositions(world);
+      world.players.forEach((p, i) => {
         if (lastAlive[i] && !p.alive) {
-          bursts.push({ x: p.x, y: p.y, team: jb.teams[i], start: now, spin: Math.random() });
+          bursts.push({ ...at.players[i], team: jb.teams[i], start: now, spin: Math.random() });
         }
         lastAlive[i] = p.alive;
       });
-      pose.balls.forEach((ball) => drawBall(ctx, jb.config.ballRadius, ball));
-      pose.players.forEach((p, i) => {
-        if (p.alive) drawPlayer(ctx, jb, p, jb.teams[i], i === mySeat());
+      world.balls.forEach((b, i) => drawBall(ctx, jb.tune.ballRadius, { team: b.team, ...at.balls[i] }));
+      world.players.forEach((p, i) => {
+        if (!p.alive) return;
+        const ext = p.jab ? jabExtension(p.jab.t) : 0;
+        const jab = ext > 0 ? { dx: p.jab.dx, dy: p.jab.dy, ext } : null;
+        drawPlayer(ctx, jb, { ...at.players[i], jab, flying: p.flying, vx: p.vx, vy: p.vy }, jb.teams[i], i === mySeat());
       });
     }
     drawBursts(ctx, now);
@@ -371,7 +555,7 @@ export function createJabbleClient({ id, name, stateKey }) {
   // --- HUD ------------------------------------------------------------------
 
   function statusText() {
-    return `You are ${TEAMS[myTeam()].name} · first to ${jb.config.winScore}`;
+    return `You are ${TEAMS[myTeam()].name} · first to ${jb.tune.winScore}`;
   }
 
   function fitCanvas() {
@@ -401,9 +585,6 @@ export function createJabbleClient({ id, name, stateKey }) {
     score.className = "jb-score";
     const hint = document.createElement("div");
     hint.className = "jb-hint";
-    hint.innerHTML =
-      "<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · " +
-      "<kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> jab (two at once for a diagonal)";
     bar.append(you, score, hint);
 
     const stage = document.createElement("div");
@@ -414,21 +595,114 @@ export function createJabbleClient({ id, name, stateKey }) {
     overlay.className = "jb-overlay";
     stage.append(canvas, overlay);
 
-    els.gameBoard.append(bar, stage);
-    view = { canvas, ctx: canvas.getContext("2d"), stage, overlay, you, score };
+    const panel = buildPanel();
+    const main = document.createElement("div");
+    main.className = "jb-main";
+    main.append(stage, panel.root);
+
+    els.gameBoard.append(bar, main);
+    view = { canvas, ctx: canvas.getContext("2d"), stage, overlay, you, score, hint, panel };
+    renderHint();
+    renderPanel();
 
     overlay.addEventListener("click", (event) => {
-      if (!(event.target instanceof Element) || !event.target.closest(".jb-rematch")) return;
-      if (!app.roomId || rematchSent) return;
-      rematchSent = true;
-      socket.emit("jabble_rematch", { roomId: app.roomId });
-      renderOverlay();
+      if (event.target instanceof Element && event.target.closest(".jb-rematch")) requestRematch();
     });
 
     resizeObserver = new ResizeObserver(fitCanvas);
     resizeObserver.observe(stage);
     fitCanvas();
     if (!frame) frame = requestAnimationFrame(draw);
+  }
+
+  // --- sliders --------------------------------------------------------------
+
+  // Built once per match from SETTINGS, grouped as the list groups them, and
+  // only the sliders that mean something in this game.
+  function buildPanel() {
+    const kind = jb.tune.ice ? "ice" : "grip";
+    const root = document.createElement("aside");
+    root.className = "jb-panel";
+    root.innerHTML =
+      `<div class="jb-panel-head"><strong>Tune the game</strong>` +
+      `<button type="button" class="ghost-btn jb-reset">Reset</button></div>` +
+      (app.isBotGame ? "" : `<p class="jb-panel-note">Changes here apply for both players.</p>`);
+    const rows = new Map(); // key -> { input, value, wait }
+    let group = null;
+    SETTINGS.filter((def) => !def.only || def.only === kind).forEach((def) => {
+      if (def.group !== group?.dataset.group) {
+        group = document.createElement("section");
+        group.className = "jb-group";
+        group.dataset.group = def.group;
+        group.innerHTML = `<h4>${def.group}</h4>`;
+        root.appendChild(group);
+      }
+      const row = document.createElement("label");
+      row.className = "jb-slider";
+      row.innerHTML =
+        `<span class="jb-slider-top"><span>${def.label}</span>` +
+        `<span class="jb-slider-wait hidden">next round</span>` +
+        `<span class="jb-slider-value"></span></span>` +
+        `<input type="range" min="${def.min}" max="${def.max}" step="${def.step}">`;
+      const input = row.querySelector("input");
+      const value = row.querySelector(".jb-slider-value");
+      input.addEventListener("pointerdown", () => (draggingKey = def.key));
+      input.addEventListener("input", () => {
+        const v = Number(input.value);
+        value.textContent = formatSetting(def.key, v);
+        queueSetting(def.key, v);
+      });
+      // Let go: hand the keyboard back to the game too, since a focused slider
+      // would otherwise be what the next arrow key nudges.
+      const release = () => {
+        if (draggingKey === def.key) draggingKey = null;
+        input.blur();
+      };
+      input.addEventListener("pointerup", release);
+      input.addEventListener("pointercancel", release);
+      input.addEventListener("change", release);
+      rows.set(def.key, { input, value, wait: row.querySelector(".jb-slider-wait") });
+      group.appendChild(row);
+    });
+    root.querySelector(".jb-reset").addEventListener("click", () => {
+      if (!app.roomId) return;
+      unsentSettings = {};
+      saveSettings(id, null);
+      socket.emit("jabble_settings", { roomId: app.roomId, reset: true });
+    });
+    return { root, rows };
+  }
+
+  // Sliders follow the server's word, except the one you're holding. A
+  // "next round" tag marks a value that's set but not yet in force.
+  function renderPanel() {
+    if (!view?.panel || !jb) return;
+    view.panel.rows.forEach(({ input, value, wait }, key) => {
+      const set = jb.settings[key];
+      if (key !== draggingKey && !(key in unsentSettings)) {
+        input.value = String(set);
+        value.textContent = formatSetting(key, set);
+      }
+      wait.classList.toggle("hidden", set === jb.tune[key]);
+    });
+  }
+
+  function queueSetting(key, v) {
+    unsentSettings[key] = v;
+    saveSettings(id, { ...jb.settings, ...unsentSettings });
+    if (!settingsTimer) settingsTimer = setTimeout(sendSettings, SETTINGS_SEND_MS);
+  }
+
+  function sendSettings() {
+    settingsTimer = null;
+    if (app.roomId && Object.keys(unsentSettings).length) {
+      socket.emit("jabble_settings", { roomId: app.roomId, changes: unsentSettings });
+    }
+    unsentSettings = {};
+  }
+
+  function renderHint() {
+    if (view) view.hint.innerHTML = padId ? PAD_HINT : KEYBOARD_HINT;
   }
 
   function renderHud() {
@@ -466,7 +740,7 @@ export function createJabbleClient({ id, name, stateKey }) {
       const final = `${Math.max(...jb.score)} – ${Math.min(...jb.score)}`;
       const button = rematchSent
         ? `<span class="jb-wait">Waiting for the other player…</span>`
-        : `<button type="button" class="primary-btn jb-rematch">Rematch</button>`;
+        : `<button type="button" class="primary-btn jb-rematch">Rematch${padId ? " (A)" : ""}</button>`;
       html = `<div class="jb-call jb-final"><strong>${big}</strong><small>${final}</small>${button}</div>`;
     }
     view.overlay.innerHTML = html;
@@ -481,12 +755,19 @@ export function createJabbleClient({ id, name, stateKey }) {
     frame = null;
     if (chord) clearTimeout(chord.timer);
     chord = null;
+    if (settingsTimer) clearTimeout(settingsTimer);
+    settingsTimer = null;
+    unsentSettings = {};
+    draggingKey = null;
     jb = null;
     view = null;
-    snaps = [];
-    clockOffset = null;
+    predictor = null;
+    ease = { players: [], balls: [] };
+    tickClock = null;
     moveKeys = 0;
-    sentKeys = 0;
+    queuedJab = 0;
+    padHeld = [];
+    aimOut = false;
     lastAlive = [];
     bursts = [];
     rematchSent = false;
@@ -498,11 +779,12 @@ export function createJabbleClient({ id, name, stateKey }) {
     name,
     botName: "the bot",
 
-    // There's nothing to set up, so this hands straight back: Solo starts a
-    // game against the bot (level 0, its only one) and the card joins the
-    // queue — no opponent picker in between.
+    // There's no setup screen, so this hands straight back — with your saved
+    // sliders as the match's starting settings: Solo starts a game against
+    // the bot (level 0, its only one) and the card joins the queue, no
+    // opponent picker in between.
     openSetup({ mode, onReady }) {
-      onReady({}, mode === "solo" ? 0 : null);
+      onReady({ settings: loadSavedSettings(id) }, mode === "solo" ? 0 : null);
     },
 
     handleState(payload, resetGameUi) {
@@ -512,6 +794,7 @@ export function createJabbleClient({ id, name, stateKey }) {
       jb = payload[stateKey];
       if (firstRender) {
         resetGameUi();
+        predictor = createPredictor(mySeat());
         buildView();
       }
       if (!prev || prev.round !== jb.round) {
@@ -521,6 +804,7 @@ export function createJabbleClient({ id, name, stateKey }) {
       if (prev?.phase === "countdown" && jb.phase === "play") goUntil = performance.now() + 600;
       if (jb.phase !== "matchover") rematchSent = false;
       renderHud();
+      renderPanel();
       renderOverlay();
       return true;
     },

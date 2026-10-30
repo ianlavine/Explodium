@@ -1,8 +1,10 @@
-// Jabble: real-time top-down stadium game. Two teams, one ball each. Your own
-// ball bounces off you like off anything else, and a jab (an arm thrown out in
-// one of eight directions) launches it hard that way. The OTHER team's ball
-// kills whatever of yours it touches — your square, or your arm mid-jab. Last
-// team standing takes the round; first to TUNING.winScore rounds wins.
+// Jabble: real-time top-down stadium game. Two teams, each with its own balls
+// (one to three). Your own balls bounce off you like off anything else, and a
+// jab (an arm thrown out in one of eight directions) launches one hard that
+// way. The OTHER team's balls kill whatever of yours they touch — your square,
+// or your arm mid-jab. A jab that lands on an opposing PLAYER sends them flying
+// the way a kick sends a ball. Last team standing takes the round; first to
+// `winScore` rounds wins.
 //
 // Nothing in the stadium is flat. Its four sides bow gently outward and every
 // obstacle is a round pillar or a curved bar, so a ball that hits a wall
@@ -12,16 +14,23 @@
 // round its rim.
 //
 // Two games run on this engine — Jabble and Jabble Ice — and VARIANTS holds
-// what's different about each; a match carries its merged numbers as `tune`.
-// The server runs this at a fixed TICK_HZ; clients only ever draw snapshots of
-// it. Every number worth tuning lives in TUNING or VARIANTS.
+// what's different about each. A match carries its numbers as `tune`: TUNING,
+// then its variant, then whatever the table has set on the sliders (SETTINGS),
+// so everything below reads `tune`, never TUNING.
+//
+// It runs on BOTH sides. The server (server/games/jabble) owns the real match
+// at a fixed TICK_HZ. Each browser runs it too, in "predict" mode, to move
+// its own square the instant a key goes down rather than a round trip later
+// (see predict.js) — so this file must stay free of anything Node-only.
 
 export const TICK_HZ = 60;
 export const TICK_MS = 1000 / TICK_HZ;
-// Collision runs this many times per tick, so a kicked ball (≈ 9 units per
-// substep at kick speed) can never skip through a 22-unit bar.
-const SUBSTEPS = 2;
-const DT = 1 / TICK_HZ / SUBSTEPS;
+// Collision runs in enough substeps per tick that nothing moves further than
+// MAX_STEP between checks, so even the hardest kick can't carry the smallest
+// ball through a 22-unit bar.
+const MAX_STEP = 8;
+const MIN_SUBSTEPS = 2;
+const MAX_SUBSTEPS = 12;
 
 export const TUNING = {
   arenaW: 1200,
@@ -39,16 +48,22 @@ export const TUNING = {
   iceMaxSpeed: 380,
   iceWallBounce: 0.35,
 
+  ballsPerTeam: 2,
   ballRadius: 16,
   ballDrag: 0.55, // speed bled per second, as e^-drag (0.55 ≈ 42% a second)
   ballStopSpeed: 6, // below this a ball comes to rest
-  ballMaxSpeed: 1400,
-  wallBounce: 0.85, // restitution off walls
+  ballMaxSpeed: 1400, // or 1.35 × kickSpeed, whichever is more
+  wallBounce: 0.95, // restitution off walls (balls, and players sent flying)
   bodyBounce: 0.3, // off a player's body — soft, so you can trap your ball
   ballBounce: 0.9, // ball against ball
 
   kickSpeed: 1050, // a jab sets your ball to exactly this, in the jab direction
-  jabReach: 34, // how far the fist travels past the edge of your square
+  // ...and an opponent it lands on to this. A player sent flying can't steer:
+  // they slow by flightDrag, bounce off walls like a ball, and get control
+  // back once they're down to their normal top speed.
+  playerKickSpeed: 900,
+  flightDrag: 2.5,
+  jabReach: 100, // how far the fist travels past the edge of your square
   fistRadius: 12,
   armRadius: 5, // the arm behind the fist is a hitbox too, just a thinner one
   jabOutTicks: 3, // arm extending
@@ -57,6 +72,8 @@ export const TUNING = {
   jabCooldownTicks: 21, // 0.35 s from one jab's start to the next
   jabBufferTicks: 8, // a jab pressed this close to being ready fires when it is
 
+  obstacles: 9, // pillars and curved bars set out each round
+
   countdownTicks: 90, // frozen "ready" before each round
   overTicks: 120, // pause after a round is decided
   winScore: 3
@@ -64,9 +81,70 @@ export const TUNING = {
 
 // What each game changes from TUNING. Keyed by the lobby's game id.
 export const VARIANTS = {
-  jabble: { obstacles: true, ice: false },
-  "jabble-ice": { obstacles: false, ice: true, ballRadius: 32 }
+  jabble: { ice: false },
+  "jabble-ice": { ice: true, obstacles: 0, ballRadius: 32 }
 };
+
+// The sliders a table can move mid-match, and how far. Most change the match
+// the moment they move; those marked `nextRound` change what gets set out
+// (how many balls, how big things are, the obstacles), so they wait for the
+// next round rather than, say, growing a ball into someone. `only` keeps a
+// slider to the game it means something in. The server clamps every change
+// to these bounds; the client draws the panel from this same list.
+export const SETTINGS = [
+  { key: "ballsPerTeam", group: "Balls", label: "Balls per team", min: 1, max: 3, step: 1, nextRound: true },
+  { key: "ballRadius", group: "Balls", label: "Ball size", min: 8, max: 80, step: 1, nextRound: true },
+  { key: "ballDrag", group: "Balls", label: "Ball friction", min: 0, max: 2.5, step: 0.05 },
+  { key: "wallBounce", group: "Balls", label: "Wall bounce", min: 0.2, max: 1.2, step: 0.05 },
+  { key: "bodyBounce", group: "Balls", label: "Bounce off players", min: 0, max: 1.2, step: 0.05 },
+  { key: "jabReach", group: "Jab", label: "Reach", min: 10, max: 320, step: 2 },
+  { key: "kickSpeed", group: "Jab", label: "Kick power", min: 300, max: 2600, step: 25 },
+  { key: "playerKickSpeed", group: "Jab", label: "Player knockback", min: 0, max: 2500, step: 25 },
+  { key: "jabCooldownTicks", group: "Jab", label: "Cooldown", min: 6, max: 72, step: 1 },
+  { key: "playerSpeed", group: "Player", label: "Speed", min: 120, max: 650, step: 10, only: "grip" },
+  { key: "playerAccel", group: "Player", label: "Grip", min: 400, max: 8000, step: 100, only: "grip" },
+  { key: "iceAccel", group: "Player", label: "Push", min: 150, max: 3000, step: 25, only: "ice" },
+  { key: "iceMaxSpeed", group: "Player", label: "Top speed", min: 150, max: 900, step: 10, only: "ice" },
+  { key: "iceFriction", group: "Player", label: "Ice friction", min: 0, max: 4, step: 0.05, only: "ice" },
+  { key: "iceWallBounce", group: "Player", label: "Wall rebound", min: 0, max: 1, step: 0.05, only: "ice" },
+  { key: "playerSize", group: "Player", label: "Size", min: 18, max: 72, step: 2, nextRound: true },
+  { key: "obstacles", group: "Arena", label: "Obstacles", min: 0, max: 16, step: 1, nextRound: true },
+  { key: "winScore", group: "Arena", label: "First to", min: 1, max: 9, step: 1 }
+];
+const SETTING_BY_KEY = new Map(SETTINGS.map((def) => [def.key, def]));
+
+// A slider value pulled onto its step and inside its bounds; null if it isn't
+// a number at all.
+function settle(def, value) {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return null;
+  const stepped = def.min + Math.round((v - def.min) / def.step) * def.step;
+  return Math.min(def.max, Math.max(def.min, Math.round(stepped * 1000) / 1000));
+}
+
+export function defaultSettings(variant) {
+  const tune = tuneFor(variant);
+  return Object.fromEntries(SETTINGS.map((def) => [def.key, tune[def.key]]));
+}
+
+// A table's chosen values (from a saved set, say), with anything missing or
+// out of bounds put back to the game's default.
+export function sanitizeSettings(variant, raw) {
+  const out = defaultSettings(variant);
+  if (!raw || typeof raw !== "object") return out;
+  for (const def of SETTINGS) {
+    if (!(def.key in raw)) continue;
+    const v = settle(def, raw[def.key]);
+    if (v !== null) out[def.key] = v;
+  }
+  return out;
+}
+
+// A game's numbers before anyone touches a slider: TUNING with its
+// variant's changes on top.
+export function tuneFor(variant) {
+  return { ...TUNING, ...VARIANTS[variant] };
+}
 
 const KEY_UP = 1;
 const KEY_DOWN = 2;
@@ -108,6 +186,11 @@ const RIMS = (() => {
   });
 })();
 
+// Everything a round's balls and players can hit: the rims plus its obstacles.
+export function collidersFor(solids) {
+  return RIMS.concat(solids);
+}
+
 // Signed distance from (x, y) to a solid (negative inside it), with the unit
 // normal pointing out of the solid toward open floor. The three kinds:
 //   rim    - the outside of one of the stadium's four circles
@@ -142,25 +225,43 @@ function distanceTo(solid, x, y) {
 
 const EDGE_GAP = 56; // obstacles keep off the edge: a lane runs all the way round
 const OBSTACLE_GAP = 64; // and off each other, so every pocket is reachable
+// ...or wider, whatever a ball or player would need to fit through a gap: a
+// ball shoved into a gap narrower than itself would sit wedged between two
+// walls being pushed back and forth by both.
+function gapsFor(tune) {
+  const fits = Math.max(2 * tune.ballRadius, tune.playerSize * Math.SQRT2) + 16;
+  return { edge: Math.max(EDGE_GAP, fits), between: Math.max(OBSTACLE_GAP, fits) };
+}
 
-// Each team starts at its own end, at a height of its own.
-function spawnLayout(teamSizes) {
-  const { arenaW: W, arenaH: H } = TUNING;
-  const spots = [];
+// Each team starts at its own end, at a height of its own, with its balls in
+// a column in front of it (squeezed together if a column of big ones wouldn't
+// otherwise fit).
+function spawnLayout(tune, teamSizes) {
+  const { arenaW: W, arenaH: H, edgeBow } = TUNING;
+  const half = tune.playerSize / 2;
+  const r = tune.ballRadius;
+  const n = tune.ballsPerTeam;
+  const margin = edgeBow + r + 24;
+  const ballGap = n > 1 ? Math.min(2 * r + 30, (H - 2 * margin) / (n - 1)) : 0;
+  const playerGap = tune.playerSize + 56;
+  const players = [];
+  const balls = [];
   teamSizes.forEach((count, team) => {
-    const y0 = H / 2 + Math.round((Math.random() - 0.5) * 300);
-    const fromX = team === 0 ? 0 : W;
+    const extent =
+      Math.max(ballGap * (n - 1), playerGap * (count - 1)) / 2 + Math.max(margin, half + edgeBow + 30);
+    const wanted = H / 2 + Math.round((Math.random() - 0.5) * 300);
+    const y0 = extent >= H / 2 ? H / 2 : Math.min(H - extent, Math.max(extent, wanted));
     const inward = team === 0 ? 1 : -1;
+    const playerX = (team === 0 ? 0 : W) + inward * (edgeBow + 74);
+    const ballX = playerX + inward * (half + r + 107);
     for (let k = 0; k < count; k += 1) {
-      const spread = (k - (count - 1) / 2) * 90;
-      spots.push({
-        team,
-        player: { x: fromX + inward * 110, y: y0 + spread },
-        ball: { x: fromX + inward * 250, y: y0 }
-      });
+      players.push({ team, x: playerX, y: y0 + (k - (count - 1) / 2) * playerGap });
+    }
+    for (let k = 0; k < n; k += 1) {
+      balls.push({ team, x: ballX, y: y0 + (k - (n - 1) / 2) * ballGap });
     }
   });
-  return spots;
+  return { players, balls };
 }
 
 function randomObstacle() {
@@ -202,20 +303,21 @@ function spine(solid) {
 }
 
 // Pillars and curved bars scattered anywhere, spaced so that nothing seals
-// off a pocket, with the spawns left clear.
-function generateObstacles(spawns) {
-  const clear = spawns.flatMap((s) => [
-    { point: s.player, radius: 95 },
-    { point: s.ball, radius: 75 }
-  ]);
+// off a pocket, with the spawns left clear. A crowded arena may come up short
+// of `count`.
+function generateObstacles(tune, spawns, count) {
+  const clear = [
+    ...spawns.players.map((point) => ({ point, radius: Math.max(95, tune.playerSize + 61) })),
+    ...spawns.balls.map((point) => ({ point, radius: tune.ballRadius + 59 }))
+  ];
+  const gaps = gapsFor(tune);
   const placed = [];
-  const target = 7 + Math.floor(Math.random() * 5);
-  for (let attempt = 0; attempt < 800 && placed.length < target; attempt += 1) {
+  for (let attempt = 0; attempt < 100 * count && placed.length < count; attempt += 1) {
     const solid = randomObstacle();
     const roomy = spine(solid).every(
       (disc) =>
-        RIMS.every((rim) => distanceTo(rim, disc.x, disc.y).d - disc.r >= EDGE_GAP) &&
-        placed.every((other) => distanceTo(other, disc.x, disc.y).d - disc.r >= OBSTACLE_GAP)
+        RIMS.every((rim) => distanceTo(rim, disc.x, disc.y).d - disc.r >= gaps.edge) &&
+        placed.every((other) => distanceTo(other, disc.x, disc.y).d - disc.r >= gaps.between)
     );
     if (!roomy) continue;
     if (clear.some((c) => distanceTo(solid, c.point.x, c.point.y).d < c.radius)) continue;
@@ -227,7 +329,9 @@ function generateObstacles(spawns) {
 // --- match lifecycle --------------------------------------------------------
 
 // One seat per player; seats alternate teams (0 blue, 1 red, 2 blue, ...).
-export function createMatch(seatCount = 2, variant = "jabble") {
+// `settings` are the sliders the table starts with (anything left out, or out
+// of bounds, is the game's default).
+export function createMatch(seatCount = 2, variant = "jabble", settings = null) {
   const players = [];
   for (let seat = 0; seat < seatCount; seat += 1) {
     players.push({
@@ -239,13 +343,16 @@ export function createMatch(seatCount = 2, variant = "jabble") {
       vy: 0,
       keys: 0,
       alive: true,
-      jab: null, // { dx, dy, t, hit }
+      jab: null, // { dx, dy, t, hit, hitPlayers } — a bit per ball / seat it has already struck
       cooldown: 0,
-      pendingJab: null // { dx, dy, ttl }
+      pendingJab: null, // { dx, dy, ttl }
+      flying: false // knocked away by a jab, and not yet slowed to a walk
     });
   }
   const state = {
-    tune: { ...TUNING, ...VARIANTS[variant] },
+    variant,
+    tune: tuneFor(variant), // the numbers in force (round-start ones refresh each round)
+    settings: sanitizeSettings(variant, settings), // what the sliders say
     tick: 0,
     round: 0,
     phase: "countdown", // countdown | play | over | matchover
@@ -254,7 +361,7 @@ export function createMatch(seatCount = 2, variant = "jabble") {
     solids: [], // this round's obstacles
     collide: RIMS, // the rims plus the obstacles: everything solid
     players,
-    balls: [0, 1].map((team) => ({ team, x: 0, y: 0, vx: 0, vy: 0 })),
+    balls: [], // { team, x, y, vx, vy }, set out each round
     lastRound: null, // { winner: team | null }
     rematch: new Set()
   };
@@ -270,31 +377,51 @@ export function resetMatch(state) {
   startRound(state);
 }
 
+// Moves sliders. Changes that only matter at a round's start are kept in
+// `settings` until then; the rest go straight into `tune`. Returns whether
+// anything moved.
+export function applySettings(state, changes) {
+  let moved = false;
+  for (const [key, value] of Object.entries(changes ?? {})) {
+    const def = SETTING_BY_KEY.get(key);
+    const v = def ? settle(def, value) : null;
+    if (v === null || v === state.settings[key]) continue;
+    state.settings[key] = v;
+    if (!def.nextRound) state.tune[key] = v;
+    moved = true;
+  }
+  return moved;
+}
+
+export function resetSettings(state) {
+  return applySettings(state, defaultSettings(state.variant));
+}
+
 function startRound(state) {
+  Object.assign(state.tune, state.settings);
+  const { tune } = state;
   const teamSizes = [0, 0];
   state.players.forEach((p) => (teamSizes[p.team] += 1));
-  const spawns = spawnLayout(teamSizes);
-  state.solids = state.tune.obstacles ? generateObstacles(spawns) : [];
-  state.collide = RIMS.concat(state.solids);
+  const spawns = spawnLayout(tune, teamSizes);
+  state.solids = generateObstacles(tune, spawns, tune.obstacles);
+  state.collide = collidersFor(state.solids);
 
   const next = [0, 0];
   state.players.forEach((p) => {
-    const spot = spawns.filter((s) => s.team === p.team)[next[p.team]++];
-    Object.assign(p, { x: spot.player.x, y: spot.player.y, vx: 0, vy: 0 });
+    const spot = spawns.players.filter((s) => s.team === p.team)[next[p.team]++];
+    Object.assign(p, { x: spot.x, y: spot.y, vx: 0, vy: 0 });
     p.alive = true;
     p.jab = null;
     p.cooldown = 0;
     p.pendingJab = null;
+    p.flying = false;
     // keys survive the reset: whatever you're holding moves you on "go"
   });
-  state.balls.forEach((ball) => {
-    const spot = spawns.find((s) => s.team === ball.team);
-    Object.assign(ball, { x: spot.ball.x, y: spot.ball.y, vx: 0, vy: 0 });
-  });
+  state.balls = spawns.balls.map(({ team, x, y }) => ({ team, x, y, vx: 0, vy: 0 }));
 
   state.round += 1;
   state.phase = "countdown";
-  state.phaseTicks = TUNING.countdownTicks;
+  state.phaseTicks = tune.countdownTicks;
 }
 
 // --- input ------------------------------------------------------------------
@@ -313,14 +440,13 @@ export function requestJab(state, seat, mask) {
   const dy = (mask & KEY_DOWN ? 1 : 0) - (mask & KEY_UP ? 1 : 0);
   if (!dx && !dy) return;
   const len = Math.hypot(dx, dy);
-  p.pendingJab = { dx: dx / len, dy: dy / len, ttl: TUNING.jabBufferTicks };
+  p.pendingJab = { dx: dx / len, dy: dy / len, ttl: state.tune.jabBufferTicks };
 }
 
 // --- geometry ---------------------------------------------------------------
 
-function playerRect(p) {
-  const half = TUNING.playerSize / 2;
-  return { x: p.x - half, y: p.y - half, w: TUNING.playerSize, h: TUNING.playerSize };
+function playerRect(p, size) {
+  return { x: p.x - size / 2, y: p.y - size / 2, w: size, h: size };
 }
 
 // Points round the rim of a player's square, corners included, in units of
@@ -355,8 +481,8 @@ function squareContact(state, x, y, half) {
 // the part of its velocity that was heading in (on ice, turns a little of it
 // back the other way).
 function pushOutOfWalls(state, p) {
-  const half = TUNING.playerSize / 2;
-  const rebound = state.tune.ice ? state.tune.iceWallBounce : 0;
+  const half = state.tune.playerSize / 2;
+  const rebound = p.flying ? state.tune.wallBounce : state.tune.ice ? state.tune.iceWallBounce : 0;
   for (let pass = 0; pass < 3; pass += 1) {
     const hit = squareContact(state, p.x, p.y, half);
     if (!hit) return;
@@ -372,7 +498,7 @@ function pushOutOfWalls(state, p) {
 
 // Whether a square of half-width `half` centred at (x, y) would overlap any
 // wall or the arena's edge (the bot uses this to test where it can stand).
-export function isBlocked(state, x, y, half = TUNING.playerSize / 2) {
+export function isBlocked(state, x, y, half = state.tune.playerSize / 2) {
   return squareContact(state, x, y, half) !== null;
 }
 
@@ -441,9 +567,9 @@ export function jabExtension(t) {
 const JAB_TICKS = TUNING.jabOutTicks + TUNING.jabHoldTicks + TUNING.jabBackTicks;
 
 // The arm as a segment from the edge of the square to the fist's centre.
-function jabSegment(p) {
-  const half = TUNING.playerSize / 2;
-  const reach = half + TUNING.jabReach * jabExtension(p.jab.t);
+function jabSegment(tune, p) {
+  const half = tune.playerSize / 2;
+  const reach = half + tune.jabReach * jabExtension(p.jab.t);
   return {
     ax: p.x + p.jab.dx * half,
     ay: p.y + p.jab.dy * half,
@@ -463,8 +589,8 @@ function advanceJabs(state) {
     }
     if (!p.pendingJab) continue;
     if (p.alive && p.cooldown === 0) {
-      p.jab = { dx: p.pendingJab.dx, dy: p.pendingJab.dy, t: 0, hit: false };
-      p.cooldown = TUNING.jabCooldownTicks;
+      p.jab = { dx: p.pendingJab.dx, dy: p.pendingJab.dy, t: 0, hit: 0, hitPlayers: 0 };
+      p.cooldown = state.tune.jabCooldownTicks;
       p.pendingJab = null;
     } else if (--p.pendingJab.ttl <= 0) {
       p.pendingJab = null;
@@ -473,14 +599,14 @@ function advanceJabs(state) {
 }
 
 // Grip: your velocity swings quickly toward the held direction at full speed.
-function gripVelocity(tune, p, ix, iy) {
+function gripVelocity(tune, p, ix, iy, dt) {
   const len = Math.hypot(ix, iy) || 1;
   const tx = (ix / len) * tune.playerSpeed;
   const ty = (iy / len) * tune.playerSpeed;
   const dvx = tx - p.vx;
   const dvy = ty - p.vy;
   const dv = Math.hypot(dvx, dvy);
-  const maxDv = tune.playerAccel * DT;
+  const maxDv = tune.playerAccel * dt;
   if (dv <= maxDv) {
     p.vx = tx;
     p.vy = ty;
@@ -492,13 +618,13 @@ function gripVelocity(tune, p, ix, iy) {
 
 // Ice: the held direction is a push, friction barely slows you, and turning
 // round means fighting your own slide.
-function iceVelocity(tune, p, ix, iy) {
+function iceVelocity(tune, p, ix, iy, dt) {
   const len = Math.hypot(ix, iy);
   if (len) {
-    p.vx += (ix / len) * tune.iceAccel * DT;
-    p.vy += (iy / len) * tune.iceAccel * DT;
+    p.vx += (ix / len) * tune.iceAccel * dt;
+    p.vy += (iy / len) * tune.iceAccel * dt;
   }
-  const keep = Math.exp(-tune.iceFriction * DT);
+  const keep = Math.exp(-tune.iceFriction * dt);
   p.vx *= keep;
   p.vy *= keep;
   const speed = Math.hypot(p.vx, p.vy);
@@ -508,13 +634,28 @@ function iceVelocity(tune, p, ix, iy) {
   }
 }
 
-function movePlayer(state, p) {
+// The speed a player gets about at under their own power.
+function topSpeed(tune) {
+  return tune.ice ? tune.iceMaxSpeed : tune.playerSpeed;
+}
+
+// Coasting after a knockback: no steering, just drag, until slow enough to
+// take over again.
+function flightVelocity(tune, p, dt) {
+  const keep = Math.exp(-tune.flightDrag * dt);
+  p.vx *= keep;
+  p.vy *= keep;
+  if (Math.hypot(p.vx, p.vy) <= topSpeed(tune)) p.flying = false;
+}
+
+function movePlayer(state, p, dt) {
   const ix = (p.keys & KEY_RIGHT ? 1 : 0) - (p.keys & KEY_LEFT ? 1 : 0);
   const iy = (p.keys & KEY_DOWN ? 1 : 0) - (p.keys & KEY_UP ? 1 : 0);
-  if (state.tune.ice) iceVelocity(state.tune, p, ix, iy);
-  else gripVelocity(state.tune, p, ix, iy);
-  p.x += p.vx * DT;
-  p.y += p.vy * DT;
+  if (p.flying) flightVelocity(state.tune, p, dt);
+  else if (state.tune.ice) iceVelocity(state.tune, p, ix, iy, dt);
+  else gripVelocity(state.tune, p, ix, iy, dt);
+  p.x += p.vx * dt;
+  p.y += p.vy * dt;
   pushOutOfWalls(state, p);
 }
 
@@ -524,8 +665,8 @@ function separatePlayers(state, alive) {
     for (let j = i + 1; j < alive.length; j += 1) {
       const a = alive[i];
       const b = alive[j];
-      const ox = TUNING.playerSize - Math.abs(a.x - b.x);
-      const oy = TUNING.playerSize - Math.abs(a.y - b.y);
+      const ox = state.tune.playerSize - Math.abs(a.x - b.x);
+      const oy = state.tune.playerSize - Math.abs(a.y - b.y);
       if (ox <= 0 || oy <= 0) continue;
       if (ox < oy) {
         const s = (a.x < b.x ? -1 : 1) * (ox / 2);
@@ -542,25 +683,31 @@ function separatePlayers(state, alive) {
   }
 }
 
-function moveBall(ball) {
+function ballSpeedCap(tune) {
+  return Math.max(tune.ballMaxSpeed, tune.kickSpeed * 1.35);
+}
+
+function moveBall(tune, ball, dt) {
+  const cap = ballSpeedCap(tune);
   let speed = Math.hypot(ball.vx, ball.vy);
-  if (speed > TUNING.ballMaxSpeed) {
-    ball.vx *= TUNING.ballMaxSpeed / speed;
-    ball.vy *= TUNING.ballMaxSpeed / speed;
-    speed = TUNING.ballMaxSpeed;
+  if (speed > cap) {
+    ball.vx *= cap / speed;
+    ball.vy *= cap / speed;
+    speed = cap;
   }
-  const drag = Math.exp(-TUNING.ballDrag * DT);
+  const drag = Math.exp(-tune.ballDrag * dt);
   ball.vx *= drag;
   ball.vy *= drag;
-  if (speed * drag < TUNING.ballStopSpeed) {
+  if (speed * drag < tune.ballStopSpeed) {
     ball.vx = 0;
     ball.vy = 0;
   }
-  ball.x += ball.vx * DT;
-  ball.y += ball.vy * DT;
+  ball.x += ball.vx * dt;
+  ball.y += ball.vy * dt;
 }
 
-function collideBalls(a, b, r) {
+function collideBalls(tune, a, b) {
+  const r = tune.ballRadius;
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const d = Math.hypot(dx, dy);
@@ -574,63 +721,117 @@ function collideBalls(a, b, r) {
   b.y += ny * push;
   const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
   if (vn >= 0) return;
-  const impulse = (-(1 + TUNING.ballBounce) * vn) / 2;
+  const impulse = (-(1 + tune.ballBounce) * vn) / 2;
   a.vx -= impulse * nx;
   a.vy -= impulse * ny;
   b.vx += impulse * nx;
   b.vy += impulse * ny;
 }
 
-function substep(state, lethal) {
+// How many collision passes this tick needs: enough that the fastest thing
+// about — a ball, a flying player, or a kick about to happen — moves at most
+// MAX_STEP per pass.
+function substepsFor(state) {
+  let fastest = 0;
+  for (const ball of state.balls) fastest = Math.max(fastest, Math.hypot(ball.vx, ball.vy));
+  for (const p of state.players) fastest = Math.max(fastest, Math.hypot(p.vx, p.vy));
+  if (state.players.some((p) => p.jab)) {
+    fastest = Math.max(fastest, state.tune.kickSpeed, state.tune.playerKickSpeed);
+  }
+  const needed = Math.ceil(fastest / TICK_HZ / MAX_STEP);
+  return Math.min(MAX_SUBSTEPS, Math.max(MIN_SUBSTEPS, needed));
+}
+
+// Whether a jab's arm or fist touches a square. The fist is a disc; the arm
+// is a thinner capsule, tested as discs a radius apart along it.
+function jabTouchesSquare(tune, seg, rect) {
+  if (circleRectContact({ x: seg.bx, y: seg.by }, tune.fistRadius, rect)) return true;
+  const len = Math.hypot(seg.bx - seg.ax, seg.by - seg.ay);
+  const steps = Math.max(1, Math.ceil(len / tune.armRadius));
+  for (let i = 0; i < steps; i += 1) {
+    const t = i / steps;
+    const point = { x: seg.ax + (seg.bx - seg.ax) * t, y: seg.ay + (seg.by - seg.ay) * t };
+    if (circleRectContact(point, tune.armRadius, rect)) return true;
+  }
+  return false;
+}
+
+// A jab landing on an opponent sends them flying along it, once per jab.
+function knockPlayers(tune, alive) {
+  if (!tune.playerKickSpeed) return;
+  for (const p of alive) {
+    if (!p.jab || jabExtension(p.jab.t) <= 0) continue;
+    const seg = jabSegment(tune, p);
+    for (const q of alive) {
+      const bit = 1 << q.seat;
+      if (q.team === p.team || p.jab.hitPlayers & bit) continue;
+      if (!jabTouchesSquare(tune, seg, playerRect(q, tune.playerSize))) continue;
+      p.jab.hitPlayers |= bit;
+      q.vx = p.jab.dx * tune.playerKickSpeed;
+      q.vy = p.jab.dy * tune.playerKickSpeed;
+      q.flying = true;
+    }
+  }
+}
+
+function substep(state, lethal, dt) {
+  const { tune } = state;
   const alive = state.players.filter((p) => p.alive);
-  alive.forEach((p) => movePlayer(state, p));
+  alive.forEach((p) => movePlayer(state, p, dt));
   separatePlayers(state, alive);
+  knockPlayers(tune, alive);
 
   const deaths = new Set();
-  const r = state.tune.ballRadius;
-  for (const ball of state.balls) {
-    moveBall(ball);
+  const r = tune.ballRadius;
+  const size = tune.playerSize;
+  state.balls.forEach((ball, index) => {
+    moveBall(tune, ball, dt);
     for (const p of alive) {
-      const contact = circleRectContact(ball, r, playerRect(p));
+      const contact = circleRectContact(ball, r, playerRect(p, size));
       if (!contact) continue;
       if (lethal && ball.team !== p.team) deaths.add(p);
-      bounce(ball, contact, p.vx, p.vy, TUNING.bodyBounce);
+      bounce(ball, contact, p.vx, p.vy, tune.bodyBounce);
     }
-    // Jabs: your own ball gets kicked (once per jab), the enemy's kills you.
+    // Jabs: your own balls get kicked (each once per jab), an enemy's kills you.
     for (const p of alive) {
       if (!p.jab || jabExtension(p.jab.t) <= 0) continue;
-      const seg = jabSegment(p);
+      const seg = jabSegment(tune, p);
       const touches =
-        Math.hypot(ball.x - seg.bx, ball.y - seg.by) < r + TUNING.fistRadius ||
-        distToSegment(ball.x, ball.y, seg.ax, seg.ay, seg.bx, seg.by) < r + TUNING.armRadius;
+        Math.hypot(ball.x - seg.bx, ball.y - seg.by) < r + tune.fistRadius ||
+        distToSegment(ball.x, ball.y, seg.ax, seg.ay, seg.bx, seg.by) < r + tune.armRadius;
       if (!touches) continue;
       if (ball.team !== p.team) {
         if (lethal) deaths.add(p);
-      } else if (!p.jab.hit) {
-        p.jab.hit = true;
-        ball.vx = p.jab.dx * TUNING.kickSpeed;
-        ball.vy = p.jab.dy * TUNING.kickSpeed;
+      } else if (!(p.jab.hit & (1 << index))) {
+        p.jab.hit |= 1 << index;
+        ball.vx = p.jab.dx * tune.kickSpeed;
+        ball.vy = p.jab.dy * tune.kickSpeed;
       }
     }
-  }
+  });
 
   for (let i = 0; i < state.balls.length; i += 1) {
     for (let j = i + 1; j < state.balls.length; j += 1) {
-      collideBalls(state.balls[i], state.balls[j], r);
+      collideBalls(tune, state.balls[i], state.balls[j]);
     }
   }
 
   for (const ball of state.balls) {
-    for (const solid of state.collide) {
-      const hit = distanceTo(solid, ball.x, ball.y);
-      if (hit.d < r) {
-        bounce(ball, { nx: hit.nx, ny: hit.ny, depth: r - hit.d }, 0, 0, TUNING.wallBounce);
+    // A few passes, so a ball pushed out of one surface into another (a
+    // corner) settles against both.
+    for (let pass = 0, touched = true; pass < 3 && touched; pass += 1) {
+      touched = false;
+      for (const solid of state.collide) {
+        const hit = distanceTo(solid, ball.x, ball.y);
+        if (hit.d >= r) continue;
+        bounce(ball, { nx: hit.nx, ny: hit.ny, depth: r - hit.d }, 0, 0, tune.wallBounce);
+        touched = true;
       }
     }
     // A ball the walls just shoved back into a player was pinched between
     // them; the player gives way instead.
     for (const p of alive) {
-      const contact = circleRectContact(ball, r, playerRect(p));
+      const contact = circleRectContact(ball, r, playerRect(p, size));
       if (!contact) continue;
       if (lethal && ball.team !== p.team) deaths.add(p);
       p.x -= contact.nx * contact.depth;
@@ -652,7 +853,12 @@ function aliveTeams(state) {
 
 // One fixed tick. Returns true when something the clients hold as STATE (not
 // just positions) changed — the phase, the score, a new arena.
-export function step(state) {
+//
+// With `predict` set (a browser running ahead of the server) it's physics
+// only: nothing dies and no round ends, because only the server knows what the
+// other player really pressed — a death or a point waits for the server to say
+// so. The countdown still runs out, so a predicted round starts on time.
+export function step(state, predict = false) {
   state.tick += 1;
 
   if (state.phase === "countdown") {
@@ -664,9 +870,11 @@ export function step(state) {
 
   // Once a round is decided everyone still standing can roam, but nothing
   // more can die.
-  const lethal = state.phase === "play";
+  const lethal = state.phase === "play" && !predict;
   advanceJabs(state);
-  for (let i = 0; i < SUBSTEPS; i += 1) substep(state, lethal);
+  const passes = substepsFor(state);
+  for (let i = 0; i < passes; i += 1) substep(state, lethal, 1 / TICK_HZ / passes);
+  if (predict) return false;
 
   if (state.phase === "play") {
     const standing = aliveTeams(state);
@@ -675,14 +883,14 @@ export function step(state) {
     if (winner !== null) state.score[winner] += 1;
     state.lastRound = { winner };
     state.phase = "over";
-    state.phaseTicks = TUNING.overTicks;
+    state.phaseTicks = state.tune.overTicks;
     return true;
   }
 
   if (state.phase === "over") {
     state.phaseTicks -= 1;
     if (state.phaseTicks > 0) return false;
-    if (state.score.some((s) => s >= TUNING.winScore)) {
+    if (state.score.some((s) => s >= state.tune.winScore)) {
       state.phase = "matchover";
       state.rematch.clear();
     } else {
@@ -696,26 +904,61 @@ export function step(state) {
 
 // --- what clients see -------------------------------------------------------
 
-const round1 = (v) => Math.round(v * 10) / 10;
+const round2 = (v) => Math.round(v * 100) / 100;
 
-// The fast-changing part, sent many times a second. Positions to one decimal;
-// a player is [x, y, alive, jabDx×100, jabDy×100, jabExtension×100].
+// The fast-changing part, sent many times a second: everything a browser needs
+// to pick the match up from this tick and run it forward itself. A player is
+// [x, y, vx, vy, alive, keys, cooldown, jab, pendingJab, flying], where jab is
+// [dx, dy, t, hitBalls, hitPlayers] or 0 and pendingJab is [dx, dy, ttl] or 0; a ball is
+// [team, x, y, vx, vy].
 export function snapshot(state) {
   return {
     t: state.tick,
     r: state.round,
-    pl: state.players.map((p) => {
-      const jab = p.jab ? jabExtension(p.jab.t) : 0;
-      return [
-        round1(p.x),
-        round1(p.y),
-        p.alive ? 1 : 0,
-        jab ? Math.round(p.jab.dx * 100) : 0,
-        jab ? Math.round(p.jab.dy * 100) : 0,
-        Math.round(jab * 100)
-      ];
-    }),
-    b: state.balls.map((ball) => [ball.team, round1(ball.x), round1(ball.y)])
+    ph: state.phase,
+    pt: state.phaseTicks,
+    pl: state.players.map((p) => [
+      round2(p.x),
+      round2(p.y),
+      round2(p.vx),
+      round2(p.vy),
+      p.alive ? 1 : 0,
+      p.keys,
+      p.cooldown,
+      p.jab ? [round2(p.jab.dx), round2(p.jab.dy), p.jab.t, p.jab.hit, p.jab.hitPlayers] : 0,
+      p.pendingJab ? [round2(p.pendingJab.dx), round2(p.pendingJab.dy), p.pendingJab.ttl] : 0,
+      p.flying ? 1 : 0
+    ]),
+    b: state.balls.map((ball) => [ball.team, round2(ball.x), round2(ball.y), round2(ball.vx), round2(ball.vy)])
+  };
+}
+
+// The inverse of snapshot(): a world predict mode can step, given the numbers
+// in force (`tune`, from publicState), the round's obstacles and which team
+// each seat is on.
+export function worldFromSnapshot(snap, tune, solids, teams) {
+  return {
+    tune,
+    collide: collidersFor(solids),
+    tick: snap.t,
+    round: snap.r,
+    phase: snap.ph,
+    phaseTicks: snap.pt,
+    players: snap.pl.map(([x, y, vx, vy, alive, keys, cooldown, jab, pending, flying], seat) => ({
+      seat,
+      team: teams[seat],
+      x,
+      y,
+      vx,
+      vy,
+      alive: !!alive,
+      keys,
+      cooldown,
+      jab: jab ? { dx: jab[0], dy: jab[1], t: jab[2], hit: jab[3], hitPlayers: jab[4] } : null,
+      pendingJab: pending ? { dx: pending[0], dy: pending[1], ttl: pending[2] } : null,
+      flying: !!flying
+    })),
+    balls: snap.b.map(([team, x, y, vx, vy]) => ({ team, x, y, vx, vy }))
   };
 }
 
@@ -725,15 +968,11 @@ export function publicState(state) {
     config: {
       arenaW: TUNING.arenaW,
       arenaH: TUNING.arenaH,
-      playerSize: TUNING.playerSize,
-      ballRadius: state.tune.ballRadius,
       surface: state.tune.ice ? "ice" : "turf",
-      jabReach: TUNING.jabReach,
-      fistRadius: TUNING.fistRadius,
-      armRadius: TUNING.armRadius,
-      tickMs: TICK_MS,
-      winScore: TUNING.winScore
+      tickMs: TICK_MS
     },
+    tune: state.tune, // the numbers in force — what the browser predicts and draws with
+    settings: state.settings, // what the sliders say (round-start ones may not be in force yet)
     round: state.round,
     phase: state.phase,
     score: state.score,

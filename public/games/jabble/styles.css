@@ -70,13 +70,118 @@
   color: var(--text);
 }
 
+/* The arena and, to its right, the slider panel. */
+.jb-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 18px;
+}
+
 .jb-stage {
   position: relative;
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.jb-panel {
+  flex: none;
+  width: 290px;
+  /* stops short of the fixed Leave Game button in the corner */
+  margin-bottom: 58px;
+  overflow-y: auto;
+  padding: 14px 16px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.jb-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.jb-panel-head strong {
+  font-size: 15px;
+}
+
+.jb-panel-head .ghost-btn {
+  margin: 0;
+  padding: 5px 14px;
+  font-size: 12px;
+}
+
+.jb-panel-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.jb-group h4 {
+  margin: 16px 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.jb-slider {
+  display: block;
+  margin: 8px 0 10px;
+  cursor: pointer;
+}
+
+.jb-slider-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.jb-slider-top > span:first-child {
+  flex: 1;
+}
+
+.jb-slider-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A value that's set but waits for the round to end. */
+.jb-slider-wait {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--accent-2);
+  border: 1px solid rgba(255, 213, 128, 0.4);
+}
+
+.jb-slider input[type="range"] {
+  display: block;
+  width: 100%;
+  margin: 6px 0 0;
+  accent-color: var(--accent);
+}
+
+@media (max-width: 1000px) {
+  .jb-main {
+    flex-direction: column;
+  }
+
+  .jb-panel {
+    width: auto;
+    max-height: 38vh;
+    margin-bottom: 0;
+  }
 }
 
 .jb-canvas {
