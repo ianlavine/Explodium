@@ -1,0 +1,153 @@
+/* The stadium takes most of the viewport, escaping the shell's 1200px cap the
+   same way Lino's field does. The canvas inside keeps the arena's aspect. */
+.board.jb-board {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  flex: none; /* it sits in the play-area's flex row, which would squeeze it */
+  width: calc(100vw - 48px);
+  height: calc(100vh - 190px);
+  min-height: 380px;
+  margin: 4px 0 -60px; /* swallow most of the play-area's bottom padding */
+  overflow: visible;
+}
+
+.jb-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.jb-you {
+  font-weight: 700;
+  font-size: 14px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+}
+
+.jb-score {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.jb-dash {
+  color: var(--muted);
+}
+
+.jb-t0 {
+  color: #6aa6ff;
+}
+
+.jb-t1 {
+  color: #ff7581;
+}
+
+.jb-hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.jb-hint kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  margin: 0 1px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text);
+}
+
+.jb-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.jb-canvas {
+  display: block;
+  border-radius: 10px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.jb-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.jb-call {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 34px;
+  border-radius: 18px;
+  background: rgba(10, 14, 18, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  text-align: center;
+}
+
+.jb-call strong {
+  font-size: 38px;
+  line-height: 1.1;
+}
+
+.jb-call small {
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.jb-final {
+  pointer-events: auto;
+  gap: 8px;
+}
+
+.jb-final .primary-btn {
+  margin-top: 8px;
+}
+
+.jb-wait {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.jb-go {
+  animation: jbGo 0.6s ease forwards;
+}
+
+@keyframes jbGo {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.25);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jb-go {
+    animation: none;
+  }
+}

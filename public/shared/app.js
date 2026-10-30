@@ -37,7 +37,9 @@ const GAMES = [
   { id: "second-best", name: "Second Best", export: "secondBest", state: "secondBest", hidden: true },
   { id: "bug-game", name: "Bug Game", export: "bugGame", state: "bugGame" },
   { id: "lost-cities", name: "Lost Cities", export: "lostCities", state: "lostCities" },
-  { id: "bluff-race", name: "Bluff Race", export: "bluffRace", state: "bluffRace" }
+  { id: "bluff-race", name: "Bluff Race", export: "bluffRace", state: "bluffRace" },
+  { id: "jabble", name: "Jabble", export: "jabble", state: "jabble" },
+  { id: "jabble-ice", name: "Jabble Ice", export: "jabbleIce", state: "jabbleIce", styles: ["jabble"] }
 ];
 
 const entryFor = (id) => GAMES.find((g) => g.id === id);
