@@ -1,14 +1,15 @@
-/* The stadium takes most of the viewport, escaping the shell's 1200px cap the
-   same way Lino's field does. The canvas inside keeps the arena's aspect. */
+/* The stadium spans the whole window, escaping the shell's 1200px cap. The
+   shell sits at the LEFT of a wide window rather than the middle, so centring
+   on it would push the board off the left edge: the client measures where the
+   board's container starts and sets its `left` and `width` (placeBoard). The
+   canvas inside keeps the arena's aspect. */
 .board.jb-board {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  left: 50%;
-  transform: translateX(-50%);
   flex: none; /* it sits in the play-area's flex row, which would squeeze it */
-  width: calc(100vw - 48px);
+  width: 100%; /* until placeBoard has measured */
   height: calc(100vh - 190px);
   min-height: 380px;
   margin: 4px 0 -60px; /* swallow most of the play-area's bottom padding */

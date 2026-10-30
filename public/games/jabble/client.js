@@ -51,6 +51,9 @@ const FLICK_OFF = 0.4; // ...and it must fall back under this before it can agai
 const KEYBOARD_HINT =
   "<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · " +
   "<kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> jab (two at once for a diagonal)";
+// The board spans the window, this far in from each side.
+const GUTTER_PX = 24;
+
 // Slider moves are sent at most this often while you drag.
 const SETTINGS_SEND_MS = 50;
 const percent = (v) => `${Math.round(v * 100)}%`;
@@ -558,6 +561,22 @@ export function createJabbleClient({ id, name, stateKey }) {
     return `You are ${TEAMS[myTeam()].name} · first to ${jb.tune.winScore}`;
   }
 
+  // Stretch the board across the window. Its container (the shell) can sit
+  // anywhere — at the left of a wide window, it does — so this measures where
+  // the container starts and offsets the board from there.
+  function placeBoard() {
+    const board = els.gameBoard;
+    const container = board.parentElement;
+    if (!view || !container) return;
+    const windowWidth = document.documentElement.clientWidth;
+    board.style.left = `${Math.round(GUTTER_PX - container.getBoundingClientRect().left)}px`;
+    board.style.width = `${Math.max(320, windowWidth - 2 * GUTTER_PX)}px`;
+  }
+
+  window.addEventListener("resize", () => {
+    if (isActive()) placeBoard();
+  });
+
   function fitCanvas() {
     if (!view || !jb) return;
     const { arenaW: W, arenaH: H } = jb.config;
@@ -609,8 +628,16 @@ export function createJabbleClient({ id, name, stateKey }) {
       if (event.target instanceof Element && event.target.closest(".jb-rematch")) requestRematch();
     });
 
-    resizeObserver = new ResizeObserver(fitCanvas);
+    // The game screen is still hidden while this runs (it measures as
+    // nothing), so the board is placed again whenever its container gets a
+    // size, as well as whenever the arena's own space changes.
+    resizeObserver = new ResizeObserver(() => {
+      placeBoard();
+      fitCanvas();
+    });
     resizeObserver.observe(stage);
+    if (els.gameBoard.parentElement) resizeObserver.observe(els.gameBoard.parentElement);
+    placeBoard();
     fitCanvas();
     if (!frame) frame = requestAnimationFrame(draw);
   }
@@ -809,8 +836,12 @@ export function createJabbleClient({ id, name, stateKey }) {
       return true;
     },
 
+    // The board element is shared with every other game, so take back the
+    // position placeBoard gave it too.
     resetUi() {
       els.gameBoard.classList.remove("jb-board");
+      els.gameBoard.style.left = "";
+      els.gameBoard.style.width = "";
     },
 
     clearState,

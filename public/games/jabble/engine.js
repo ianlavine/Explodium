@@ -49,7 +49,7 @@ export const TUNING = {
   iceWallBounce: 0.35,
 
   ballsPerTeam: 2,
-  ballRadius: 16,
+  ballRadius: 22,
   ballDrag: 0.55, // speed bled per second, as e^-drag (0.55 ≈ 42% a second)
   ballStopSpeed: 6, // below this a ball comes to rest
   ballMaxSpeed: 1400, // or 1.35 × kickSpeed, whichever is more
