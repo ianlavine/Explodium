@@ -44,8 +44,7 @@ export function createLobby(io) {
     createBugGame(ctx),
     createLostCitiesGame(ctx),
     createBluffRaceGame(ctx),
-    createJabbleGame(ctx, { id: "jabble", stateKey: "jabble" }),
-    createJabbleGame(ctx, { id: "jabble-ice", stateKey: "jabbleIce" })
+    createJabbleGame(ctx, { id: "jabble", stateKey: "jabble" })
   ];
   const gamesById = new Map(games.map((game) => [game.id, game]));
 

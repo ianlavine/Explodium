@@ -6,17 +6,17 @@
 // the way a kick sends a ball. Last team standing takes the round; first to
 // `winScore` rounds wins.
 //
-// Nothing in the stadium is flat. Its four sides bow gently outward and every
-// obstacle is a round pillar or a curved bar, so a ball that hits a wall
+// The stadium's four sides bow gently outward, so a ball that hits one
 // square-on still comes back a little off its line — by how much depends on
-// where it struck, never on chance. Each solid is just a distance function:
+// where it struck, never on chance. Inside stand a few long, thin, straight
+// bars, each at an angle of its own. Each solid is just a distance function:
 // a ball pushes off it directly, and a player's square tests it at points
 // round its rim.
 //
-// Two games run on this engine — Jabble and Jabble Ice — and VARIANTS holds
-// what's different about each. A match carries its numbers as `tune`: TUNING,
-// then its variant, then whatever the table has set on the sliders (SETTINGS),
-// so everything below reads `tune`, never TUNING.
+// A match carries its numbers as `tune`: TUNING with whatever the table has
+// set on the sliders (SETTINGS) on top, so everything below reads `tune`,
+// never TUNING. That includes the surface: grass gives players grip, ice
+// makes them slide, and switching changes nothing else.
 //
 // It runs on BOTH sides. The server (server/games/jabble) owns the real match
 // at a fixed TICK_HZ. Each browser runs it too, in "predict" mode, to move
@@ -27,7 +27,7 @@ export const TICK_HZ = 60;
 export const TICK_MS = 1000 / TICK_HZ;
 // Collision runs in enough substeps per tick that nothing moves further than
 // MAX_STEP between checks, so even the hardest kick can't carry the smallest
-// ball through a 22-unit bar.
+// ball through a 16-unit bar.
 const MAX_STEP = 8;
 const MIN_SUBSTEPS = 2;
 const MAX_SUBSTEPS = 12;
@@ -38,9 +38,10 @@ export const TUNING = {
   edgeBow: 36, // how far each side of the stadium bows outward at its middle
 
   playerSize: 34,
+  ice: 0, // the surface: 0 grass, 1 ice
   playerSpeed: 280, // units/s at full tilt
   playerAccel: 2600, // units/s² toward the held direction (and back to a stop)
-  // On ice (a variant's `ice: true`) there's no grip: keys PUSH you at iceAccel
+  // On ice (`ice: 1`, a setting) there's no grip: keys PUSH you at iceAccel
   // rather than set your speed, you coast, losing only iceFriction of your
   // speed a second, and you come off walls with a little iceWallBounce.
   iceAccel: 800,
@@ -72,25 +73,20 @@ export const TUNING = {
   jabCooldownTicks: 21, // 0.35 s from one jab's start to the next
   jabBufferTicks: 8, // a jab pressed this close to being ready fires when it is
 
-  obstacles: 9, // pillars and curved bars set out each round
+  obstacles: 2, // straight bars set out each round
 
   countdownTicks: 90, // frozen "ready" before each round
   overTicks: 120, // pause after a round is decided
   winScore: 3
 };
 
-// What each game changes from TUNING. Keyed by the lobby's game id.
-export const VARIANTS = {
-  jabble: { ice: false },
-  "jabble-ice": { ice: true, obstacles: 0, ballRadius: 32 }
-};
-
 // The sliders a table can move mid-match, and how far. Most change the match
 // the moment they move; those marked `nextRound` change what gets set out
 // (how many balls, how big things are, the obstacles), so they wait for the
 // next round rather than, say, growing a ball into someone. `only` keeps a
-// slider to the game it means something in. The server clamps every change
-// to these bounds; the client draws the panel from this same list.
+// slider to the surface it means something on; `choices` makes a setting a
+// pick of named options (its value is the option's index). The server clamps
+// every change to these bounds; the client draws the panel from this list.
 export const SETTINGS = [
   { key: "ballsPerTeam", group: "Balls", label: "Balls per team", min: 1, max: 3, step: 1, nextRound: true },
   { key: "ballRadius", group: "Balls", label: "Ball size", min: 8, max: 80, step: 1, nextRound: true },
@@ -101,6 +97,7 @@ export const SETTINGS = [
   { key: "kickSpeed", group: "Jab", label: "Kick power", min: 300, max: 2600, step: 25 },
   { key: "playerKickSpeed", group: "Jab", label: "Player knockback", min: 0, max: 2500, step: 25 },
   { key: "jabCooldownTicks", group: "Jab", label: "Cooldown", min: 6, max: 72, step: 1 },
+  { key: "ice", group: "Player", label: "Surface", min: 0, max: 1, step: 1, choices: ["Grass", "Ice"] },
   { key: "playerSpeed", group: "Player", label: "Speed", min: 120, max: 650, step: 10, only: "grip" },
   { key: "playerAccel", group: "Player", label: "Grip", min: 400, max: 8000, step: 100, only: "grip" },
   { key: "iceAccel", group: "Player", label: "Push", min: 150, max: 3000, step: 25, only: "ice" },
@@ -108,7 +105,7 @@ export const SETTINGS = [
   { key: "iceFriction", group: "Player", label: "Ice friction", min: 0, max: 4, step: 0.05, only: "ice" },
   { key: "iceWallBounce", group: "Player", label: "Wall rebound", min: 0, max: 1, step: 0.05, only: "ice" },
   { key: "playerSize", group: "Player", label: "Size", min: 18, max: 72, step: 2, nextRound: true },
-  { key: "obstacles", group: "Arena", label: "Obstacles", min: 0, max: 16, step: 1, nextRound: true },
+  { key: "obstacles", group: "Arena", label: "Obstacles", min: 0, max: 8, step: 1, nextRound: true },
   { key: "winScore", group: "Arena", label: "First to", min: 1, max: 9, step: 1 }
 ];
 const SETTING_BY_KEY = new Map(SETTINGS.map((def) => [def.key, def]));
@@ -122,15 +119,14 @@ function settle(def, value) {
   return Math.min(def.max, Math.max(def.min, Math.round(stepped * 1000) / 1000));
 }
 
-export function defaultSettings(variant) {
-  const tune = tuneFor(variant);
-  return Object.fromEntries(SETTINGS.map((def) => [def.key, tune[def.key]]));
+export function defaultSettings() {
+  return Object.fromEntries(SETTINGS.map((def) => [def.key, TUNING[def.key]]));
 }
 
 // A table's chosen values (from a saved set, say), with anything missing or
 // out of bounds put back to the game's default.
-export function sanitizeSettings(variant, raw) {
-  const out = defaultSettings(variant);
+export function sanitizeSettings(raw) {
+  const out = defaultSettings();
   if (!raw || typeof raw !== "object") return out;
   for (const def of SETTINGS) {
     if (!(def.key in raw)) continue;
@@ -138,12 +134,6 @@ export function sanitizeSettings(variant, raw) {
     if (v !== null) out[def.key] = v;
   }
   return out;
-}
-
-// A game's numbers before anyone touches a slider: TUNING with its
-// variant's changes on top.
-export function tuneFor(variant) {
-  return { ...TUNING, ...VARIANTS[variant] };
 }
 
 const KEY_UP = 1;
@@ -192,12 +182,9 @@ export function collidersFor(solids) {
 }
 
 // Signed distance from (x, y) to a solid (negative inside it), with the unit
-// normal pointing out of the solid toward open floor. The three kinds:
-//   rim    - the outside of one of the stadium's four circles
-//   pillar - a disc
-//   arc    - a curved bar: a band of half-width w along part of a circle
-//            (centre x, y, radius r, centred on angle `mid`, ± `half`),
-//            with rounded ends
+// normal pointing out of the solid toward open floor. The two kinds:
+//   rim - the outside of one of the stadium's four circles
+//   bar - a straight bar from (x1, y1) to (x2, y2), half-width w, round ends
 function distanceTo(solid, x, y) {
   if (solid.kind === "rim") {
     const dx = solid.x - x;
@@ -205,22 +192,16 @@ function distanceTo(solid, x, y) {
     const len = Math.hypot(dx, dy);
     return { d: solid.r - len, nx: dx / len, ny: dy / len };
   }
-  const dx = x - solid.x;
-  const dy = y - solid.y;
-  const len = Math.hypot(dx, dy) || 1e-9;
-  if (solid.kind === "pillar") return { d: len - solid.r, nx: dx / len, ny: dy / len };
-
-  let off = Math.atan2(dy, dx) - solid.mid;
-  off -= Math.round(off / (2 * Math.PI)) * 2 * Math.PI;
-  if (Math.abs(off) <= solid.half) {
-    const sign = len >= solid.r ? 1 : -1;
-    return { d: Math.abs(len - solid.r) - solid.w, nx: (sign * dx) / len, ny: (sign * dy) / len };
-  }
-  const end = solid.mid + Math.sign(off) * solid.half;
-  const ex = x - (solid.x + Math.cos(end) * solid.r);
-  const ey = y - (solid.y + Math.sin(end) * solid.r);
-  const elen = Math.hypot(ex, ey) || 1e-9;
-  return { d: elen - solid.w, nx: ex / elen, ny: ey / elen };
+  const abx = solid.x2 - solid.x1;
+  const aby = solid.y2 - solid.y1;
+  const t = Math.max(0, Math.min(1, ((x - solid.x1) * abx + (y - solid.y1) * aby) / (abx * abx + aby * aby)));
+  const dx = x - (solid.x1 + abx * t);
+  const dy = y - (solid.y1 + aby * t);
+  const len = Math.hypot(dx, dy);
+  if (len > 1e-6) return { d: len - solid.w, nx: dx / len, ny: dy / len };
+  // Dead on the centre line: out through the nearer face, at right angles.
+  const ab = Math.hypot(abx, aby);
+  return { d: -solid.w, nx: -aby / ab, ny: abx / ab };
 }
 
 const EDGE_GAP = 56; // obstacles keep off the edge: a lane runs all the way round
@@ -264,45 +245,34 @@ function spawnLayout(tune, teamSizes) {
   return { players, balls };
 }
 
+// A long, thin, straight bar centred anywhere, at any angle.
+const BAR_LENGTH = [280, 420];
+const BAR_HALF_WIDTH = 8;
+
 function randomObstacle() {
   const { arenaW: W, arenaH: H } = TUNING;
   const x = EDGE_GAP + Math.random() * (W - 2 * EDGE_GAP);
   const y = EDGE_GAP + Math.random() * (H - 2 * EDGE_GAP);
-  const roll = Math.random();
-  if (roll < 0.3) return { kind: "pillar", x, y, r: 20 + Math.random() * 20 };
-  // A curved bar: a chord of `length` bowed out by `sag`, at any angle, with
-  // (x, y) the middle of the chord. Short fat ones are beans, long thin ones
-  // walls.
-  const bean = roll < 0.5;
-  const length = bean ? 60 + Math.random() * 40 : 120 + Math.random() * 150;
-  const sag = bean ? 14 + Math.random() * 12 : 14 + Math.random() * 26;
-  const r = (length * length) / 4 / (2 * sag) + sag / 2;
-  const mid = Math.random() * Math.PI * 2; // from the circle's centre toward the bar's apex
-  return {
-    kind: "arc",
-    x: x - Math.cos(mid) * (r - sag),
-    y: y - Math.sin(mid) * (r - sag),
-    r,
-    mid,
-    half: Math.asin(length / 2 / r),
-    w: bean ? 17 + Math.random() * 6 : 11
-  };
+  const half = (BAR_LENGTH[0] + Math.random() * (BAR_LENGTH[1] - BAR_LENGTH[0])) / 2;
+  const angle = Math.random() * Math.PI;
+  const dx = Math.cos(angle) * half;
+  const dy = Math.sin(angle) * half;
+  return { kind: "bar", x1: x - dx, y1: y - dy, x2: x + dx, y2: y + dy, w: BAR_HALF_WIDTH };
 }
 
 // An obstacle as a row of discs down its middle, close enough together to
 // measure clearances against.
 function spine(solid) {
-  if (solid.kind === "pillar") return [{ x: solid.x, y: solid.y, r: solid.r }];
-  const steps = Math.max(2, Math.ceil((2 * solid.half * solid.r) / 8));
+  const steps = Math.max(2, Math.ceil(Math.hypot(solid.x2 - solid.x1, solid.y2 - solid.y1) / 8));
   const discs = [];
   for (let i = 0; i <= steps; i += 1) {
-    const a = solid.mid - solid.half + (2 * solid.half * i) / steps;
-    discs.push({ x: solid.x + Math.cos(a) * solid.r, y: solid.y + Math.sin(a) * solid.r, r: solid.w });
+    const t = i / steps;
+    discs.push({ x: solid.x1 + (solid.x2 - solid.x1) * t, y: solid.y1 + (solid.y2 - solid.y1) * t, r: solid.w });
   }
   return discs;
 }
 
-// Pillars and curved bars scattered anywhere, spaced so that nothing seals
+// Bars scattered anywhere, spaced so that nothing seals
 // off a pocket, with the spawns left clear. A crowded arena may come up short
 // of `count`.
 function generateObstacles(tune, spawns, count) {
@@ -331,7 +301,7 @@ function generateObstacles(tune, spawns, count) {
 // One seat per player; seats alternate teams (0 blue, 1 red, 2 blue, ...).
 // `settings` are the sliders the table starts with (anything left out, or out
 // of bounds, is the game's default).
-export function createMatch(seatCount = 2, variant = "jabble", settings = null) {
+export function createMatch(seatCount = 2, settings = null) {
   const players = [];
   for (let seat = 0; seat < seatCount; seat += 1) {
     players.push({
@@ -350,9 +320,8 @@ export function createMatch(seatCount = 2, variant = "jabble", settings = null) 
     });
   }
   const state = {
-    variant,
-    tune: tuneFor(variant), // the numbers in force (round-start ones refresh each round)
-    settings: sanitizeSettings(variant, settings), // what the sliders say
+    tune: { ...TUNING }, // the numbers in force (round-start ones refresh each round)
+    settings: sanitizeSettings(settings), // what the sliders say
     tick: 0,
     round: 0,
     phase: "countdown", // countdown | play | over | matchover
@@ -394,7 +363,7 @@ export function applySettings(state, changes) {
 }
 
 export function resetSettings(state) {
-  return applySettings(state, defaultSettings(state.variant));
+  return applySettings(state, defaultSettings());
 }
 
 function startRound(state) {
@@ -968,7 +937,6 @@ export function publicState(state) {
     config: {
       arenaW: TUNING.arenaW,
       arenaH: TUNING.arenaH,
-      surface: state.tune.ice ? "ice" : "turf",
       tickMs: TICK_MS
     },
     tune: state.tune, // the numbers in force — what the browser predicts and draws with

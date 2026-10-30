@@ -1,8 +1,7 @@
-// Jabble lobby module, made once per game (Jabble and Jabble Ice share it —
-// the engine's VARIANTS say what differs). One fixed-rate simulation loop per
-// room: the engine steps at TICK_HZ; positions go out as small volatile
-// "jabble_tick" snapshots every SEND_EVERY ticks, and the rest (arena, score,
-// phase) as a normal state_update only when it changes.
+// Jabble lobby module. One fixed-rate simulation loop per room: the engine
+// steps at TICK_HZ; positions go out as small volatile "jabble_tick"
+// snapshots every SEND_EVERY ticks, and the rest (arena, score, phase) as a
+// normal state_update only when it changes.
 //
 // Each browser predicts its own square (public/games/jabble/predict.js), so
 // it sends one numbered input per tick — [seq, keys, jab] — in small batches.
@@ -15,8 +14,8 @@
 // out to everyone as a state_update, so in an online match both players are
 // always playing — and predicting — the same numbers.
 //
-// Both instances listen for the same socket events, so every handler first
-// checks the room belongs to its own game.
+// Every handler first checks the room is a Jabble room: socket events reach
+// every game's handlers.
 import {
   TICK_MS,
   createMatch,
@@ -37,7 +36,7 @@ const MAX_CATCHUP = 5; // after a stall, drop time rather than fast-forward
 const MAX_QUEUE = 12; // inputs a seat may have waiting (0.2 s); older ones are dropped
 const MAX_BATCH = 30; // inputs one message may carry
 
-// `id` is the lobby's game id (and the engine variant); `stateKey` is the key
+// `id` is the lobby's game id; `stateKey` is the key
 // its state_update payload travels under, which is how the client shell knows
 // whose it is.
 export function createJabbleGame({ io, rooms }, { id, stateKey }) {
@@ -127,7 +126,7 @@ export function createJabbleGame({ io, rooms }, { id, stateKey }) {
     // down brought (their last-used set, saved in their browser).
     createRoomState(options) {
       return {
-        jabble: createMatch(2, id, options?.settings),
+        jabble: createMatch(2, options?.settings),
         // Per seat: inputs waiting to be spent, the newest seq received, and
         // the last seq spent (what snapshots acknowledge).
         jabbleInputs: [0, 1].map(() => ({ queue: [], received: 0, ack: 0 }))

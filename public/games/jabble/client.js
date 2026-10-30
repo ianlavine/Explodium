@@ -16,9 +16,8 @@
 // match for everyone at the table (the server says when it's in force), and
 // the last set you used is kept in this browser and brought to your next game.
 //
-// Jabble and Jabble Ice are both made by createJabbleClient. The home screen
-// may load the two at once, so each keeps its own state and only answers when
-// it's the game being played.
+// createJabbleClient keeps all of a game's state to itself and only answers
+// while it's the game being played.
 import { socket, els, app } from "../../shared/context.js";
 import { TICK_MS, SETTINGS, defaultSettings, jabExtension } from "./engine.js";
 import { createPredictor } from "./predict.js";
@@ -85,7 +84,7 @@ function loadSavedSettings(id) {
 
 function saveSettings(id, settings) {
   try {
-    const defaults = defaultSettings(id);
+    const defaults = defaultSettings();
     const moved = Object.fromEntries(Object.entries(settings ?? {}).filter(([key, v]) => v !== defaults[key]));
     if (Object.keys(moved).length) localStorage.setItem(savedKey(id), JSON.stringify(moved));
     else localStorage.removeItem(savedKey(id));
@@ -103,10 +102,10 @@ const TEAMS = [
   { name: "Red", body: "#ff4d5e", light: "#ffb0b7", glow: "rgba(255, 77, 94, 0.55)" }
 ];
 
-// What the floor looks like, by the server's config.surface. `me` is the
+// What the floor looks like on each surface (the `ice` setting). `me` is the
 // outline that marks your own square.
 const SURFACES = {
-  turf: {
+  grass: {
     floor: "#12301f",
     band: "rgba(255, 255, 255, 0.025)",
     line: "rgba(255, 255, 255, 0.13)",
@@ -123,6 +122,8 @@ const SURFACES = {
     sheen: true
   }
 };
+
+const surfaceLook = (jb) => (jb.tune.ice ? SURFACES.ice : SURFACES.grass);
 
 // Movement bits (1 up, 2 down, 4 left, 8 right) for a stick at (x, y),
 // snapped to the nearest of eight directions; 0 inside the dead zone.
@@ -148,7 +149,7 @@ function floorPath(ctx, rims) {
 }
 
 function drawFloor(ctx, jb, W, H) {
-  const look = SURFACES[jb.config.surface] ?? SURFACES.turf;
+  const look = surfaceLook(jb);
   // Outside the bowed sides is all stadium wall.
   ctx.fillStyle = "#2b323d";
   ctx.fillRect(0, 0, W, H);
@@ -192,20 +193,15 @@ function drawFloor(ctx, jb, W, H) {
   ctx.stroke();
 }
 
-// A disc filled, or a curved bar stroked with round ends; `inset` shrinks it
-// for the bevel highlight, (dx, dy) shifts it for the drop shadow.
+// A bar stroked with round ends; `inset` thins it for the bevel highlight,
+// (dx, dy) shifts it for the drop shadow.
 function paintObstacle(ctx, solid, color, dx, dy, inset) {
   ctx.beginPath();
-  if (solid.kind === "pillar") {
-    ctx.arc(solid.x + dx, solid.y + dy, Math.max(1, solid.r - inset), 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-  } else {
-    ctx.arc(solid.x + dx, solid.y + dy, solid.r, solid.mid - solid.half, solid.mid + solid.half);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1, 2 * (solid.w - inset));
-    ctx.stroke();
-  }
+  ctx.moveTo(solid.x1 + dx, solid.y1 + dy);
+  ctx.lineTo(solid.x2 + dx, solid.y2 + dy);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, 2 * (solid.w - inset));
+  ctx.stroke();
 }
 
 function drawWalls(ctx, solids) {
@@ -258,7 +254,7 @@ function drawPlayer(ctx, jb, p, team, isMe) {
   ctx.fillStyle = colors.body;
   ctx.fill();
   ctx.lineWidth = isMe ? 3.5 : 2;
-  ctx.strokeStyle = isMe ? (SURFACES[jb.config.surface] ?? SURFACES.turf).me : "rgba(0, 0, 0, 0.4)";
+  ctx.strokeStyle = isMe ? surfaceLook(jb).me : "rgba(0, 0, 0, 0.4)";
   ctx.stroke();
 }
 
@@ -644,19 +640,20 @@ export function createJabbleClient({ id, name, stateKey }) {
 
   // --- sliders --------------------------------------------------------------
 
-  // Built once per match from SETTINGS, grouped as the list groups them, and
-  // only the sliders that mean something in this game.
+  // Built once per match from SETTINGS, grouped as the list groups them.
+  // Sliders tied to one surface are all built, and shown or hidden as the
+  // surface changes (renderPanel). A setting with `choices` is a row of
+  // buttons rather than a slider.
   function buildPanel() {
-    const kind = jb.tune.ice ? "ice" : "grip";
     const root = document.createElement("aside");
     root.className = "jb-panel";
     root.innerHTML =
       `<div class="jb-panel-head"><strong>Tune the game</strong>` +
       `<button type="button" class="ghost-btn jb-reset">Reset</button></div>` +
       (app.isBotGame ? "" : `<p class="jb-panel-note">Changes here apply for both players.</p>`);
-    const rows = new Map(); // key -> { input, value, wait }
+    const rows = new Map(); // key -> { def, row, wait, input?, value?, buttons? }
     let group = null;
-    SETTINGS.filter((def) => !def.only || def.only === kind).forEach((def) => {
+    SETTINGS.forEach((def) => {
       if (def.group !== group?.dataset.group) {
         group = document.createElement("section");
         group.className = "jb-group";
@@ -664,31 +661,49 @@ export function createJabbleClient({ id, name, stateKey }) {
         group.innerHTML = `<h4>${def.group}</h4>`;
         root.appendChild(group);
       }
-      const row = document.createElement("label");
+      const row = document.createElement(def.choices ? "div" : "label");
       row.className = "jb-slider";
       row.innerHTML =
         `<span class="jb-slider-top"><span>${def.label}</span>` +
         `<span class="jb-slider-wait hidden">next round</span>` +
-        `<span class="jb-slider-value"></span></span>` +
-        `<input type="range" min="${def.min}" max="${def.max}" step="${def.step}">`;
-      const input = row.querySelector("input");
-      const value = row.querySelector(".jb-slider-value");
-      input.addEventListener("pointerdown", () => (draggingKey = def.key));
-      input.addEventListener("input", () => {
-        const v = Number(input.value);
-        value.textContent = formatSetting(def.key, v);
-        queueSetting(def.key, v);
-      });
-      // Let go: hand the keyboard back to the game too, since a focused slider
-      // would otherwise be what the next arrow key nudges.
-      const release = () => {
-        if (draggingKey === def.key) draggingKey = null;
-        input.blur();
-      };
-      input.addEventListener("pointerup", release);
-      input.addEventListener("pointercancel", release);
-      input.addEventListener("change", release);
-      rows.set(def.key, { input, value, wait: row.querySelector(".jb-slider-wait") });
+        (def.choices ? "" : `<span class="jb-slider-value"></span>`) +
+        `</span>` +
+        (def.choices
+          ? `<div class="jb-choice" role="group" aria-label="${def.label}">` +
+            def.choices.map((label, v) => `<button type="button" data-v="${v}">${label}</button>`).join("") +
+            `</div>`
+          : `<input type="range" min="${def.min}" max="${def.max}" step="${def.step}">`);
+      const entry = { def, row, wait: row.querySelector(".jb-slider-wait") };
+      if (def.choices) {
+        entry.buttons = [...row.querySelectorAll("button")];
+        entry.buttons.forEach((button) =>
+          button.addEventListener("click", () => {
+            button.blur(); // the keyboard belongs to the game
+            queueSetting(def.key, Number(button.dataset.v));
+            renderPanel();
+          })
+        );
+      } else {
+        const input = row.querySelector("input");
+        const value = row.querySelector(".jb-slider-value");
+        input.addEventListener("pointerdown", () => (draggingKey = def.key));
+        input.addEventListener("input", () => {
+          const v = Number(input.value);
+          value.textContent = formatSetting(def.key, v);
+          queueSetting(def.key, v);
+        });
+        // Let go: hand the keyboard back to the game too, since a focused
+        // slider would otherwise be what the next arrow key nudges.
+        const release = () => {
+          if (draggingKey === def.key) draggingKey = null;
+          input.blur();
+        };
+        input.addEventListener("pointerup", release);
+        input.addEventListener("pointercancel", release);
+        input.addEventListener("change", release);
+        Object.assign(entry, { input, value });
+      }
+      rows.set(def.key, entry);
       group.appendChild(row);
     });
     root.querySelector(".jb-reset").addEventListener("click", () => {
@@ -700,17 +715,22 @@ export function createJabbleClient({ id, name, stateKey }) {
     return { root, rows };
   }
 
-  // Sliders follow the server's word, except the one you're holding. A
-  // "next round" tag marks a value that's set but not yet in force.
+  // Sliders follow the server's word, except the one you're holding or have
+  // just moved and not yet sent. A "next round" tag marks a value that's set
+  // but not yet in force. Only the current surface's movement sliders show.
   function renderPanel() {
     if (!view?.panel || !jb) return;
-    view.panel.rows.forEach(({ input, value, wait }, key) => {
-      const set = jb.settings[key];
-      if (key !== draggingKey && !(key in unsentSettings)) {
-        input.value = String(set);
-        value.textContent = formatSetting(key, set);
+    const wanted = (key) => (key in unsentSettings ? unsentSettings[key] : jb.settings[key]);
+    const surface = wanted("ice") ? "ice" : "grip";
+    view.panel.rows.forEach(({ def, row, wait, input, value, buttons }, key) => {
+      row.classList.toggle("hidden", !!def.only && def.only !== surface);
+      wait.classList.toggle("hidden", jb.settings[key] === jb.tune[key]);
+      if (buttons) {
+        buttons.forEach((button) => button.classList.toggle("on", Number(button.dataset.v) === wanted(key)));
+      } else if (key !== draggingKey && !(key in unsentSettings)) {
+        input.value = String(jb.settings[key]);
+        value.textContent = formatSetting(key, jb.settings[key]);
       }
-      wait.classList.toggle("hidden", set === jb.tune[key]);
     });
   }
 
