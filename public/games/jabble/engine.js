@@ -37,8 +37,8 @@ export const TUNING = {
   arenaH: 720,
   edgeBow: 36, // how far each side of the stadium bows outward at its middle
 
-  playerSize: 34,
-  ice: 0, // the surface: 0 grass, 1 ice
+  playerSize: 40,
+  ice: 1, // the surface: 0 grass, 1 ice
   playerSpeed: 280, // units/s at full tilt
   playerAccel: 2600, // units/s² toward the held direction (and back to a stop)
   // On ice (`ice: 1`, a setting) there's no grip: keys PUSH you at iceAccel
@@ -50,15 +50,15 @@ export const TUNING = {
   iceWallBounce: 0.35,
 
   ballsPerTeam: 2,
-  ballRadius: 22,
+  ballRadius: 35,
   ballDrag: 0.55, // speed bled per second, as e^-drag (0.55 ≈ 42% a second)
   ballStopSpeed: 6, // below this a ball comes to rest
   ballMaxSpeed: 1400, // or 1.35 × kickSpeed, whichever is more
-  wallBounce: 0.95, // restitution off walls (balls, and players sent flying)
+  wallBounce: 1.1, // restitution off walls (balls, and players sent flying); over 1 adds speed
   bodyBounce: 0.3, // off a player's body — soft, so you can trap your ball
   ballBounce: 0.9, // ball against ball
 
-  kickSpeed: 1050, // a jab sets your ball to exactly this, in the jab direction
+  kickSpeed: 1600, // a jab sets your ball to exactly this, in the jab direction
   // ...and an opponent it lands on to this. A player sent flying can't steer:
   // they slow by flightDrag, bounce off walls like a ball, and get control
   // back once they're down to their normal top speed.
@@ -73,11 +73,11 @@ export const TUNING = {
   jabCooldownTicks: 21, // 0.35 s from one jab's start to the next
   jabBufferTicks: 8, // a jab pressed this close to being ready fires when it is
 
-  obstacles: 2, // straight bars set out each round
+  obstacles: 0, // straight bars set out each round
 
   countdownTicks: 90, // frozen "ready" before each round
   overTicks: 120, // pause after a round is decided
-  winScore: 3
+  winScore: 11
 };
 
 // The sliders a table can move mid-match, and how far. Most change the match
@@ -106,7 +106,7 @@ export const SETTINGS = [
   { key: "iceWallBounce", group: "Player", label: "Wall rebound", min: 0, max: 1, step: 0.05, only: "ice" },
   { key: "playerSize", group: "Player", label: "Size", min: 18, max: 72, step: 2, nextRound: true },
   { key: "obstacles", group: "Arena", label: "Obstacles", min: 0, max: 8, step: 1, nextRound: true },
-  { key: "winScore", group: "Arena", label: "First to", min: 1, max: 9, step: 1 }
+  { key: "winScore", group: "Arena", label: "First to", min: 1, max: 21, step: 1 }
 ];
 const SETTING_BY_KEY = new Map(SETTINGS.map((def) => [def.key, def]));
 
@@ -246,7 +246,7 @@ function spawnLayout(tune, teamSizes) {
 }
 
 // A long, thin, straight bar centred anywhere, at any angle.
-const BAR_LENGTH = [280, 420];
+const BAR_LENGTH = [140, 210];
 const BAR_HALF_WIDTH = 8;
 
 function randomObstacle() {
