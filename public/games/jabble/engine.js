@@ -50,7 +50,7 @@ export const TUNING = {
   iceWallBounce: 0.35,
 
   ballsPerTeam: 2,
-  ballRadius: 35,
+  ballRadius: 30,
   ballDrag: 0.55, // speed bled per second, as e^-drag (0.55 ≈ 42% a second)
   ballStopSpeed: 6, // below this a ball comes to rest
   ballMaxSpeed: 1400, // or 1.35 × kickSpeed, whichever is more
@@ -58,7 +58,7 @@ export const TUNING = {
   bodyBounce: 0.3, // off a player's body — soft, so you can trap your ball
   ballBounce: 0.9, // ball against ball
 
-  kickSpeed: 1600, // a jab sets your ball to exactly this, in the jab direction
+  kickSpeed: 1300, // a jab sets your ball to exactly this, in the jab direction
   // ...and an opponent it lands on to this. A player sent flying can't steer:
   // they slow by flightDrag, bounce off walls like a ball, and get control
   // back once they're down to their normal top speed.
