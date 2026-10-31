@@ -1011,7 +1011,9 @@ export function createJabbleClient({ id, name, stateKey }) {
     if (!view || !jb) return;
     let html = "";
     if (jb.phase === "countdown") {
-      html = `<div class="jb-call"><small>Round ${jb.round}</small><strong>Ready…</strong></div>`;
+      // The teams change ends every round.
+      const ends = jb.round > 1 ? " · ends switched" : "";
+      html = `<div class="jb-call"><small>Round ${jb.round}${ends}</small><strong>Ready…</strong></div>`;
     } else if (jb.phase === "play" && goUntil) {
       html = `<div class="jb-call jb-go"><strong>Go!</strong></div>`;
     } else if (jb.phase === "over") {

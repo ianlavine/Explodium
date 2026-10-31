@@ -4,7 +4,8 @@
 // way. The OTHER team's balls kill whatever of yours they touch — your square,
 // or your arm mid-jab. A jab that lands on an opposing PLAYER sends them flying
 // the way a kick sends a ball. Last team standing takes the round; first to
-// `winScore` rounds wins.
+// `winScore` rounds wins. The arena is set out once a match, and the teams
+// change ends every round.
 //
 // The stadium's four sides bow gently outward, so a ball that hits one
 // square-on still comes back a little off its line — by how much depends on
@@ -73,7 +74,7 @@ export const TUNING = {
   jabCooldownTicks: 21, // 0.35 s from one jab's start to the next
   jabBufferTicks: 8, // a jab pressed this close to being ready fires when it is
 
-  obstacles: 0, // straight bars set out each round
+  obstacles: 0, // straight bars, set out once a match
 
   countdownTicks: 36, // frozen "ready" before each round (0.6 s)
   overTicks: 54, // pause after a round is decided (0.9 s)
@@ -247,10 +248,18 @@ function gapsFor(tune) {
   return { edge: Math.max(EDGE_GAP, fits), between: Math.max(OBSTACLE_GAP, fits) };
 }
 
-// Each team starts at its own end, at a height of its own, with its balls in
-// a column in front of it (squeezed together if a column of big ones wouldn't
-// otherwise fit).
-function spawnLayout(tune, teamSizes) {
+// A height for one end's start, drawn once per match: the two ends get
+// different ones, and the teams swap ends every round, so each team plays
+// both.
+function randomStartHeight() {
+  return TUNING.arenaH / 2 + Math.round((Math.random() - 0.5) * 300);
+}
+
+// Each team starts at an end — blue on the left unless `swapped` — at that
+// end's height (`heights`, left then right), with its balls in a column in
+// front of it (squeezed together if a column of big ones wouldn't otherwise
+// fit).
+function spawnLayout(tune, teamSizes, heights, swapped) {
   const { arenaW: W, arenaH: H, edgeBow } = TUNING;
   const half = tune.playerSize / 2;
   const r = tune.ballRadius;
@@ -261,12 +270,12 @@ function spawnLayout(tune, teamSizes) {
   const players = [];
   const balls = [];
   teamSizes.forEach((count, team) => {
+    const end = swapped ? 1 - team : team; // 0 left, 1 right
     const extent =
       Math.max(ballGap * (n - 1), playerGap * (count - 1)) / 2 + Math.max(margin, half + edgeBow + 30);
-    const wanted = H / 2 + Math.round((Math.random() - 0.5) * 300);
-    const y0 = extent >= H / 2 ? H / 2 : Math.min(H - extent, Math.max(extent, wanted));
-    const inward = team === 0 ? 1 : -1;
-    const playerX = (team === 0 ? 0 : W) + inward * (edgeBow + 74);
+    const y0 = extent >= H / 2 ? H / 2 : Math.min(H - extent, Math.max(extent, heights[end]));
+    const inward = end === 0 ? 1 : -1;
+    const playerX = (end === 0 ? 0 : W) + inward * (edgeBow + 74);
     const ballX = playerX + inward * (half + r + 107);
     for (let k = 0; k < count; k += 1) {
       players.push({ team, x: playerX, y: y0 + (k - (count - 1) / 2) * playerGap });
@@ -305,26 +314,30 @@ function spine(solid) {
   return discs;
 }
 
-// Bars scattered anywhere, spaced so that nothing seals
-// off a pocket, with the spawns left clear. A crowded arena may come up short
-// of `count`.
-function generateObstacles(tune, spawns, count) {
-  const clear = [
+// Bars scattered anywhere, spaced so that nothing seals off a pocket, with
+// every layout in `spawnSets` left clear. The bars in `keep` (last round's)
+// stay wherever they still fit, so an arena lasts the whole match and a
+// slider only changes what it has to; new ones top it up to `count`. A
+// crowded arena may come up short.
+function generateObstacles(tune, spawnSets, count, keep = []) {
+  const clear = spawnSets.flatMap((spawns) => [
     ...spawns.players.map((point) => ({ point, radius: Math.max(95, tune.playerSize + 61) })),
     ...spawns.balls.map((point) => ({ point, radius: tune.ballRadius + 59 }))
-  ];
+  ]);
   const gaps = gapsFor(tune);
   const placed = [];
-  for (let attempt = 0; attempt < 100 * count && placed.length < count; attempt += 1) {
-    const solid = randomObstacle();
-    const roomy = spine(solid).every(
+  const fits = (solid) =>
+    spine(solid).every(
       (disc) =>
         RIMS.every((rim) => distanceTo(rim, disc.x, disc.y).d - disc.r >= gaps.edge) &&
         placed.every((other) => distanceTo(other, disc.x, disc.y).d - disc.r >= gaps.between)
-    );
-    if (!roomy) continue;
-    if (clear.some((c) => distanceTo(solid, c.point.x, c.point.y).d < c.radius)) continue;
-    placed.push(solid);
+    ) && !clear.some((c) => distanceTo(solid, c.point.x, c.point.y).d < c.radius);
+  for (const solid of keep) {
+    if (placed.length < count && fits(solid)) placed.push(solid);
+  }
+  for (let attempt = 0; attempt < 100 * count && placed.length < count; attempt += 1) {
+    const solid = randomObstacle();
+    if (fits(solid)) placed.push(solid);
   }
   return placed;
 }
@@ -360,7 +373,9 @@ export function createMatch(seatCount = 2, settings = null) {
     phase: "countdown", // countdown | play | over | matchover
     phaseTicks: 0,
     score: [0, 0],
-    solids: [], // this round's obstacles
+    solids: [], // the arena's bars, kept from round to round until the match ends
+    startHeights: null, // where each end's team starts (left, right), also kept for the match
+    swapped: false, // blue starts on the right this round (the teams change ends every round)
     collide: RIMS, // the rims plus the obstacles: everything solid
     players,
     balls: [], // { team, x, y, vx, vy }, set out each round
@@ -371,11 +386,14 @@ export function createMatch(seatCount = 2, settings = null) {
   return state;
 }
 
+// A new match gets a new arena.
 export function resetMatch(state) {
   state.score = [0, 0];
   state.round = 0;
   state.lastRound = null;
   state.rematch.clear();
+  state.solids = [];
+  state.startHeights = null;
   startRound(state);
 }
 
@@ -399,13 +417,20 @@ export function resetSettings(state) {
   return applySettings(state, defaultSettings());
 }
 
+// The arena stays put all match (unless a slider means it has to change);
+// only the teams' ends swap, so neither side keeps the better start.
 function startRound(state) {
   Object.assign(state.tune, state.settings);
   const { tune } = state;
+  state.round += 1;
+  state.swapped = state.round % 2 === 0;
+  state.startHeights ??= [randomStartHeight(), randomStartHeight()];
   const teamSizes = [0, 0];
   state.players.forEach((p) => (teamSizes[p.team] += 1));
-  const spawns = spawnLayout(tune, teamSizes);
-  state.solids = generateObstacles(tune, spawns, tune.obstacles);
+  const spawns = spawnLayout(tune, teamSizes, state.startHeights, state.swapped);
+  // Bars keep clear of both ends' starts either way round.
+  const otherWay = spawnLayout(tune, teamSizes, state.startHeights, !state.swapped);
+  state.solids = generateObstacles(tune, [spawns, otherWay], tune.obstacles, state.solids);
   state.collide = collidersFor(state.solids);
 
   const next = [0, 0];
@@ -421,7 +446,6 @@ function startRound(state) {
   });
   state.balls = spawns.balls.map(({ team, x, y }) => ({ team, x, y, vx: 0, vy: 0 }));
 
-  state.round += 1;
   state.phase = "countdown";
   state.phaseTicks = tune.countdownTicks;
 }
@@ -913,7 +937,7 @@ function aliveTeams(state) {
 }
 
 // One fixed tick. Returns true when something the clients hold as STATE (not
-// just positions) changed — the phase, the score, a new arena.
+// just positions) changed — the phase, the score, a new round.
 //
 // With `predict` set (a browser running ahead of the server) it's physics
 // only: nothing dies and no round ends, because only the server knows what the
